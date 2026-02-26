@@ -1,4 +1,5 @@
 flake.*
 *.ipynb
 .mamba/
-tmp.py
+_tmp.py
+
