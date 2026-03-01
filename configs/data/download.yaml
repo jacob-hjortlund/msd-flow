@@ -1,0 +1,6 @@
+api_key: ${oc.env:TNG_API_KEY}
+version_ids: [0,1,2,3]
+snapshots: ${generate_snapshot_ids:72,20}
+num_files_per_view: 50
+max_workers: 5
+raw_dir: "${hydra:runtime.cwd}/data/raw"

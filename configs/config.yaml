@@ -1,0 +1,6 @@
+defaults:
+  - data@data.download: download
+  - _self_
+
+seed: 42
+work_dir: ${hydra:runtime.cwd}
