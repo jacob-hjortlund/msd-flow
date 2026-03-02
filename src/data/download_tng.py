@@ -134,7 +134,6 @@ def download_tng_fits_file(
             
     return f"Failed completely after {max_retries} attempts: {unique_filename}"
 
-
 @hydra.main(version_base=None, config_path="../../configs", config_name="config")
 def main(cfg: DictConfig):
 
