@@ -42,18 +42,8 @@ def clip_and_pad(img: np.ndarray, n: int = 512) -> np.ndarray:
 def surface_brightness_to_nanomaggies(
     image: np.ndarray,
     mag_threshold: float = 99.0,
-    header: dict = None,
-    redshift: float = None,
 ) -> np.ndarray:
     """Convert a surface-brightness image (AB mag/pixel) to nanomaggies."""
-    header = header or {}
-
-    if redshift is None:
-        try:
-            redshift = header["REDSHIFT"]
-        except KeyError:
-            raise KeyError("'REDSHIFT' not found in header.")
-
     flux = np.where(image < mag_threshold, 10.0 ** (0.4 * (22.5 - image)), 0.0)
     return flux
 
@@ -75,13 +65,12 @@ def linear_normalize(
 
 def preprocess_image(
     img: np.ndarray,
-    header: dict,
     percentile: float,
     norm_range: tuple[float],
     stretch_scale: float = 1
 ):
     
-    img = surface_brightness_to_nanomaggies(img, header=header)
+    img = surface_brightness_to_nanomaggies(img)
     img = clip_and_pad(img)
     img = arcsinh_stretch(img, a=stretch_scale)
     imgp = np.percentile(img, percentile)
