@@ -11,14 +11,17 @@ from omegaconf import DictConfig, OmegaConf
 
 # ------------------------------------ I/O ----------------------------------- #
 
+
 def load_fits(filename: str, band: str) -> tuple[np.ndarray, dict]:
     with fits.open(filename) as hdul:
         for hdu in hdul:
             if hdu.header.get("EXTNAME") == band:
                 return hdu.data, hdu.header
     raise ValueError(f"Band '{band}' not found in {filename}")
-    
+
+
 # ----------------------------- IMAGE TRANSFORMS ----------------------------- #
+
 
 def clip_and_pad(img: np.ndarray, n: int = 512) -> np.ndarray:
     """Pad image to at least n×n, then centre-crop to exactly n×n."""
@@ -39,6 +42,7 @@ def clip_and_pad(img: np.ndarray, n: int = 512) -> np.ndarray:
     half = n // 2
     return img[cy - half : cy + half, cx - half : cx + half]
 
+
 def surface_brightness_to_nanomaggies(
     image: np.ndarray,
     mag_threshold: float = 99.0,
@@ -47,15 +51,13 @@ def surface_brightness_to_nanomaggies(
     flux = np.where(image < mag_threshold, 10.0 ** (0.4 * (22.5 - image)), 0.0)
     return flux
 
+
 def arcsinh_stretch(imgs: np.ndarray, a: float) -> np.ndarray:
     return np.arcsinh(imgs / a)
 
+
 def linear_normalize(
-    data: np.ndarray,
-    data_min: float,
-    data_max: float,
-    norm_min: float,
-    norm_max: float
+    data: np.ndarray, data_min: float, data_max: float, norm_min: float, norm_max: float
 ) -> np.ndarray:
 
     norm_range = norm_max - norm_min
@@ -63,24 +65,21 @@ def linear_normalize(
 
     return norm_range * data_fraction + norm_min
 
+
 def preprocess_image(
     img: np.ndarray,
     percentile: float,
     norm_range: tuple[float],
-    stretch_scale: float = 1
+    stretch_scale: float = 1,
 ):
-    
+
     img = surface_brightness_to_nanomaggies(img)
     img = clip_and_pad(img)
     img = arcsinh_stretch(img, a=stretch_scale)
     imgp = np.percentile(img, percentile)
-    img = np.clip(img/imgp, 0, 1.0)
+    img = np.clip(img / imgp, 0, 1.0)
     img = linear_normalize(
-        img,
-        img.min(),
-        img.max(),
-        norm_min=norm_range[0],
-        norm_max=norm_range[1]
+        img, img.min(), img.max(), norm_min=norm_range[0], norm_max=norm_range[1]
     )
 
     return img
