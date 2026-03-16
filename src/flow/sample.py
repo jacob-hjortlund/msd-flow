@@ -1,6 +1,7 @@
 import jax
-import jax.numpy as jnp
 import diffrax
+
+import jax.numpy as jnp
 
 
 def make_ode_term(model) -> diffrax.ODETerm:
