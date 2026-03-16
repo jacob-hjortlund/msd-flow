@@ -1,9 +1,10 @@
-import importlib
-from typing import Callable, Optional
-
 import jax
-import jax.numpy as jnp
+import importlib
+
 import equinox as eqx
+import jax.numpy as jnp
+
+from typing import Callable, Optional
 
 
 def resolve_activation(activation_str: str) -> Callable:

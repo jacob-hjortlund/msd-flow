@@ -10,6 +10,7 @@ from src.model.blocks import Downsample, Upsample
 
 
 KEY = jax.random.PRNGKey(0)
+TIME_EMB_DIM = 16
 
 
 def test_sinusoidal_embedding_output_shape():
@@ -59,9 +60,6 @@ def test_upsample_preserves_channels():
     x = jnp.ones((6, 8, 8))
     out = us(x)
     assert out.shape[0] == 6
-
-
-TIME_EMB_DIM = 16
 
 
 def test_resblock_output_shape_same_channels():
