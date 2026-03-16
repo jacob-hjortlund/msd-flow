@@ -1,0 +1,8 @@
+num_steps: 100000
+batch_size: 16
+checkpoint_dir: ${work_dir}/checkpoints
+checkpoint_every: 5000
+log_every: 100
+optimizer:
+  _target_: optax.adam
+  learning_rate: 1.0e-4

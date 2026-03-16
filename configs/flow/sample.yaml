@@ -1,0 +1,7 @@
+t0: 0.0
+t1: 1.0
+dt0: 0.01
+solver:
+  _target_: diffrax.Euler
+stepsize_controller:
+  _target_: diffrax.ConstantStepSize

@@ -1,5 +1,9 @@
 defaults:
   - data@data.download: download
+  - model@model: unet
+  - flow@flow.otfm: otfm
+  - flow@flow.sample: sample
+  - train@train: train
   - _self_
 
 seed: 42
