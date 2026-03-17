@@ -4,6 +4,7 @@ import jax.numpy as jnp
 import equinox as eqx
 
 from src.model.blocks import (
+    resolve_activation,
     AttentionBlock,
     Downsample,
     ResBlock,
@@ -43,6 +44,9 @@ class UNet(eqx.Module):
         ki = 0
         time_emb_dim = base_channels * 4
         L = len(channel_multipliers)
+
+        if isinstance(activation, str):
+            activation = resolve_activation(activation)
 
         self.activation = activation
         self.stem = eqx.nn.Conv2d(
