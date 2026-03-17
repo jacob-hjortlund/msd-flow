@@ -69,14 +69,28 @@ class Downsample(eqx.Module):
 
 
 class Upsample(eqx.Module):
+    """Spatial upsampling via nearest-neighbor resize followed by convolution."""
+
     conv: eqx.nn.Conv2d
 
     def __init__(self, channels: int, key: jax.Array):
         self.conv = eqx.nn.Conv2d(channels, channels, kernel_size=3, padding=1, key=key)
 
-    def __call__(self, x: jax.Array) -> jax.Array:
+    def __call__(
+        self, x: jax.Array, target_h: int, target_w: int
+    ) -> jax.Array:
+        """Upsample spatial dimensions to a target size.
+
+        Args:
+            x: Input array of shape ``(C, H, W)``.
+            target_h: Target height after upsampling.
+            target_w: Target width after upsampling.
+
+        Returns:
+            Upsampled array of shape ``(C, target_h, target_w)``.
+        """
         c, h, w = x.shape
-        x = jax.image.resize(x, shape=(c, h * 2, w * 2), method="nearest")
+        x = jax.image.resize(x, shape=(c, target_h, target_w), method="nearest")
         return self.conv(x)
 
 

@@ -160,7 +160,8 @@ class UNet(eqx.Module):
             self.decoder_blocks, self.upsamples, skips[::-1]
         ):
             if upsample is not None:
-                h = upsample(h)
+                _, target_h, target_w = skip.shape
+                h = upsample(h, target_h, target_w)
             h = jnp.concatenate([h, skip], axis=0)
             for block in blocks:
                 h = block(h, time_emb)

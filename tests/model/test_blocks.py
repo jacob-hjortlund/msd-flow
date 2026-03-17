@@ -51,14 +51,14 @@ def test_downsample_preserves_channels():
 def test_upsample_doubles_spatial_dims():
     us = Upsample(channels=4, key=KEY)
     x = jnp.ones((4, 8, 8))
-    out = us(x)
+    out = us(x, target_h=16, target_w=16)
     assert out.shape == (4, 16, 16), f"Expected (4, 16, 16), got {out.shape}"
 
 
 def test_upsample_preserves_channels():
     us = Upsample(channels=6, key=KEY)
     x = jnp.ones((6, 8, 8))
-    out = us(x)
+    out = us(x, target_h=16, target_w=16)
     assert out.shape[0] == 6
 
 
