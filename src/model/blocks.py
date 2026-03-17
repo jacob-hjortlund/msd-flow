@@ -64,7 +64,7 @@ class SinusoidalEmbedding(eqx.Module):
             jax.Array: Sinusoidal time embedding
         """
 
-        freqs = jnp.exp(-jnp.log(10000.0) * 2 * jnp.arange(self.dim) / self.dim)
+        freqs = jnp.exp(-jnp.log(10000.0) * 2 * jnp.arange(self.dim // 2) / self.dim)
         emb = jnp.concatenate([jnp.sin(t * freqs), jnp.cos(t * freqs)])
         emb = self.lin1(emb)
         emb = self.activation(emb)
