@@ -4,13 +4,13 @@ import jax.numpy as jnp
 import equinox as eqx
 
 from src.model.blocks import (
-    resolve_activation,
     AttentionBlock,
     Downsample,
     ResBlock,
     SinusoidalEmbedding,
     Upsample,
 )
+from src.utils.utils import resolve_import
 from typing import Callable, List, Optional
 
 
@@ -46,7 +46,7 @@ class UNet(eqx.Module):
         L = len(channel_multipliers)
 
         if isinstance(activation, str):
-            activation = resolve_activation(activation)
+            activation = resolve_import(activation)
 
         self.activation = activation
         self.stem = eqx.nn.Conv2d(
@@ -140,7 +140,7 @@ class UNet(eqx.Module):
         )
         ki += 1
 
-    def __call__(self, x_t: jax.Array, t: jax.Array) -> jax.Array:
+    def __call__(self, t: jax.Array, x_t: jax.Array) -> jax.Array:
         time_emb = self.time_emb(t)
         h = self.stem(x_t)
 

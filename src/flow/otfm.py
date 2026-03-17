@@ -59,5 +59,5 @@ def flow_matching_loss(
         Scalar mean squared error between predicted and target velocities.
     """
     x_t, u_t = sample_ot_path(x0, x1, t)
-    v_t = eqx.filter_vmap(model)(x_t, t)
+    v_t = eqx.filter_vmap(model)(t, x_t)
     return jnp.mean((v_t - u_t) ** 2)

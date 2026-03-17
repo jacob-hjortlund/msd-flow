@@ -39,7 +39,8 @@ def sample(
         Sample array of shape `shape`.
     """
     x0 = jax.random.normal(key, shape)
-    term = make_ode_term(model)
+    # term = make_ode_term(model)
+    term = diffrax.ODETerm(model)
     saveat = diffrax.SaveAt(ts=jnp.array([t1]))
     solution = diffrax.diffeqsolve(
         term,

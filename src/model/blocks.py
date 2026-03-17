@@ -1,25 +1,9 @@
 import jax
-import importlib
 
 import equinox as eqx
 import jax.numpy as jnp
 
 from typing import Callable, Optional
-
-
-def resolve_activation(activation_str: str) -> Callable:
-    """
-    Resolve a dot-separated activation string, e.g. 'jax.nn.silu'
-
-    Args:
-        activation_str (str): Activation string
-
-    Returns:
-        Callable: Activation function
-    """
-
-    module_path, attr = activation_str.rsplit(".", 1)
-    return getattr(importlib.import_module(module_path), attr)
 
 
 class SinusoidalEmbedding(eqx.Module):
