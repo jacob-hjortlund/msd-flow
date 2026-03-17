@@ -38,7 +38,7 @@ def sample(
         solver = resolve_import(solver)
 
     if isinstance(stepsize_controller, str):
-        stepsize_controller = resolve_import(solver)
+        stepsize_controller = resolve_import(stepsize_controller)
 
     x0 = jax.random.normal(key, shape)
     term = diffrax.ODETerm(model)
