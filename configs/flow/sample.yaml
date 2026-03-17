@@ -3,3 +3,6 @@ t1: 1.0
 dt0: 0.01
 solver: "diffrax.Euler"
 stepsize_controller: "diffrax.ConstantStepSize"
+stepsize_controller_cfg:
+  - rtol: 0.001
+  - atol: 0.000001
