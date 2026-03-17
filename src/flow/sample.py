@@ -3,14 +3,9 @@ import diffrax
 
 import jax.numpy as jnp
 
+from src.utils.utils import resolve_import
 
-def make_ode_term(model) -> diffrax.ODETerm:
-    """Wrap a UNet as a Diffrax ODETerm.
-
-    Diffrax calls the vector field as f(t, y, args).
-    UNet.__call__ expects (x_t, t), so we reorder arguments.
-    """
-    return diffrax.ODETerm(lambda t, y, args: model(y, t))
+# TODO: Move to inference
 
 
 def sample(
@@ -38,8 +33,14 @@ def sample(
     Returns:
         Sample array of shape `shape`.
     """
+
+    if isinstance(solver, str):
+        solver = resolve_import(solver)
+
+    if isinstance(stepsize_controller, str):
+        stepsize_controller = resolve_import(solver)
+
     x0 = jax.random.normal(key, shape)
-    # term = make_ode_term(model)
     term = diffrax.ODETerm(model)
     saveat = diffrax.SaveAt(ts=jnp.array([t1]))
     solution = diffrax.diffeqsolve(
