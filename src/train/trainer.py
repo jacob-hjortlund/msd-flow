@@ -31,6 +31,7 @@ def make_train_step(optimizer: optax.GradientTransformation):
     The optimizer is a static Python object — closing over it avoids
     passing it as a traced argument to filter_jit.
     """
+
     @eqx.filter_jit
     def train_step(
         state: TrainState,
@@ -41,7 +42,9 @@ def make_train_step(optimizer: optax.GradientTransformation):
         loss, grads = eqx.filter_value_and_grad(flow_matching_loss)(
             state.model, x0, x1, t
         )
-        updates, new_opt_state = optimizer.update(grads, state.opt_state)
+        updates, new_opt_state = optimizer.update(
+            grads, state.opt_state, eqx.filter(state.model, eqx.is_array)
+        )
         new_model = eqx.apply_updates(state.model, updates)
         return TrainState(model=new_model, opt_state=new_opt_state), loss
 
