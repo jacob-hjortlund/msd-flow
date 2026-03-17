@@ -140,7 +140,7 @@ class UNet(eqx.Module):
         )
         ki += 1
 
-    def __call__(self, t: jax.Array, x_t: jax.Array, args) -> jax.Array:
+    def __call__(self, t: jax.Array, x_t: jax.Array, *args, **kwargs) -> jax.Array:
         time_emb = self.time_emb(t)
         h = self.stem(x_t)
 
