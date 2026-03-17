@@ -17,6 +17,7 @@ def sample(
     t0: float,
     t1: float,
     stepsize_controller,
+    stepsize_controller_cfg: dict,
 ) -> jax.Array:
     """Draw one sample by integrating the learned ODE from t0 to t1.
 
@@ -40,6 +41,10 @@ def sample(
     if isinstance(stepsize_controller, str):
         stepsize_controller = resolve_import(stepsize_controller)
 
+    solver = solver()
+    stepsize_controller = (
+        stepsize_controller()
+    )  # TODO: Fix when controller has args / kwargs
     x0 = jax.random.normal(key, shape)
     term = diffrax.ODETerm(model)
     saveat = diffrax.SaveAt(ts=jnp.array([t1]))
