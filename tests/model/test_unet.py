@@ -1,3 +1,5 @@
+"""Tests for src.model.unet."""
+
 import jax
 import pytest
 
@@ -22,6 +24,7 @@ SMALL_CFG = dict(
 
 
 def test_unet_output_shape_matches_input():
+    """Verify output shape matches input spatial dimensions."""
     model = UNet(**SMALL_CFG, key=KEY)
     x = jnp.ones((1, 8, 8))
     t = jnp.array(0.5)
@@ -30,6 +33,7 @@ def test_unet_output_shape_matches_input():
 
 
 def test_unet_different_t_gives_different_output():
+    """Verify distinct timesteps produce distinct UNet outputs."""
     model = UNet(**SMALL_CFG, key=KEY)
     x = jnp.ones((1, 8, 8))
     out0 = model(jnp.array(0.0), x)
@@ -38,6 +42,7 @@ def test_unet_different_t_gives_different_output():
 
 
 def test_unet_output_finite():
+    """Verify UNet output contains only finite values for random input."""
     model = UNet(**SMALL_CFG, key=KEY)
     k, _ = jax.random.split(KEY)
     x = jax.random.normal(k, (1, 8, 8))
@@ -46,7 +51,7 @@ def test_unet_output_finite():
 
 
 def test_unet_filter_vmap_over_batch():
-    """filter_vmap maps over a batch of (x_t, t) pairs."""
+    """Verify filter_vmap produces correct batch output shape."""
     model = UNet(**SMALL_CFG, key=KEY)
     B = 3
     k, _ = jax.random.split(KEY)

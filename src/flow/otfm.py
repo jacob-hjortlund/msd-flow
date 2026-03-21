@@ -1,3 +1,9 @@
+"""Optimal-transport flow matching loss and utilities.
+
+Implements minibatch OT coupling, the linear interpolant path,
+and the MSE flow matching objective.
+"""
+
 import jax
 import numpy as np
 import equinox as eqx

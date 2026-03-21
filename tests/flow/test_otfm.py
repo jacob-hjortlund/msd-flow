@@ -1,3 +1,5 @@
+"""Tests for src.flow.otfm."""
+
 import jax
 import pytest
 
@@ -26,6 +28,7 @@ SMALL_MODEL = UNet(
 
 
 def test_ot_coupling_output_shape():
+    """Verify OT coupling output shape matches input shape."""
     rng = np.random.default_rng(0)
     x0 = rng.standard_normal((4, 1, 8, 8)).astype(np.float32)
     x1 = rng.standard_normal((4, 1, 8, 8)).astype(np.float32)
@@ -34,7 +37,7 @@ def test_ot_coupling_output_shape():
 
 
 def test_ot_coupling_is_permutation():
-    """The coupling should return a permutation of x0 rows."""
+    """Verify OT coupling returns a permutation of the source rows."""
     rng = np.random.default_rng(1)
     x0 = rng.standard_normal((4, 1, 8, 8)).astype(np.float32)
     x1 = rng.standard_normal((4, 1, 8, 8)).astype(np.float32)
@@ -47,6 +50,7 @@ def test_ot_coupling_is_permutation():
 
 
 def test_sample_ot_path_at_t0_gives_x0():
+    """Verify interpolant at t=0 equals x0."""
     x0 = jnp.ones((2, 1, 4, 4)) * 2.0
     x1 = jnp.ones((2, 1, 4, 4)) * 5.0
     t = jnp.zeros(2)
@@ -55,6 +59,7 @@ def test_sample_ot_path_at_t0_gives_x0():
 
 
 def test_sample_ot_path_at_t1_gives_x1():
+    """Verify interpolant at t=1 equals x1."""
     x0 = jnp.ones((2, 1, 4, 4)) * 2.0
     x1 = jnp.ones((2, 1, 4, 4)) * 5.0
     t = jnp.ones(2)
@@ -63,6 +68,7 @@ def test_sample_ot_path_at_t1_gives_x1():
 
 
 def test_sample_ot_path_velocity_is_x1_minus_x0():
+    """Verify linear interpolant velocity equals x1 - x0."""
     x0 = jnp.ones((2, 1, 4, 4)) * 2.0
     x1 = jnp.ones((2, 1, 4, 4)) * 5.0
     t = jnp.array([0.3, 0.7])
@@ -72,6 +78,7 @@ def test_sample_ot_path_velocity_is_x1_minus_x0():
 
 
 def test_sample_ot_path_shapes():
+    """Verify x_t and u_t shapes match the input batch shape."""
     B, C, H, W = 3, 1, 4, 4
     x0 = jnp.zeros((B, C, H, W))
     x1 = jnp.ones((B, C, H, W))
@@ -82,6 +89,7 @@ def test_sample_ot_path_shapes():
 
 
 def test_flow_matching_loss_is_scalar():
+    """Verify flow matching loss is a scalar."""
     B = 2
     k1, k2 = jax.random.split(KEY)
     x0 = jax.random.normal(k1, (B, 1, 8, 8))
@@ -92,6 +100,7 @@ def test_flow_matching_loss_is_scalar():
 
 
 def test_flow_matching_loss_is_positive():
+    """Verify flow matching loss is non-negative."""
     B = 2
     k1, k2 = jax.random.split(KEY)
     x0 = jax.random.normal(k1, (B, 1, 8, 8))
@@ -102,6 +111,7 @@ def test_flow_matching_loss_is_positive():
 
 
 def test_flow_matching_loss_has_gradient():
+    """Verify at least one gradient leaf is non-zero."""
     B = 2
     k1, k2 = jax.random.split(KEY)
     x0 = jax.random.normal(k1, (B, 1, 8, 8))

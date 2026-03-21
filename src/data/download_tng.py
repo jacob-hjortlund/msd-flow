@@ -1,3 +1,9 @@
+"""Download TNG50 galaxy FITS images from the IllustrisTNG API.
+
+Traverses the TNG50-1 SKIRT image endpoints, extracts per-subhalo FITS
+URLs, and downloads them in parallel with exponential-backoff retry.
+"""
+
 import os
 import time
 import hydra
@@ -22,25 +28,16 @@ def extract_tng_urls(
     headers: dict,
     N: int = 0,
 ) -> list[str]:
-    """
-    Traverses the TNG50-1 API to extract idealized SKIRT images.
+    """Traverse the TNG50-1 API to extract idealized SKIRT image URLs.
 
-    Parameters
-    ----------
-    - versiond_ids: list[int]
-        List of integers representing the versions (e.g., [0, 1, 2, 3])
-    - snap_ids: list[int]
-        List of integers representing the snapshots (e.g., [72, 73, 74])
-    - headers: dict
-        http headers to pass to requests. Must contain valid 'api-key' entry.
-    - N: int, optional
-        Maximum number of URLs to extract per combination. If 0, extracts all.
-        Defaults to 0.
+    Args:
+        version_ids: Version integers (e.g. ``[0, 1, 2, 3]``).
+        snap_ids: Snapshot integers (e.g. ``[72, 73, 74]``).
+        headers: HTTP headers; must contain a valid ``'api-key'`` entry.
+        N: Maximum URLs to extract per combination. ``0`` extracts all.
 
-    Returns
-    ----------
-    list[str]
-        A flat list of string URLs pointing to the .fits files.
+    Returns:
+        Flat list of URLs pointing to ``.fits`` files.
     """
 
     url_list = []
@@ -69,27 +66,17 @@ def extract_tng_urls(
 def download_tng_fits_file(
     url: str, save_dir: str, headers: dict, max_retries: int = 4, timeout_base: int = 3
 ) -> str:
-    """
-    Downloads a single TNG image FITS file.
+    """Download a single TNG FITS file with exponential-backoff retry.
 
-    Parameters
-    ----------
-    - url: str
-        Url of the FITS file to be downloaded
-    - save_dir: str
-        Directory to save the downloaded FITS file in
-    - headers: dict
-        http headers to pass to requests. Must contain valid 'api-key' entry.
-    - max_retries: int, optional
-        Maximum number of retries in case of timeouts. Defaults to 4.
-    - timeout_base: int, optional
-        Base time out. For the i'th attempt, the timeout is set to timeout_base**i.
-        Defaults to 3.
+    Args:
+        url: URL of the FITS file.
+        save_dir: Directory to save the downloaded file.
+        headers: HTTP headers; must contain a valid ``'api-key'`` entry.
+        max_retries: Maximum retry attempts on transient errors.
+        timeout_base: Base for exponential back-off (sleep = ``base ** attempt``).
 
-    Returns
-    ----------
-    str
-        Status string on whether download succeded or not.
+    Returns:
+        Status string indicating success or failure.
     """
 
     url_parts = url.split("/")
@@ -140,6 +127,7 @@ def download_tng_fits_file(
 
 @hydra.main(version_base=None, config_path="../../configs", config_name="config")
 def main(cfg: DictConfig):
+    """Entry point: extract TNG URLs and download FITS files in parallel."""
 
     dl_cfg = cfg.data.download
     os.makedirs(dl_cfg.raw_dir, exist_ok=True)

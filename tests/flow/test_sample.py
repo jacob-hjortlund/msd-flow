@@ -1,3 +1,5 @@
+"""Tests for src.flow.sample."""
+
 import jax
 import jax.numpy as jnp
 import equinox as eqx
@@ -16,11 +18,13 @@ SMALL_MODEL = UNet(
 
 
 def test_make_ode_term_returns_ode_term():
+    """Verify make_ode_term returns a diffrax ODETerm instance."""
     term = make_ode_term(SMALL_MODEL)
     assert isinstance(term, diffrax.ODETerm)
 
 
 def test_sample_output_shape():
+    """Verify sample output shape matches the requested shape."""
     out = sample(
         model=SMALL_MODEL,
         shape=(1, 8, 8),
@@ -35,6 +39,7 @@ def test_sample_output_shape():
 
 
 def test_sample_output_finite():
+    """Verify sample output contains only finite values."""
     out = sample(
         model=SMALL_MODEL,
         shape=(1, 8, 8),
@@ -49,7 +54,7 @@ def test_sample_output_finite():
 
 
 def test_sample_batched_via_vmap():
-    """Batched sampling via vmap over the key argument."""
+    """Verify batched sampling via vmap produces correct batch shape."""
     keys = jax.random.split(KEY, 3)
     batched_sample = jax.vmap(
         lambda k: sample(

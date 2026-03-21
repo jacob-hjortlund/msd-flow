@@ -1,3 +1,9 @@
+"""ODE-based sampling from a trained flow matching model.
+
+Integrates the learned velocity field from noise (t=0) to data (t=1)
+using Diffrax solvers.
+"""
+
 import jax
 import diffrax
 
@@ -30,6 +36,8 @@ def sample(
         t0:                   Start time (0.0 = noise)
         t1:                   End time (1.0 = data)
         stepsize_controller:  Diffrax step controller
+        stepsize_controller_cfg: Keyword arguments forwarded to the step-size
+            controller constructor.
 
     Returns:
         Sample array of shape `shape`.

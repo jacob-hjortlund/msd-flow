@@ -1,3 +1,9 @@
+"""Training loop and state management for flow matching.
+
+Provides ``TrainState``, a JIT-compiled train step factory, and
+the main training loop with periodic checkpointing.
+"""
+
 from typing import Any
 
 import jax
@@ -15,6 +21,13 @@ logger = logging.getLogger(__name__)
 
 
 class TrainState(eqx.Module):
+    """Bundles the model and optimizer state for checkpointing.
+
+    Attributes:
+        model: UNet velocity-field network.
+        opt_state: Optax optimizer state.
+    """
+
     model: Any  # UNet
     opt_state: Any  # optax.OptState
 

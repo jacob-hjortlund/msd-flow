@@ -1,3 +1,5 @@
+"""General-purpose utilities for the msd-flow project."""
+
 import importlib
 from typing import Callable
 

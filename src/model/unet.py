@@ -1,3 +1,9 @@
+"""UNet velocity-field predictor for flow matching.
+
+Encoder–bottleneck–decoder architecture with skip connections,
+sinusoidal time conditioning, and mid-level self-attention.
+"""
+
 import jax
 import jax.numpy as jnp
 
@@ -15,6 +21,23 @@ from typing import Callable, List, Optional
 
 
 class UNet(eqx.Module):
+    """Time-conditioned UNet that predicts the velocity field v_t = UNet(t, x_t).
+
+    Attributes:
+        stem: Initial convolution projecting input channels to base channels.
+        time_emb: Sinusoidal time embedding module.
+        encoder_blocks: Per-level lists of ``ResBlock`` modules.
+        downsamples: Per-level downsamplers (``None`` at the deepest level).
+        mid_block1: First bottleneck ``ResBlock``.
+        mid_attn: Bottleneck ``AttentionBlock``.
+        mid_block2: Second bottleneck ``ResBlock``.
+        decoder_blocks: Per-level lists of ``ResBlock`` modules.
+        upsamples: Per-level upsamplers (``None`` at the deepest level).
+        final_norm: Output ``GroupNorm``.
+        final_conv: 3x3 convolution projecting to output channels.
+        activation: Activation function used throughout.
+    """
+
     stem: eqx.nn.Conv2d
     time_emb: SinusoidalEmbedding
     encoder_blocks: List[List[ResBlock]]
@@ -40,6 +63,19 @@ class UNet(eqx.Module):
         activation: Callable,
         key: jax.Array,
     ):
+        """Initialise encoder, bottleneck, and decoder stages.
+
+        Args:
+            in_channels: Number of input image channels.
+            out_channels: Number of output channels (velocity field).
+            base_channels: Channel count at the first encoder level.
+            channel_multipliers: Per-level channel multipliers.
+            num_res_blocks: ``ResBlock`` count per encoder/decoder level.
+            num_heads: Attention heads in the bottleneck.
+            num_groups: Groups for all ``GroupNorm`` layers.
+            activation: Activation function (or import string).
+            key: JAX PRNG key.
+        """
         keys = jax.random.split(key, 256)
         ki = 0
         time_emb_dim = base_channels * 4
@@ -141,6 +177,15 @@ class UNet(eqx.Module):
         ki += 1
 
     def __call__(self, t: jax.Array, x_t: jax.Array, *args, **kwargs) -> jax.Array:
+        """Predict the velocity field at time *t*.
+
+        Args:
+            t: Scalar time value in ``[0, 1]``.
+            x_t: Noisy image of shape ``(C, H, W)``.
+
+        Returns:
+            Predicted velocity field of shape ``(C, H, W)``.
+        """
         time_emb = self.time_emb(t)
         h = self.stem(x_t)
 

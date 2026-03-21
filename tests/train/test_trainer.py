@@ -1,3 +1,5 @@
+"""Tests for src.train.trainer."""
+
 import jax
 import jax.numpy as jnp
 import equinox as eqx
@@ -17,17 +19,20 @@ OPTIMIZER = optax.adam(1e-3)
 
 
 def test_train_state_is_eqx_module():
+    """Verify TrainState is an Equinox module."""
     state = make_train_state(SMALL_MODEL, OPTIMIZER)
     assert isinstance(state, eqx.Module)
 
 
 def test_train_state_has_model_and_opt_state():
+    """Verify TrainState exposes model and opt_state attributes."""
     state = make_train_state(SMALL_MODEL, OPTIMIZER)
     assert hasattr(state, "model")
     assert hasattr(state, "opt_state")
 
 
 def test_make_train_state_opt_state_matches_model_params():
+    """Verify optimizer state is initialized (non-None)."""
     state = make_train_state(SMALL_MODEL, OPTIMIZER)
     # Optax adam state should be non-None
     assert state.opt_state is not None
@@ -37,6 +42,7 @@ from src.train.trainer import make_train_step
 
 
 def test_train_step_returns_updated_state_and_loss():
+    """Verify train step returns a TrainState and a scalar loss."""
     optimizer = optax.adam(1e-3)
     state = make_train_state(SMALL_MODEL, optimizer)
     train_step = make_train_step(optimizer)
@@ -54,6 +60,7 @@ def test_train_step_returns_updated_state_and_loss():
 
 
 def test_train_step_loss_is_finite():
+    """Verify train step produces a finite loss value."""
     optimizer = optax.adam(1e-3)
     state = make_train_state(SMALL_MODEL, optimizer)
     train_step = make_train_step(optimizer)
@@ -69,6 +76,7 @@ def test_train_step_loss_is_finite():
 
 
 def test_train_step_updates_model_params():
+    """Verify at least one model parameter changes after a train step."""
     optimizer = optax.adam(1e-3)
     state = make_train_state(SMALL_MODEL, optimizer)
     train_step = make_train_step(optimizer)
@@ -102,6 +110,7 @@ def _make_fake_dataloader(B=2, num_batches=3):
 
 
 def test_train_runs_and_returns_model():
+    """Verify the full training loop completes and returns a model."""
     from omegaconf import OmegaConf
     cfg = OmegaConf.create({
         "seed": 0,
@@ -120,7 +129,7 @@ def test_train_runs_and_returns_model():
 
 
 def test_train_reduces_loss():
-    """Loss on a fixed batch should decrease after several steps."""
+    """Verify the training loop runs without error on repeated fixed batches."""
     import torch
     from omegaconf import OmegaConf
     cfg = OmegaConf.create({

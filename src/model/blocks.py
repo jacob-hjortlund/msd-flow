@@ -1,3 +1,9 @@
+"""Building blocks for the UNet velocity-field predictor.
+
+Provides ``SinusoidalEmbedding``, ``ResBlock``, ``AttentionBlock``,
+``Downsample``, and ``Upsample`` modules built on Equinox.
+"""
+
 import jax
 
 import equinox as eqx
@@ -11,13 +17,10 @@ class SinusoidalEmbedding(eqx.Module):
     lin2: eqx.nn.Linear
     dim: int = eqx.field(static=True)
     activation: Callable = eqx.field(static=True)
-    """
-    _summary_
-    """
+    """Sinusoidal positional embedding with a two-layer MLP."""
 
     def __init__(self, dim: int, activation: Callable, key: jax.Array):
-        """
-        _summary_
+        """Initialise the embedding layers.
 
         Args:
             dim (int): Embedding dimension. Must be even.
@@ -57,14 +60,28 @@ class SinusoidalEmbedding(eqx.Module):
 
 
 class Downsample(eqx.Module):
+    """Spatial 2x downsampling via strided convolution."""
+
     conv: eqx.nn.Conv2d
 
     def __init__(self, channels: int, key: jax.Array):
+        """Args:
+            channels: Number of input and output channels.
+            key: JAX PRNG key.
+        """
         self.conv = eqx.nn.Conv2d(
             channels, channels, kernel_size=3, stride=2, padding=1, key=key
         )
 
     def __call__(self, x: jax.Array) -> jax.Array:
+        """Downsample *x* by a factor of 2.
+
+        Args:
+            x: Input array of shape ``(C, H, W)``.
+
+        Returns:
+            Array of shape ``(C, H/2, W/2)``.
+        """
         return self.conv(x)
 
 
@@ -95,6 +112,8 @@ class Upsample(eqx.Module):
 
 
 class ResBlock(eqx.Module):
+    """Residual block with time-embedding conditioning and optional skip projection."""
+
     conv1: eqx.nn.Conv2d
     norm1: eqx.nn.GroupNorm
     time_proj: eqx.nn.Linear
@@ -111,6 +130,14 @@ class ResBlock(eqx.Module):
         activation: Callable,
         key: jax.Array,
     ):
+        """Args:
+            in_channels: Input channel count.
+            out_channels: Output channel count.
+            time_emb_dim: Dimensionality of the time embedding.
+            num_groups: Groups for ``GroupNorm``.
+            activation: Activation function.
+            key: JAX PRNG key.
+        """
         k1, k2, k3, k4 = jax.random.split(key, 4)
         self.conv1 = eqx.nn.Conv2d(in_channels, out_channels, 3, padding=1, key=k1)
         self.norm1 = eqx.nn.GroupNorm(num_groups, out_channels)
@@ -124,6 +151,15 @@ class ResBlock(eqx.Module):
         self.activation = activation
 
     def __call__(self, x: jax.Array, time_emb: jax.Array) -> jax.Array:
+        """Apply the residual block.
+
+        Args:
+            x: Input feature map of shape ``(C_in, H, W)``.
+            time_emb: Time embedding vector.
+
+        Returns:
+            Output feature map of shape ``(C_out, H, W)``.
+        """
         h = self.conv1(x)
         h = self.norm1(h)
         h = self.activation(h)
@@ -135,14 +171,29 @@ class ResBlock(eqx.Module):
 
 
 class AttentionBlock(eqx.Module):
+    """Self-attention over spatial tokens."""
+
     attn: eqx.nn.MultiheadAttention
 
     def __init__(self, channels: int, num_heads: int, key: jax.Array):
+        """Args:
+            channels: Channel dimension (used as query size).
+            num_heads: Number of attention heads.
+            key: JAX PRNG key.
+        """
         self.attn = eqx.nn.MultiheadAttention(
             num_heads=num_heads, query_size=channels, key=key
         )
 
     def __call__(self, x: jax.Array) -> jax.Array:
+        """Apply multi-head self-attention over spatial positions.
+
+        Args:
+            x: Input array of shape ``(C, H, W)``.
+
+        Returns:
+            Attention output of shape ``(C, H, W)``.
+        """
         c, h, w = x.shape
         tokens = x.reshape(h * w, c)
         out = self.attn(query=tokens, key_=tokens, value=tokens)
