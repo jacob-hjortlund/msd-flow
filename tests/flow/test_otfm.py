@@ -17,7 +17,6 @@ SMALL_MODEL = UNet(
     in_channels=1,
     out_channels=1,
     base_channels=4,
-    image_size=8,
     channel_multipliers=[1, 2],
     num_res_blocks=1,
     num_heads=1,

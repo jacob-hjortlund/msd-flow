@@ -11,7 +11,7 @@ from src.train.trainer import TrainState, make_train_state
 KEY = jax.random.PRNGKey(0)
 
 SMALL_MODEL = UNet(
-    in_channels=1, out_channels=1, base_channels=4, image_size=8,
+    in_channels=1, out_channels=1, base_channels=4,
     channel_multipliers=[1, 2], num_res_blocks=1, num_heads=1,
     num_groups=2, activation=jax.nn.silu, key=KEY,
 )
@@ -155,7 +155,7 @@ def test_train_reduces_loss():
 
     # Patch to capture losses — use a higher LR model
     big_model = UNet(
-        in_channels=1, out_channels=1, base_channels=4, image_size=8,
+        in_channels=1, out_channels=1, base_channels=4,
         channel_multipliers=[1, 2], num_res_blocks=1, num_heads=1,
         num_groups=2, activation=jax.nn.silu,
         key=jax.random.PRNGKey(99),
