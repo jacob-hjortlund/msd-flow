@@ -70,7 +70,14 @@ def get_existing_ids(processed_dir: str) -> set[str]:
     csv_path = os.path.join(processed_dir, "metadata.csv")
     if not os.path.exists(csv_path):
         return set()
-    df = pd.read_csv(csv_path, usecols=["fits_name"], on_bad_lines="skip")
+    try:
+        df = pd.read_csv(csv_path, usecols=["fits_name"], on_bad_lines="skip")
+    except ValueError:
+        log.warning(
+            "metadata.csv exists but is missing the 'fits_name' column; "
+            "returning empty set."
+        )
+        return set()
     return set(df["fits_name"])
 
 
@@ -84,6 +91,8 @@ def save_metadata(records: list[dict], processed_dir: str) -> None:
         records: List of metadata dicts (one per galaxy).
         processed_dir: Directory containing ``metadata.csv``.
     """
+    if not records:
+        return
     csv_path = os.path.join(processed_dir, "metadata.csv")
     new_df = pd.DataFrame(records)
     if os.path.exists(csv_path):
