@@ -2,10 +2,18 @@
 
 import pytest
 import numpy as np
+import pandas as pd
 from unittest.mock import patch, MagicMock
 from astropy.io import fits as astropy_fits
 
-from src.data.download_tng import download_tng_fits_file, extract_tng_urls, fits_name_from_url, load_fits
+from src.data.download_tng import (
+    download_tng_fits_file,
+    extract_tng_urls,
+    fits_name_from_url,
+    get_existing_ids,
+    load_fits,
+    save_metadata,
+)
 
 
 # ------------------------------ extract_tng_urls ----------------------------- #
@@ -146,3 +154,42 @@ def test_load_fits_missing_band_raises(multi_band_fits):
     """Verify ValueError is raised if a band is not found."""
     with pytest.raises(ValueError, match="Band 'z' not found"):
         load_fits(multi_band_fits, ["g", "z"])
+
+
+# ----------------------------- get_existing_ids ----------------------------- #
+
+
+def test_get_existing_ids_empty_dir(tmp_path):
+    """Verify empty set returned when no metadata.csv exists."""
+    assert get_existing_ids(str(tmp_path)) == set()
+
+
+def test_get_existing_ids_reads_fits_name_column(tmp_path):
+    """Verify fits_name values are returned from existing metadata."""
+    df = pd.DataFrame({"filename": ["g_00000.npy"], "fits_name": ["snap_v0_72_sub_1_img"]})
+    df.to_csv(tmp_path / "metadata.csv", index=False)
+    result = get_existing_ids(str(tmp_path))
+    assert result == {"snap_v0_72_sub_1_img"}
+
+
+# ------------------------------- save_metadata ------------------------------ #
+
+
+def test_save_metadata_creates_new_csv(tmp_path):
+    """Verify save_metadata creates metadata.csv with header row."""
+    records = [{"filename": "galaxy_00000.npy", "fits_name": "snap_a", "band_map": "g"}]
+    save_metadata(records, str(tmp_path))
+    df = pd.read_csv(tmp_path / "metadata.csv")
+    assert len(df) == 1
+    assert df.iloc[0]["fits_name"] == "snap_a"
+
+
+def test_save_metadata_appends_to_existing(tmp_path):
+    """Verify save_metadata appends rows to an existing CSV."""
+    records1 = [{"filename": "galaxy_00000.npy", "fits_name": "snap_a", "band_map": "g"}]
+    save_metadata(records1, str(tmp_path))
+    records2 = [{"filename": "galaxy_00001.npy", "fits_name": "snap_b", "band_map": "g"}]
+    save_metadata(records2, str(tmp_path))
+    df = pd.read_csv(tmp_path / "metadata.csv")
+    assert len(df) == 2
+    assert set(df["fits_name"]) == {"snap_a", "snap_b"}

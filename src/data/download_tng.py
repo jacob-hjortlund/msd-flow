@@ -8,10 +8,12 @@ import os
 import time
 import hydra
 import logging
+import tempfile
 import requests
 import itertools
 
 import numpy as np
+import pandas as pd
 from astropy.io import fits
 
 from tqdm import tqdm
@@ -54,6 +56,49 @@ def load_fits(filename: str, bands: list[str]) -> tuple[np.ndarray, dict]:
             if not found:
                 raise ValueError(f"Band '{band}' not found in {filename}")
     return np.stack(arrays, axis=0), header
+
+
+def get_existing_ids(processed_dir: str) -> set[str]:
+    """Read already-processed FITS identifiers from metadata.csv.
+
+    Args:
+        processed_dir: Directory containing ``metadata.csv``.
+
+    Returns:
+        Set of ``fits_name`` values, or empty set if no CSV exists.
+    """
+    csv_path = os.path.join(processed_dir, "metadata.csv")
+    if not os.path.exists(csv_path):
+        return set()
+    df = pd.read_csv(csv_path, usecols=["fits_name"], on_bad_lines="skip")
+    return set(df["fits_name"])
+
+
+def save_metadata(records: list[dict], processed_dir: str) -> None:
+    """Atomically append metadata records to metadata.csv.
+
+    Reads the existing CSV (if any), concatenates new rows, writes the
+    full result to a temporary file, then atomically renames it.
+
+    Args:
+        records: List of metadata dicts (one per galaxy).
+        processed_dir: Directory containing ``metadata.csv``.
+    """
+    csv_path = os.path.join(processed_dir, "metadata.csv")
+    new_df = pd.DataFrame(records)
+    if os.path.exists(csv_path):
+        existing_df = pd.read_csv(csv_path, on_bad_lines="skip")
+        combined_df = pd.concat([existing_df, new_df], ignore_index=True)
+    else:
+        combined_df = new_df
+    fd, tmp_path = tempfile.mkstemp(dir=processed_dir, suffix=".csv")
+    os.close(fd)
+    try:
+        combined_df.to_csv(tmp_path, index=False)
+        os.replace(tmp_path, csv_path)
+    except BaseException:
+        os.unlink(tmp_path)
+        raise
 
 
 def extract_tng_urls(
