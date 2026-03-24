@@ -1,5 +1,7 @@
 """Tests for src.data.download_tng."""
 
+import os
+
 import pytest
 import numpy as np
 import pandas as pd
@@ -7,7 +9,10 @@ from unittest.mock import patch, MagicMock
 from astropy.io import fits as astropy_fits
 
 from src.data.download_tng import (
+    cleanup_batch,
+    download_batch,
     download_tng_fits_file,
+    extract_batch,
     extract_tng_urls,
     fits_name_from_url,
     get_existing_ids,
@@ -193,3 +198,67 @@ def test_save_metadata_appends_to_existing(tmp_path):
     df = pd.read_csv(tmp_path / "metadata.csv")
     assert len(df) == 2
     assert set(df["fits_name"]) == {"snap_a", "snap_b"}
+
+
+# ------------------------------ download_batch ------------------------------ #
+
+
+@patch("src.data.download_tng.download_tng_fits_file")
+def test_download_batch_filters_failures(mock_download, tmp_path):
+    """Verify download_batch returns only successful paths."""
+    mock_download.side_effect = [str(tmp_path / "a.fits"), None, str(tmp_path / "c.fits")]
+    urls = ["url1", "url2", "url3"]
+    result = download_batch(urls, str(tmp_path), {"api-key": "test"}, max_workers=2)
+    assert len(result) == 2
+
+
+# ------------------------------ extract_batch ------------------------------- #
+
+
+def test_extract_batch_saves_npy_and_returns_metadata(tmp_path, multi_band_fits):
+    """Verify extract_batch saves .npy files and returns metadata dicts.
+
+    Note: depends on ``multi_band_fits`` fixture defined in Task 2.
+    """
+    processed = tmp_path / "processed"
+    processed.mkdir()
+    records = extract_batch([multi_band_fits], ["g", "r"], str(processed), start_idx=0)
+    assert len(records) == 1
+    assert records[0]["filename"] == "galaxy_00000.npy"
+    assert records[0]["band_map"] == "g,r"
+    # FITS header keys are prefixed with hdr_ to avoid collisions
+    assert "hdr_TESTKEY" in records[0]
+    saved = np.load(processed / "galaxy_00000.npy")
+    assert saved.shape == (2, 64, 64)
+
+
+def test_extract_batch_skips_failed_and_continues(tmp_path, multi_band_fits):
+    """Verify failed extractions are skipped without gaps in numbering.
+
+    Note: depends on ``multi_band_fits`` fixture defined in Task 2.
+    """
+    processed = tmp_path / "processed"
+    processed.mkdir()
+    bad_path = str(tmp_path / "nonexistent.fits")
+    records = extract_batch([bad_path, multi_band_fits], ["g"], str(processed), start_idx=0)
+    assert len(records) == 1
+    assert records[0]["filename"] == "galaxy_00000.npy"
+
+
+# ------------------------------ cleanup_batch ------------------------------- #
+
+
+def test_cleanup_batch_deletes_files(tmp_path):
+    """Verify all listed files are deleted."""
+    paths = []
+    for name in ["a.fits", "b.fits"]:
+        p = tmp_path / name
+        p.touch()
+        paths.append(str(p))
+    cleanup_batch(paths)
+    assert not any(os.path.exists(p) for p in paths)
+
+
+def test_cleanup_batch_ignores_missing_files(tmp_path):
+    """Verify cleanup does not error on already-deleted files."""
+    cleanup_batch([str(tmp_path / "nonexistent.fits")])

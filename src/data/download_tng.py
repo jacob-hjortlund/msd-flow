@@ -239,6 +239,99 @@ def download_tng_fits_file(
     return None
 
 
+def download_batch(
+    urls: list[str], raw_dir: str, headers: dict, max_workers: int
+) -> list[str]:
+    """Download a batch of FITS files in parallel.
+
+    Args:
+        urls: URLs to download.
+        raw_dir: Directory for downloaded FITS files.
+        headers: HTTP headers with API key.
+        max_workers: Thread pool size.
+
+    Returns:
+        Paths of successfully downloaded files.
+    """
+    paths = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_url = {
+            executor.submit(download_tng_fits_file, url, raw_dir, headers): url
+            for url in urls
+        }
+        for future in as_completed(future_to_url):
+            try:
+                result = future.result()
+                if result is not None:
+                    paths.append(result)
+            except Exception as exc:
+                log.error(f"Download exception: {exc}")
+    return paths
+
+
+def extract_batch(
+    fits_paths: list[str],
+    bands: list[str],
+    processed_dir: str,
+    start_idx: int,
+) -> list[dict]:
+    """Extract bands and metadata from FITS files, saving as .npy.
+
+    Args:
+        fits_paths: Paths to downloaded FITS files.
+        bands: Band names to extract and stack.
+        processed_dir: Output directory for ``.npy`` files.
+        start_idx: Starting index for galaxy file numbering.
+
+    Returns:
+        List of metadata dicts for successfully extracted galaxies.
+    """
+    records = []
+    success_count = 0
+    for fits_path in fits_paths:
+        try:
+            data, header = load_fits(fits_path, bands)
+        except Exception as exc:
+            log.warning(f"Failed to extract {fits_path}: {exc}")
+            continue
+
+        idx = start_idx + success_count
+        npy_name = f"galaxy_{idx:05d}.npy"
+        np.save(os.path.join(processed_dir, npy_name), data)
+
+        fits_name = os.path.splitext(os.path.basename(fits_path))[0]
+        # Sanitize header: stringify values, replace newlines/commas,
+        # drop empty keys, and prefix to avoid collisions with our fields.
+        safe_header = {
+            f"hdr_{k}": str(v).replace("\n", " ").replace(",", ";")
+            for k, v in header.items()
+            if k
+        }
+        record = {
+            "filename": npy_name,
+            "fits_name": fits_name,
+            "band_map": ",".join(bands),
+        }
+        record.update(safe_header)
+        records.append(record)
+        success_count += 1
+
+    return records
+
+
+def cleanup_batch(fits_paths: list[str]) -> None:
+    """Delete FITS files after extraction.
+
+    Args:
+        fits_paths: Paths to FITS files to delete.
+    """
+    for path in fits_paths:
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+
+
 @hydra.main(version_base=None, config_path="../../configs", config_name="config")
 def main(cfg: DictConfig):
     """Entry point: extract TNG URLs and download FITS files in parallel."""
