@@ -11,6 +11,9 @@ import logging
 import requests
 import itertools
 
+import numpy as np
+from astropy.io import fits
+
 from tqdm import tqdm
 from omegaconf import DictConfig, OmegaConf
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -20,6 +23,37 @@ log = logging.getLogger(__name__)
 OmegaConf.register_new_resolver(
     "generate_snapshot_ids", lambda start, count: [start + i for i in range(count)]
 )
+
+
+def load_fits(filename: str, bands: list[str]) -> tuple[np.ndarray, dict]:
+    """Load one or more bands from a multi-extension FITS file.
+
+    Args:
+        filename: Path to the FITS file.
+        bands: ``EXTNAME`` values to extract, in stacking order.
+
+    Returns:
+        Tuple of the stacked image array with shape ``(C, H, W)`` and
+        the FITS header dict from the first band's extension.
+
+    Raises:
+        ValueError: If any band in *bands* is not found in the file.
+    """
+    arrays = []
+    header = None
+    with fits.open(filename) as hdul:
+        for band in bands:
+            found = False
+            for hdu in hdul:
+                if hdu.header.get("EXTNAME", "").upper() == band.upper():
+                    arrays.append(hdu.data)
+                    if header is None:
+                        header = dict(hdu.header)
+                    found = True
+                    break
+            if not found:
+                raise ValueError(f"Band '{band}' not found in {filename}")
+    return np.stack(arrays, axis=0), header
 
 
 def extract_tng_urls(

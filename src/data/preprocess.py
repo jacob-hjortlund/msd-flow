@@ -1,7 +1,7 @@
 """Preprocessing pipeline for TNG50 galaxy images.
 
 Converts raw FITS surface-brightness maps to normalised tensors:
-``load_fits`` → ``surface_brightness_to_nanomaggies`` → ``clip_and_pad``
+``surface_brightness_to_nanomaggies`` → ``clip_and_pad``
 → ``arcsinh_stretch`` → ``np.clip`` → ``linear_normalize``.
 """
 
@@ -13,31 +13,7 @@ import numpy as np
 import astropy.units as u
 import astropy.cosmology as ap_cosmo
 
-from astropy.io import fits
 from omegaconf import DictConfig, OmegaConf
-
-# ------------------------------------ I/O ----------------------------------- #
-
-
-def load_fits(filename: str, band: str) -> tuple[np.ndarray, dict]:
-    """Load a single band from a multi-extension FITS file.
-
-    Args:
-        filename: Path to the FITS file.
-        band: ``EXTNAME`` value to match (e.g. ``'g'``).
-
-    Returns:
-        Tuple of the image data array and its FITS header.
-
-    Raises:
-        ValueError: If no extension matches *band*.
-    """
-    with fits.open(filename) as hdul:
-        for hdu in hdul:
-            if hdu.header.get("EXTNAME") == band:
-                return hdu.data, hdu.header
-    raise ValueError(f"Band '{band}' not found in {filename}")
-
 
 # ----------------------------- IMAGE TRANSFORMS ----------------------------- #
 

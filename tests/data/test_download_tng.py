@@ -1,9 +1,11 @@
 """Tests for src.data.download_tng."""
 
 import pytest
+import numpy as np
 from unittest.mock import patch, MagicMock
+from astropy.io import fits as astropy_fits
 
-from src.data.download_tng import download_tng_fits_file, extract_tng_urls, fits_name_from_url
+from src.data.download_tng import download_tng_fits_file, extract_tng_urls, fits_name_from_url, load_fits
 
 
 # ------------------------------ extract_tng_urls ----------------------------- #
@@ -106,3 +108,41 @@ def test_download_success(mock_get, tmp_path):
     result = download_tng_fits_file(url, str(tmp_path), headers={"api-key": "test"})
     expected_name = "snap_skirt_images_hsc_idealized_v0_72_subhalo_12345_image.fits"
     assert result == str(tmp_path / expected_name)
+
+
+# --------------------------------- load_fits -------------------------------- #
+
+
+@pytest.fixture
+def multi_band_fits(tmp_path):
+    """Create a multi-extension FITS file with g, r, i bands."""
+    hdul = astropy_fits.HDUList([astropy_fits.PrimaryHDU()])
+    for band in ["g", "r", "i"]:
+        data = np.random.default_rng(ord(band[0])).random((64, 64)).astype(np.float32)
+        hdu = astropy_fits.ImageHDU(data=data, name=band)
+        hdu.header["TESTKEY"] = f"value_{band}"
+        hdul.append(hdu)
+    path = tmp_path / "test.fits"
+    hdul.writeto(path)
+    return str(path)
+
+
+def test_load_fits_single_band(multi_band_fits):
+    """Verify loading a single band returns (1, H, W) array and header dict."""
+    data, header = load_fits(multi_band_fits, ["g"])
+    assert data.shape == (1, 64, 64)
+    assert header["TESTKEY"] == "value_g"
+
+
+def test_load_fits_multi_band_stacks_in_order(multi_band_fits):
+    """Verify multiple bands are stacked in the order given."""
+    data, header = load_fits(multi_band_fits, ["i", "g"])
+    assert data.shape == (2, 64, 64)
+    # Header should come from the first band in the list (i)
+    assert header["TESTKEY"] == "value_i"
+
+
+def test_load_fits_missing_band_raises(multi_band_fits):
+    """Verify ValueError is raised if a band is not found."""
+    with pytest.raises(ValueError, match="Band 'z' not found"):
+        load_fits(multi_band_fits, ["g", "z"])
