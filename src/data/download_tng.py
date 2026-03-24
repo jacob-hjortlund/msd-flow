@@ -63,9 +63,30 @@ def extract_tng_urls(
     return url_list
 
 
+def fits_name_from_url(url: str) -> str:
+    """Extract a unique FITS identifier from a TNG API URL.
+
+    Parses the URL path to build a name from the snapshot ID, subhalo ID,
+    and original filename (without extension). This is the single source
+    of truth for URL-to-filename mapping.
+
+    Args:
+        url: Full TNG API URL pointing to a FITS file.
+
+    Returns:
+        Identifier string, e.g. ``'snap_skirt_..._subhalo_12345_image'``.
+    """
+    url_parts = url.split("/")
+    snap_id = url_parts[6]
+    subhalo_id = url_parts[8]
+    original_filename = url_parts[-1]
+    name = f"snap_{snap_id}_subhalo_{subhalo_id}_{original_filename}"
+    return os.path.splitext(name)[0]
+
+
 def download_tng_fits_file(
     url: str, save_dir: str, headers: dict, max_retries: int = 4, timeout_base: int = 3
-) -> str:
+) -> str | None:
     """Download a single TNG FITS file with exponential-backoff retry.
 
     Args:
@@ -76,19 +97,14 @@ def download_tng_fits_file(
         timeout_base: Base for exponential back-off (sleep = ``base ** attempt``).
 
     Returns:
-        Status string indicating success or failure.
+        Path to the downloaded file on success, or ``None`` on failure.
     """
-
-    url_parts = url.split("/")
-    snap_id = url_parts[6]
-    subhalo_id = url_parts[8]
-    original_filename = url_parts[-1]
-
-    unique_filename = f"snap_{snap_id}_subhalo_{subhalo_id}_{original_filename}"
+    fits_name = fits_name_from_url(url)
+    unique_filename = fits_name + ".fits"
     save_path = os.path.join(save_dir, unique_filename)
 
     if os.path.exists(save_path):
-        return f"Already exists: {unique_filename}"
+        return save_path
 
     for attempt in range(max_retries):
         try:
@@ -111,7 +127,7 @@ def download_tng_fits_file(
                         if chunk:
                             f.write(chunk)
 
-            return f"Successfully downloaded: {unique_filename}"
+            return save_path
 
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
             sleep_time = timeout_base**attempt
@@ -120,9 +136,11 @@ def download_tng_fits_file(
             )
             time.sleep(sleep_time)
         except requests.exceptions.RequestException as e:
-            return f"Failed to download {unique_filename} (Attempt {attempt+1}): {e}"
+            log.error(f"Failed to download {unique_filename} (Attempt {attempt+1}): {e}")
+            return None
 
-    return f"Failed completely after {max_retries} attempts: {unique_filename}"
+    log.error(f"Failed completely after {max_retries} attempts: {unique_filename}")
+    return None
 
 
 @hydra.main(version_base=None, config_path="../../configs", config_name="config")
@@ -156,9 +174,9 @@ def main(cfg: DictConfig):
             try:
                 result = future.result()
 
-                if "Failed" in result:
-                    tqdm.write(f"ERROR: {result}")
-                    log.error(result)
+                if result is None:
+                    url = future_to_url[future]
+                    tqdm.write(f"ERROR: Failed to download {url}")
 
             except Exception as exc:
                 tqdm.write(f"EXCEPTION: {exc}")
