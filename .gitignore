@@ -4,3 +4,4 @@ flake.*
 _tmp.py
 /data
 /outputs
+__pycache__/
