@@ -4,3 +4,6 @@ snapshots: ${generate_snapshot_ids:72,20}
 num_files_per_view: 50
 max_workers: 5
 raw_dir: "${hydra:runtime.cwd}/data/raw"
+bands: ["g"]
+batch_size: 100
+processed_dir: "${hydra:runtime.cwd}/data/processed/g_band"

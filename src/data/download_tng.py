@@ -334,44 +334,52 @@ def cleanup_batch(fits_paths: list[str]) -> None:
 
 @hydra.main(version_base=None, config_path="../../configs", config_name="config")
 def main(cfg: DictConfig):
-    """Entry point: extract TNG URLs and download FITS files in parallel."""
+    """Entry point: download TNG FITS in batches, extract bands, and clean up."""
 
     dl_cfg = cfg.data.download
     os.makedirs(dl_cfg.raw_dir, exist_ok=True)
+    os.makedirs(dl_cfg.processed_dir, exist_ok=True)
     headers = {"api-key": dl_cfg.api_key}
 
-    log.info("Starting extraction of TNG URLs...")
+    log.info("Extracting TNG URLs...")
     urls = extract_tng_urls(
         version_ids=dl_cfg.version_ids,
         snap_ids=dl_cfg.snapshots,
         headers=headers,
         N=dl_cfg.num_files_per_view,
     )
+    log.info(f"Found {len(urls)} total URLs.")
 
-    log.info(f"Extracted {len(urls)} URLs. Beginning download via thread pool...")
-    with ThreadPoolExecutor(max_workers=dl_cfg.max_workers) as executor:
-        future_to_url = {
-            executor.submit(download_tng_fits_file, url, dl_cfg.raw_dir, headers): url
-            for url in urls
-        }
+    existing_ids = get_existing_ids(dl_cfg.processed_dir)
+    log.info(f"Resuming: {len(existing_ids)} galaxies already processed.")
 
-        progress_bar = tqdm(
-            as_completed(future_to_url), total=len(urls), desc="Downloading FITS files"
-        )
+    remaining_urls = [
+        url for url in urls if fits_name_from_url(url) not in existing_ids
+    ]
+    log.info(f"{len(remaining_urls)} URLs remaining after resumption filter.")
 
-        for future in progress_bar:
-            try:
-                result = future.result()
+    batch_size = dl_cfg.batch_size
+    num_batches = (len(remaining_urls) + batch_size - 1) // batch_size
+    start_idx = len(existing_ids)
 
-                if result is None:
-                    url = future_to_url[future]
-                    tqdm.write(f"ERROR: Failed to download {url}")
+    for batch_num in range(num_batches):
+        batch_start = batch_num * batch_size
+        batch_urls = remaining_urls[batch_start : batch_start + batch_size]
+        log.info(f"Batch {batch_num + 1}/{num_batches}: downloading {len(batch_urls)} files...")
 
-            except Exception as exc:
-                tqdm.write(f"EXCEPTION: {exc}")
-                log.error(f"Generated an exception: {exc}")
+        paths = download_batch(batch_urls, dl_cfg.raw_dir, headers, dl_cfg.max_workers)
+        log.info(f"Downloaded {len(paths)}/{len(batch_urls)} files.")
 
-    log.info("Download process complete.")
+        records = extract_batch(paths, list(dl_cfg.bands), dl_cfg.processed_dir, start_idx)
+        log.info(f"Extracted {len(records)} galaxies.")
+
+        if records:
+            save_metadata(records, dl_cfg.processed_dir)
+
+        cleanup_batch(paths)
+        start_idx += len(records)
+
+    log.info("Pipeline complete.")
 
 
 if __name__ == "__main__":
