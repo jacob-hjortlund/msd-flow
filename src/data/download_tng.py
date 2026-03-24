@@ -102,6 +102,7 @@ def download_tng_fits_file(
     fits_name = fits_name_from_url(url)
     unique_filename = fits_name + ".fits"
     save_path = os.path.join(save_dir, unique_filename)
+    part_path = save_path + ".part"
 
     if os.path.exists(save_path):
         return save_path
@@ -122,23 +123,30 @@ def download_tng_fits_file(
 
                 response.raise_for_status()
 
-                with open(save_path, "wb") as f:
+                with open(part_path, "wb") as f:
                     for chunk in response.iter_content(chunk_size=8192):
                         if chunk:
                             f.write(chunk)
 
+            os.rename(part_path, save_path)
             return save_path
 
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            if os.path.exists(part_path):
+                os.remove(part_path)
             sleep_time = timeout_base**attempt
             log.warning(
                 f"Connection dropped for {unique_filename}. Retrying in {sleep_time}s..."
             )
             time.sleep(sleep_time)
         except requests.exceptions.RequestException as e:
+            if os.path.exists(part_path):
+                os.remove(part_path)
             log.error(f"Failed to download {unique_filename} (Attempt {attempt+1}): {e}")
             return None
 
+    if os.path.exists(part_path):
+        os.remove(part_path)
     log.error(f"Failed completely after {max_retries} attempts: {unique_filename}")
     return None
 

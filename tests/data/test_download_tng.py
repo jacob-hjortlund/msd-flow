@@ -1,6 +1,5 @@
 """Tests for src.data.download_tng."""
 
-import os
 import pytest
 from unittest.mock import patch, MagicMock
 
