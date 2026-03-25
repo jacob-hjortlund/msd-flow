@@ -149,3 +149,70 @@ class LinearNormalize:
             Array in ``[norm_min, norm_max]``, same shape as input.
         """
         return img * (self.norm_max - self.norm_min) + self.norm_min
+
+
+class RandomHorizontalFlip:
+    """Randomly flip image horizontally.
+
+    Args:
+        p: Probability of flipping.
+    """
+
+    def __init__(self, p: float = 0.5):
+        self.p = p
+
+    def __call__(self, img: np.ndarray) -> np.ndarray:
+        """Apply random horizontal flip along the last axis.
+
+        Args:
+            img: ``(C, H, W)`` array.
+
+        Returns:
+            Possibly flipped array, same shape as input.
+        """
+        if np.random.random() < self.p:
+            return np.ascontiguousarray(np.flip(img, axis=-1))
+        return img
+
+
+class RandomVerticalFlip:
+    """Randomly flip image vertically.
+
+    Args:
+        p: Probability of flipping.
+    """
+
+    def __init__(self, p: float = 0.5):
+        self.p = p
+
+    def __call__(self, img: np.ndarray) -> np.ndarray:
+        """Apply random vertical flip along the second-to-last axis.
+
+        Args:
+            img: ``(C, H, W)`` array.
+
+        Returns:
+            Possibly flipped array, same shape as input.
+        """
+        if np.random.random() < self.p:
+            return np.ascontiguousarray(np.flip(img, axis=-2))
+        return img
+
+
+class RandomRotation90:
+    """Randomly apply 0, 1, 2, or 3 quarter-turns (90-degree rotations).
+
+    All four outcomes are equally likely.
+    """
+
+    def __call__(self, img: np.ndarray) -> np.ndarray:
+        """Apply random 90-degree rotation on spatial axes.
+
+        Args:
+            img: ``(C, H, W)`` array.
+
+        Returns:
+            Rotated array, same shape as input.
+        """
+        k = np.random.randint(4)
+        return np.ascontiguousarray(np.rot90(img, k=k, axes=(-2, -1)))

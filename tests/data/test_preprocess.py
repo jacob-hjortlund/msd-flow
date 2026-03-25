@@ -3,11 +3,16 @@
 import numpy as np
 import pytest
 
+from torchvision.transforms import Compose
+
 from src.data.preprocess import (
     ArcsinhStretch,
     ClipAndPad,
     LinearNormalize,
     PercentileClip,
+    RandomHorizontalFlip,
+    RandomRotation90,
+    RandomVerticalFlip,
     SurfaceBrightnessToNanomaggies,
 )
 
@@ -188,3 +193,107 @@ class TestLinearNormalize:
         img = np.array([[[0.0, 1.0]]])
         out = t(img)
         np.testing.assert_allclose(out, [[[-1.0, 1.0]]])
+
+
+class TestRandomHorizontalFlip:
+    """Tests for RandomHorizontalFlip transform."""
+
+    def test_preserves_shape(self):
+        """Verify output shape matches input."""
+        t = RandomHorizontalFlip(p=0.5)
+        img = np.ones((1, 64, 64))
+        out = t(img)
+        assert out.shape == (1, 64, 64)
+
+    def test_deterministic_when_p_one(self):
+        """Verify always flips when p=1."""
+        t = RandomHorizontalFlip(p=1.0)
+        img = np.arange(4).reshape(1, 2, 2).astype(float)
+        out = t(img)
+        expected = np.flip(img, axis=-1)
+        np.testing.assert_array_equal(out, expected)
+
+    def test_no_flip_when_p_zero(self):
+        """Verify never flips when p=0."""
+        t = RandomHorizontalFlip(p=0.0)
+        img = np.arange(4).reshape(1, 2, 2).astype(float)
+        out = t(img)
+        np.testing.assert_array_equal(out, img)
+
+
+class TestRandomVerticalFlip:
+    """Tests for RandomVerticalFlip transform."""
+
+    def test_preserves_shape(self):
+        """Verify output shape matches input."""
+        t = RandomVerticalFlip(p=0.5)
+        img = np.ones((1, 64, 64))
+        out = t(img)
+        assert out.shape == (1, 64, 64)
+
+    def test_deterministic_when_p_one(self):
+        """Verify always flips when p=1."""
+        t = RandomVerticalFlip(p=1.0)
+        img = np.arange(4).reshape(1, 2, 2).astype(float)
+        out = t(img)
+        expected = np.flip(img, axis=-2)
+        np.testing.assert_array_equal(out, expected)
+
+    def test_no_flip_when_p_zero(self):
+        """Verify never flips when p=0."""
+        t = RandomVerticalFlip(p=0.0)
+        img = np.arange(4).reshape(1, 2, 2).astype(float)
+        out = t(img)
+        np.testing.assert_array_equal(out, img)
+
+
+class TestRandomRotation90:
+    """Tests for RandomRotation90 transform."""
+
+    def test_preserves_shape(self):
+        """Verify output shape matches input."""
+        t = RandomRotation90()
+        img = np.ones((1, 64, 64))
+        out = t(img)
+        assert out.shape == (1, 64, 64)
+
+    def test_stochastic_behavior(self):
+        """Verify not all outputs are identical over many calls."""
+        t = RandomRotation90()
+        img = np.arange(16).reshape(1, 4, 4).astype(float)
+        outputs = [t(img).tobytes() for _ in range(20)]
+        assert len(set(outputs)) > 1
+
+    def test_output_is_valid_rotation(self):
+        """Verify output matches one of the four 90-degree rotations."""
+        t = RandomRotation90()
+        img = np.arange(16).reshape(1, 4, 4).astype(float)
+        valid = [
+            np.rot90(img, k=k, axes=(-2, -1)).tobytes() for k in range(4)
+        ]
+        for _ in range(10):
+            out = t(img)
+            assert out.tobytes() in valid
+
+
+class TestComposeEndToEnd:
+    """End-to-end test for the full transform pipeline."""
+
+    def test_full_pipeline_shape_and_range(self):
+        """Verify the full pipeline produces correct shape and range."""
+        pipeline = Compose([
+            SurfaceBrightnessToNanomaggies(),
+            ClipAndPad(n=128),
+            ArcsinhStretch(scale=1.0),
+            PercentileClip(percentile=99.0),
+            LinearNormalize(norm_min=-1.0, norm_max=1.0),
+            RandomHorizontalFlip(p=0.5),
+            RandomVerticalFlip(p=0.5),
+            RandomRotation90(),
+        ])
+        # Synthetic surface-brightness image
+        img = np.full((1, 100, 100), 22.0)
+        out = pipeline(img)
+        assert out.shape == (1, 128, 128)
+        assert out.min() >= -1.0 - 1e-7
+        assert out.max() <= 1.0 + 1e-7
