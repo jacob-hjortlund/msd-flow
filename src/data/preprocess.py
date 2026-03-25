@@ -1,131 +1,96 @@
-"""Preprocessing pipeline for TNG50 galaxy images.
+"""Preprocessing transforms for TNG50 galaxy images.
 
-Converts raw FITS surface-brightness maps to normalised tensors:
-``surface_brightness_to_nanomaggies`` → ``clip_and_pad``
-→ ``arcsinh_stretch`` → ``np.clip`` → ``linear_normalize``.
+Each transform is a callable class with ``__init__`` for parameters and
+``__call__(img)`` operating on ``(C, H, W)`` NumPy arrays. Compose via
+``torchvision.transforms.Compose``.
 """
 
-import hydra
-import logging
-import astropy
-
 import numpy as np
-import astropy.units as u
-import astropy.cosmology as ap_cosmo
-
-from omegaconf import DictConfig, OmegaConf
-
-# ----------------------------- IMAGE TRANSFORMS ----------------------------- #
 
 
-def clip_and_pad(img: np.ndarray, n: int = 512) -> np.ndarray:
-    """Pad an image to at least *n x n*, then centre-crop to exactly *n x n*.
+class SurfaceBrightnessToNanomaggies:
+    """Convert surface-brightness (AB mag/pixel) to nanomaggies.
 
     Args:
-        img: 2-D image array.
-        n: Target side length in pixels.
-
-    Returns:
-        Centre-cropped array of shape ``(n, n)``.
+        mag_threshold: Pixels fainter than this value are zeroed.
     """
-    y_len, x_len = img.shape
-    pad_y = max(0, n - y_len)
-    pad_x = max(0, n - x_len)
 
-    if pad_y > 0 or pad_x > 0:
-        top, left = pad_y // 2, pad_x // 2
-        img = np.pad(
-            img,
-            ((top, pad_y - top), (left, pad_x - left)),
-            mode="constant",
-            constant_values=0,
+    def __init__(self, mag_threshold: float = 99.0):
+        self.mag_threshold = mag_threshold
+
+    def __call__(self, img: np.ndarray) -> np.ndarray:
+        """Apply flux conversion.
+
+        Args:
+            img: ``(C, H, W)`` surface-brightness array.
+
+        Returns:
+            Flux array in nanomaggies, same shape as input.
+        """
+        return np.where(
+            img < self.mag_threshold, 10.0 ** (0.4 * (22.5 - img)), 0.0
         )
 
-    cy, cx = img.shape[0] // 2, img.shape[1] // 2
-    half = n // 2
-    return img[cy - half : cy + half, cx - half : cx + half]
 
+class ClipAndPad:
+    """Pad image to at least *n x n*, then centre-crop to exactly *n x n*.
 
-def surface_brightness_to_nanomaggies(
-    image: np.ndarray,
-    mag_threshold: float = 99.0,
-) -> np.ndarray:
-    """Convert a surface-brightness image (AB mag / pixel) to nanomaggies.
+    Operates on the last two (spatial) axes of a ``(C, H, W)`` array.
 
     Args:
-        image: Surface-brightness array in AB magnitudes per pixel.
-        mag_threshold: Pixels fainter than this value are zeroed.
-
-    Returns:
-        Flux array in nanomaggies.
+        n: Target side length in pixels.
     """
-    flux = np.where(image < mag_threshold, 10.0 ** (0.4 * (22.5 - image)), 0.0)
-    return flux
+
+    def __init__(self, n: int = 512):
+        self.n = n
+
+    def __call__(self, img: np.ndarray) -> np.ndarray:
+        """Apply pad and crop.
+
+        Args:
+            img: ``(C, H, W)`` array.
+
+        Returns:
+            Array of shape ``(C, n, n)``.
+        """
+        n = self.n
+        h, w = img.shape[-2], img.shape[-1]
+        pad_h = max(0, n - h)
+        pad_w = max(0, n - w)
+
+        if pad_h > 0 or pad_w > 0:
+            top, left = pad_h // 2, pad_w // 2
+            pad_widths = [(0, 0)] * (img.ndim - 2) + [
+                (top, pad_h - top),
+                (left, pad_w - left),
+            ]
+            img = np.pad(img, pad_widths, mode="constant", constant_values=0)
+
+        cy, cx = img.shape[-2] // 2, img.shape[-1] // 2
+        half = n // 2
+        return img[..., cy - half : cy + half, cx - half : cx + half]
 
 
-def arcsinh_stretch(imgs: np.ndarray, a: float) -> np.ndarray:
-    """Apply an arcsinh stretch to compress dynamic range.
+class ArcsinhStretch:
+    """Apply arcsinh stretch to compress dynamic range.
+
+    Computes ``arcsinh(img / scale)``. The ``scale`` parameter corresponds
+    to the ``a`` parameter in the former ``arcsinh_stretch`` free function.
 
     Args:
-        imgs: Input array (any shape).
-        a: Softening parameter controlling the stretch.
-
-    Returns:
-        Stretched array with the same shape as *imgs*.
-    """
-    return np.arcsinh(imgs / a)
-
-
-def linear_normalize(
-    data: np.ndarray, data_min: float, data_max: float, norm_min: float, norm_max: float
-) -> np.ndarray:
-    """Linearly map data from ``[data_min, data_max]`` to ``[norm_min, norm_max]``.
-
-    Args:
-        data: Input array.
-        data_min: Minimum of the input range.
-        data_max: Maximum of the input range.
-        norm_min: Minimum of the target range.
-        norm_max: Maximum of the target range.
-
-    Returns:
-        Rescaled array.
+        scale: Softening parameter controlling the stretch.
     """
 
-    norm_range = norm_max - norm_min
-    data_fraction = (data - data_min) / (data_max - data_min)
+    def __init__(self, scale: float = 1.0):
+        self.scale = scale
 
-    return norm_range * data_fraction + norm_min
+    def __call__(self, img: np.ndarray) -> np.ndarray:
+        """Apply arcsinh stretch.
 
+        Args:
+            img: ``(C, H, W)`` array.
 
-def preprocess_image(
-    img: np.ndarray,
-    percentile: float,
-    norm_range: tuple[float],
-    stretch_scale: float = 1,
-):
-    """Run the full preprocessing pipeline on a single image.
-
-    Applies flux conversion, padding/cropping, arcsinh stretch,
-    percentile clipping, and linear normalisation.
-
-    Args:
-        img: Raw surface-brightness image (AB mag / pixel).
-        percentile: Percentile used for clipping after stretch.
-        norm_range: ``(min, max)`` target range for normalisation.
-        stretch_scale: Softening parameter for ``arcsinh_stretch``.
-
-    Returns:
-        Preprocessed image array of shape ``(512, 512)``.
-    """
-
-    img = surface_brightness_to_nanomaggies(img)
-    img = clip_and_pad(img)
-    img = arcsinh_stretch(img, a=stretch_scale)
-    imgp = np.percentile(img, percentile)
-    img = np.clip(img / imgp, 0, 1.0)
-    img = linear_normalize(
-        img, img.min(), img.max(), norm_min=norm_range[0], norm_max=norm_range[1]
-    )
-
-    return img
+        Returns:
+            Stretched array, same shape as input.
+        """
+        return np.arcsinh(img / self.scale)
