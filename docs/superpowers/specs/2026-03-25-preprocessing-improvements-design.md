@@ -39,7 +39,8 @@ New module `src/data/split.py` with function `assign_splits()`:
   ratios (default: 90/5/5).
 - Writes the `split` column back to `metadata.csv`. Overwrites any existing
   `split` column so re-running is safe.
-- Runnable via `python -m src.data.split_dataset` with Hydra config.
+- Hydra `main()` entrypoint in `split.py`, runnable via
+  `python -m src.data.split` (following the `download_tng.py` pattern).
 
 New config `configs/data/split.yaml`:
 
@@ -52,7 +53,8 @@ ratios:
   test: 0.05
 ```
 
-Added to `configs/config.yaml` defaults as `data@data.split: split`.
+Added to `configs/config.yaml` defaults, inserted before `_self_` and after the
+existing `data@` entries: `data@data.split: split`.
 
 ### 2. TNG50Dataset Split Filtering
 
@@ -79,8 +81,8 @@ are derived from training data only.
 ### 4. PDFNorm Fixes
 
 - Add Google-style docstring.
-- Add zero-guard: if `np.sum(img) == 0`, return image unchanged (same pattern
-  as `PercentileClip`).
+- Add zero-guard: if `np.sum(img) < 1e-30`, return image unchanged (tolerance
+  avoids numerical explosion from near-zero sums).
 
 ### 5. Alternative Transform Docstrings
 
@@ -104,6 +106,10 @@ active pipeline (replaced by `PDFNorm` + `GlobalNorm`).
 All three datasets point to the same `processed_dir`, differentiated by
 the `split` parameter.
 
+Note: val/test datasets are defined in config only. The training loop
+(`trainer.py`) is not modified in this change — validation loss logging is a
+future task.
+
 ### 7. Test Updates
 
 - New tests for `PDFNorm` (known values, zero-guard, shape preservation).
@@ -120,8 +126,7 @@ the `split` parameter.
 
 | File | Change |
 |------|--------|
-| `src/data/split.py` | New: `assign_splits()` + Hydra entrypoint |
-| `src/data/split_dataset.py` | New: `__main__` entrypoint for `python -m` |
+| `src/data/split.py` | New: `assign_splits()` + Hydra `main()` entrypoint |
 | `src/data/dataset.py` | Add `split` parameter to `TNG50Dataset` |
 | `src/data/preprocess.py` | `split` param on ArcsinhStretch/GlobalNorm; PDFNorm docstring + zero-guard; alternative transform docstring notes |
 | `configs/data/split.yaml` | New split config |
