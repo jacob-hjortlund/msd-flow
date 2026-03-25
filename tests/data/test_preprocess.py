@@ -3,7 +3,13 @@
 import numpy as np
 import pytest
 
-from src.data.preprocess import ArcsinhStretch, ClipAndPad, SurfaceBrightnessToNanomaggies
+from src.data.preprocess import (
+    ArcsinhStretch,
+    ClipAndPad,
+    LinearNormalize,
+    PercentileClip,
+    SurfaceBrightnessToNanomaggies,
+)
 
 
 class TestSurfaceBrightnessToNanomaggies:
@@ -114,3 +120,71 @@ class TestArcsinhStretch:
         img = np.array([[[5.0]]])
         out = t(img)
         np.testing.assert_allclose(out, np.arcsinh(img / 1.0))
+
+
+class TestPercentileClip:
+    """Tests for PercentileClip transform."""
+
+    def test_output_clipped_to_zero_one(self):
+        """Verify output is in [0, 1]."""
+        t = PercentileClip(percentile=99.0)
+        rng = np.random.default_rng(42)
+        img = rng.uniform(0, 100, size=(1, 64, 64))
+        out = t(img)
+        assert out.min() >= 0.0
+        assert out.max() <= 1.0
+
+    def test_preserves_shape(self):
+        """Verify output shape matches input."""
+        t = PercentileClip(percentile=99.0)
+        img = np.ones((3, 32, 32))
+        out = t(img)
+        assert out.shape == (3, 32, 32)
+
+    def test_all_zero_image_no_division_by_zero(self):
+        """Verify all-zero image returns all zeros without error."""
+        t = PercentileClip(percentile=99.0)
+        img = np.zeros((1, 64, 64))
+        out = t(img)
+        np.testing.assert_array_equal(out, 0.0)
+
+    def test_percentile_computation(self):
+        """Verify division by percentile value."""
+        t = PercentileClip(percentile=100.0)
+        img = np.array([[[1.0, 2.0, 3.0, 4.0, 5.0]]])
+        out = t(img)
+        # 100th percentile is 5.0; result is img / 5.0 clipped to [0, 1]
+        expected = np.array([[[0.2, 0.4, 0.6, 0.8, 1.0]]])
+        np.testing.assert_allclose(out, expected)
+
+
+class TestLinearNormalize:
+    """Tests for LinearNormalize transform."""
+
+    def test_maps_zero_one_to_target_range(self):
+        """Verify [0, 1] maps to [norm_min, norm_max]."""
+        t = LinearNormalize(norm_min=-1.0, norm_max=1.0)
+        img = np.array([[[0.0, 0.5, 1.0]]])
+        out = t(img)
+        np.testing.assert_allclose(out, [[[-1.0, 0.0, 1.0]]])
+
+    def test_custom_range(self):
+        """Verify mapping to custom range."""
+        t = LinearNormalize(norm_min=0.0, norm_max=10.0)
+        img = np.array([[[0.0, 0.5, 1.0]]])
+        out = t(img)
+        np.testing.assert_allclose(out, [[[0.0, 5.0, 10.0]]])
+
+    def test_preserves_shape(self):
+        """Verify output shape matches input."""
+        t = LinearNormalize(norm_min=-1.0, norm_max=1.0)
+        img = np.ones((3, 32, 32)) * 0.5
+        out = t(img)
+        assert out.shape == (3, 32, 32)
+
+    def test_default_range_is_neg1_to_1(self):
+        """Verify default range is [-1, 1]."""
+        t = LinearNormalize()
+        img = np.array([[[0.0, 1.0]]])
+        out = t(img)
+        np.testing.assert_allclose(out, [[[-1.0, 1.0]]])

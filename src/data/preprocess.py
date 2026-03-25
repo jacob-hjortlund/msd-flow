@@ -94,3 +94,58 @@ class ArcsinhStretch:
             Stretched array, same shape as input.
         """
         return np.arcsinh(img / self.scale)
+
+
+class PercentileClip:
+    """Clip image intensity by percentile value and normalize to [0, 1].
+
+    Computes the given percentile, divides the image by it, and clips
+    to ``[0, 1]``. If the percentile value is zero (e.g., all-zero image),
+    the image is returned unchanged.
+
+    Args:
+        percentile: Percentile value used for normalization.
+    """
+
+    def __init__(self, percentile: float = 99.0):
+        self.percentile = percentile
+
+    def __call__(self, img: np.ndarray) -> np.ndarray:
+        """Apply percentile clipping.
+
+        Args:
+            img: ``(C, H, W)`` array.
+
+        Returns:
+            Array clipped to ``[0, 1]``, same shape as input.
+        """
+        pval = np.percentile(img, self.percentile)
+        if pval == 0:
+            return img
+        return np.clip(img / pval, 0.0, 1.0)
+
+
+class LinearNormalize:
+    """Linearly map from [0, 1] to [norm_min, norm_max].
+
+    Input is assumed to be in ``[0, 1]`` (guaranteed by ``PercentileClip``).
+
+    Args:
+        norm_min: Minimum of the target range.
+        norm_max: Maximum of the target range.
+    """
+
+    def __init__(self, norm_min: float = -1.0, norm_max: float = 1.0):
+        self.norm_min = norm_min
+        self.norm_max = norm_max
+
+    def __call__(self, img: np.ndarray) -> np.ndarray:
+        """Apply linear normalization.
+
+        Args:
+            img: ``(C, H, W)`` array in ``[0, 1]``.
+
+        Returns:
+            Array in ``[norm_min, norm_max]``, same shape as input.
+        """
+        return img * (self.norm_max - self.norm_min) + self.norm_min
