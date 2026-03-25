@@ -67,13 +67,10 @@ class TNG50Dataset(Dataset):
         if self.metadata_columns is None:
             return img_tensor, torch.empty(0)
 
-        meta = (
-            self.metadata.iloc[idx][self.metadata_columns]
-            .values.astype(np.float32)
-        )
-        meta_tensor = torch.from_numpy(meta)
-
+        meta = self.metadata.iloc[idx][self.metadata_columns].values.astype(np.float32)
         if self.metadata_transform is not None:
-            meta_tensor = self.metadata_transform(meta_tensor)
+            meta = self.metadata_transform(meta)
+
+        meta_tensor = torch.from_numpy(meta)
 
         return img_tensor, meta_tensor
