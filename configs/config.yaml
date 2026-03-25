@@ -1,6 +1,6 @@
 defaults:
   - data@data.download: download
-  - data@data.preprocess: preprocess
+  - data@data.dataset: dataset
   - model@model: unet
   - flow@flow.otfm: otfm
   - flow@flow.sample: sample
