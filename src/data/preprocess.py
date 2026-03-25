@@ -5,7 +5,12 @@ Each transform is a callable class with ``__init__`` for parameters and
 ``torchvision.transforms.Compose``.
 """
 
+import os
+import json
 import numpy as np
+import pandas as pd
+from tqdm import tqdm
+from fastdigest import TDigest
 
 
 class SurfaceBrightnessToNanomaggies:
@@ -27,9 +32,7 @@ class SurfaceBrightnessToNanomaggies:
         Returns:
             Flux array in nanomaggies, same shape as input.
         """
-        return np.where(
-            img < self.mag_threshold, 10.0 ** (0.4 * (22.5 - img)), 0.0
-        )
+        return np.where(img < self.mag_threshold, 10.0 ** (0.4 * (22.5 - img)), 0.0)
 
 
 class ClipAndPad:
@@ -71,6 +74,16 @@ class ClipAndPad:
         return img[..., cy - half : cy + half, cx - half : cx + half]
 
 
+class PDFNorm:
+    def __init__(self):
+        pass
+
+    def __call__(self, img: np.ndarray) -> np.ndarray:
+
+        total = np.sum(img)
+        return img / total
+
+
 class ArcsinhStretch:
     """Apply arcsinh stretch to compress dynamic range.
 
@@ -81,8 +94,66 @@ class ArcsinhStretch:
         scale: Softening parameter controlling the stretch.
     """
 
-    def __init__(self, scale: float = 1.0):
-        self.scale = scale
+    def __init__(
+        self,
+        scale: float | None = 1,
+        transforms=None,
+        percentile=None,
+        data_dir: str = None,
+    ):
+        use_percentile = (percentile is not None) and (data_dir is not None)
+        use_scale = scale is not None
+
+        if (not use_percentile and not use_scale) or (use_percentile and use_scale):
+            raise ValueError(
+                "Must use either a provided scale or a provided percentile and dataset. "
+                + "You have provided:\n"
+                + f"   - scale: {scale}\n"
+                + f"   - percentile: {percentile}\n"
+                + f"   - data_dir: {data_dir}"
+            )
+
+        if transforms is None:
+            transforms = lambda x: x
+        self.transforms = transforms
+        self.percentile = percentile
+        self.data_dir = data_dir
+
+        if use_scale:
+            self.scale = scale
+
+        if use_percentile:
+
+            tdigest_path = os.path.join(data_dir, "arcsinh_tdigest.json")
+
+            if os.path.isfile(tdigest_path):
+                with open(tdigest_path, "r") as fp:
+                    digest_dict = json.load(fp)
+                digest = TDigest.from_dict(digest_dict)
+            else:
+                digest = self._build_tdigest()
+                digest_dict = digest.to_dict()
+                with open(tdigest_path, "w") as fp:
+                    json.dump(digest_dict, fp, indent=2)
+
+            self.scale = digest.percentile(self.percentile)
+
+    def _build_tdigest(self):
+
+        csv_path = os.path.join(self.data_dir, "metadata.csv")
+        metadata = pd.read_csv(csv_path)
+        filenames = metadata["filename"].tolist()
+
+        digest = TDigest()
+
+        for fn in tqdm(filenames):
+            path = os.path.join(self.data_dir, fn)
+            img = np.load(path)
+            img = self.transforms(img)
+            non_zero = img[img > 0]
+            digest.batch_update(non_zero)
+
+        return digest
 
     def __call__(self, img: np.ndarray) -> np.ndarray:
         """Apply arcsinh stretch.
@@ -94,6 +165,93 @@ class ArcsinhStretch:
             Stretched array, same shape as input.
         """
         return np.arcsinh(img / self.scale)
+
+
+class GlobalNorm:
+    """Linearly map a dataset from a global [min, max] to [norm_min, norm_max].
+
+    This preserves relative concentration across the dataset while ensuring
+    the output fits within a stable range (e.g., [-1, 1]) for generative
+    training. Because the scale factors are global constants, this operation
+    is perfectly mathematically invertible.
+    """
+
+    def __init__(
+        self,
+        global_min: float | None = None,
+        global_max: float | None = None,
+        norm_min: float = -1.0,
+        norm_max: float = 1.0,
+        transforms=None,
+        percentile=None,
+        data_dir: str = None,
+    ):
+
+        if transforms is None:
+            transforms = lambda x: x
+        self.transforms = transforms
+        self.data_dir = data_dir
+
+        self.norm_min = norm_min
+        self.norm_max = norm_max
+
+        global_value_not_set = (global_min is None) or (global_max is None)
+
+        if global_value_not_set:
+
+            tdigest_path = os.path.join(
+                data_dir, f"global_norm_tdigest_{percentile:0f}.json"
+            )
+
+            if os.path.isfile(tdigest_path):
+                with open(tdigest_path, "r") as fp:
+                    digest_dict = json.load(fp)
+                digest = TDigest.from_dict(digest_dict)
+            else:
+                digest = self._build_tdigest()
+                digest_dict = digest.to_dict()
+                with open(tdigest_path, "w") as fp:
+                    json.dump(digest_dict, fp, indent=2)
+
+            if global_min is None:
+                global_min = digest.min()
+
+            if global_max is None:
+                global_max = digest.max()
+
+        self.global_min = global_min
+        self.global_max = global_max
+
+    def _build_tdigest(self):
+
+        csv_path = os.path.join(self.data_dir, "metadata.csv")
+        metadata = pd.read_csv(csv_path)
+        filenames = metadata["filename"].tolist()
+
+        digest = TDigest()
+
+        for fn in tqdm(filenames):
+            path = os.path.join(self.data_dir, fn)
+            img = np.load(path)
+            img = self.transforms(img)
+            digest.batch_update(img.flatten())
+
+        return digest
+
+    def __call__(self, img: np.ndarray) -> np.ndarray:
+        """Apply global linear normalization.
+
+        Args:
+            img: ``(C, H, W)`` array.
+
+        Returns:
+            Array mapped to ``[norm_min, norm_max]``, same shape as input.
+        """
+        # Scale to [0, 1] using global bounds
+        img_norm = (img - self.global_min) / (self.global_max - self.global_min)
+
+        # Scale to [norm_min, norm_max]
+        return img_norm * (self.norm_max - self.norm_min) + self.norm_min
 
 
 class PercentileClip:
