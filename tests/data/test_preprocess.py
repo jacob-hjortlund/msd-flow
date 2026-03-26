@@ -412,16 +412,16 @@ class TestRandomRotation90:
 
 
 class TestComposeEndToEnd:
-    """End-to-end test for the full transform pipeline."""
+    """End-to-end test for the active transform pipeline."""
 
     def test_full_pipeline_shape_and_range(self):
-        """Verify the full pipeline produces correct shape and range."""
+        """Verify the active pipeline produces correct shape and range."""
         pipeline = Compose([
             SurfaceBrightnessToNanomaggies(),
             ClipAndPad(n=128),
+            PDFNorm(),
             ArcsinhStretch(scale=1.0),
-            PercentileClip(percentile=99.0),
-            LinearNormalize(norm_min=-1.0, norm_max=1.0),
+            GlobalNorm(global_min=0.0, global_max=1.0, norm_min=-1.0, norm_max=1.0),
             RandomHorizontalFlip(p=0.5),
             RandomVerticalFlip(p=0.5),
             RandomRotation90(),
