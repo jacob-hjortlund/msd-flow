@@ -115,6 +115,7 @@ class ArcsinhStretch:
         transforms=None,
         percentile=None,
         data_dir: str = None,
+        split: str | None = "train",
     ):
         use_percentile = (percentile is not None) and (data_dir is not None)
         use_scale = scale is not None
@@ -133,13 +134,15 @@ class ArcsinhStretch:
         self.transforms = transforms
         self.percentile = percentile
         self.data_dir = data_dir
+        self.split = split
 
         if use_scale:
             self.scale = scale
 
         if use_percentile:
 
-            tdigest_path = os.path.join(data_dir, "arcsinh_tdigest.json")
+            suffix = f"_{split}" if split is not None else ""
+            tdigest_path = os.path.join(data_dir, f"arcsinh_tdigest{suffix}.json")
 
             if os.path.isfile(tdigest_path):
                 with open(tdigest_path, "r") as fp:
@@ -157,6 +160,8 @@ class ArcsinhStretch:
 
         csv_path = os.path.join(self.data_dir, "metadata.csv")
         metadata = pd.read_csv(csv_path)
+        if self.split is not None:
+            metadata = metadata[metadata["split"] == self.split]
         filenames = metadata["filename"].tolist()
 
         digest = TDigest()
@@ -200,12 +205,14 @@ class GlobalNorm:
         transforms=None,
         percentile=None,
         data_dir: str = None,
+        split: str | None = "train",
     ):
 
         if transforms is None:
             transforms = lambda x: x
         self.transforms = transforms
         self.data_dir = data_dir
+        self.split = split
 
         self.norm_min = norm_min
         self.norm_max = norm_max
@@ -214,8 +221,9 @@ class GlobalNorm:
 
         if global_value_not_set:
 
+            suffix = f"_{split}" if split is not None else ""
             tdigest_path = os.path.join(
-                data_dir, f"global_norm_tdigest_{percentile:0f}.json"
+                data_dir, f"global_norm_tdigest_{int(percentile)}{suffix}.json"
             )
 
             if os.path.isfile(tdigest_path):
@@ -241,6 +249,8 @@ class GlobalNorm:
 
         csv_path = os.path.join(self.data_dir, "metadata.csv")
         metadata = pd.read_csv(csv_path)
+        if self.split is not None:
+            metadata = metadata[metadata["split"] == self.split]
         filenames = metadata["filename"].tolist()
 
         digest = TDigest()

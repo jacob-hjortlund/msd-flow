@@ -168,6 +168,100 @@ class TestArcsinhStretch:
         np.testing.assert_allclose(out, np.arcsinh(img / 1.0))
 
 
+class TestArcsinhStretchSplit:
+    """Tests for ArcsinhStretch split-aware TDigest computation."""
+
+    @pytest.fixture
+    def split_dataset(self, tmp_path):
+        """Create dataset with split column: 2 train, 1 val, 1 test."""
+        import pandas as pd
+        records = []
+        # Train images: uniform value 2.0
+        for i in range(2):
+            name = f"galaxy_{i:05d}.npy"
+            np.save(tmp_path / name, np.full((1, 4, 4), 2.0))
+            records.append({"filename": name, "split": "train"})
+        # Val image: uniform value 100.0 (would skew percentile if included)
+        name = "galaxy_00002.npy"
+        np.save(tmp_path / name, np.full((1, 4, 4), 100.0))
+        records.append({"filename": name, "split": "val"})
+        # Test image: uniform value 200.0
+        name = "galaxy_00003.npy"
+        np.save(tmp_path / name, np.full((1, 4, 4), 200.0))
+        records.append({"filename": name, "split": "test"})
+        pd.DataFrame(records).to_csv(tmp_path / "metadata.csv", index=False)
+        return str(tmp_path)
+
+    def test_tdigest_uses_train_only(self, split_dataset):
+        """Verify TDigest scale comes from train data only."""
+        t = ArcsinhStretch(
+            scale=None, percentile=50, data_dir=split_dataset, split="train"
+        )
+        # Train data is all 2.0, so 50th percentile should be 2.0
+        np.testing.assert_allclose(t.scale, 2.0)
+
+    def test_tdigest_cache_includes_split(self, split_dataset):
+        """Verify TDigest cache file includes split name."""
+        ArcsinhStretch(
+            scale=None, percentile=50, data_dir=split_dataset, split="train"
+        )
+        import os
+        assert os.path.isfile(os.path.join(split_dataset, "arcsinh_tdigest_train.json"))
+
+    def test_explicit_scale_ignores_split(self):
+        """Verify explicit scale doesn't require split parameter."""
+        t = ArcsinhStretch(scale=1.0)
+        assert t.scale == 1.0
+
+
+class TestGlobalNormSplit:
+    """Tests for GlobalNorm split-aware TDigest computation."""
+
+    @pytest.fixture
+    def split_dataset(self, tmp_path):
+        """Create dataset with split column: 2 train, 1 val."""
+        import pandas as pd
+        records = []
+        # Train images: values in [0, 1]
+        for i in range(2):
+            name = f"galaxy_{i:05d}.npy"
+            np.save(tmp_path / name, np.full((1, 4, 4), float(i)))
+            records.append({"filename": name, "split": "train"})
+        # Val image: value 1000.0 (would change global max if included)
+        name = "galaxy_00002.npy"
+        np.save(tmp_path / name, np.full((1, 4, 4), 1000.0))
+        records.append({"filename": name, "split": "val"})
+        pd.DataFrame(records).to_csv(tmp_path / "metadata.csv", index=False)
+        return str(tmp_path)
+
+    def test_tdigest_uses_train_only(self, split_dataset):
+        """Verify global bounds come from train data only."""
+        t = GlobalNorm(
+            global_min=None, global_max=None,
+            data_dir=split_dataset, percentile=50, split="train"
+        )
+        # Train data: galaxy_0 is all 0.0, galaxy_1 is all 1.0
+        np.testing.assert_allclose(t.global_min, 0.0)
+        np.testing.assert_allclose(t.global_max, 1.0)
+
+    def test_tdigest_cache_includes_split(self, split_dataset):
+        """Verify TDigest cache file includes split name."""
+        GlobalNorm(
+            global_min=None, global_max=None,
+            data_dir=split_dataset, percentile=50, split="train"
+        )
+        import os
+        assert os.path.isfile(
+            os.path.join(split_dataset, "global_norm_tdigest_50_train.json")
+        )
+
+    def test_explicit_bounds_ignores_split(self):
+        """Verify explicit global bounds don't require split parameter."""
+        t = GlobalNorm(global_min=0.0, global_max=1.0)
+        assert t.global_min == 0.0
+        assert t.global_max == 1.0
+
+
 class TestPercentileClip:
     """Tests for PercentileClip transform."""
 
