@@ -12,3 +12,4 @@ activation: "jax.nn.swish"
 fourier_scale: 16.0
 skip_rescale: true
 image_size: 512
+cond_dim: 0

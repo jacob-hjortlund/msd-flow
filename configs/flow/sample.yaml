@@ -6,3 +6,4 @@ stepsize_controller: "diffrax.ConstantStepSize"
 stepsize_controller_cfg:
   - rtol: 0.001
   - atol: 0.000001
+guidance_scale: 1.0
