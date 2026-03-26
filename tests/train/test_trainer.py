@@ -15,6 +15,12 @@ SMALL_MODEL = UNet(
     channel_multipliers=[1, 2], num_res_blocks=1, num_heads=1,
     num_groups=2, activation=jax.nn.silu, key=KEY,
 )
+
+SMALL_MODEL_COND = UNet(
+    in_channels=1, out_channels=1, base_channels=4,
+    channel_multipliers=[1, 2], num_res_blocks=1, num_heads=1,
+    num_groups=2, activation=jax.nn.silu, cond_dim=1, key=KEY,
+)
 OPTIMIZER = optax.adam(1e-3)
 
 
@@ -52,8 +58,10 @@ def test_train_step_returns_updated_state_and_loss():
     x0 = jax.random.normal(k1, (B, 1, 8, 8))
     x1 = jax.random.normal(k2, (B, 1, 8, 8))
     t = jnp.array([0.3, 0.7])
+    cond = jnp.empty((B, 0))
+    cond_mask = jnp.zeros(B, dtype=bool)
 
-    new_state, loss = train_step(state, x0, x1, t)
+    new_state, loss = train_step(state, x0, x1, t, cond, cond_mask)
 
     assert isinstance(new_state, TrainState)
     assert loss.shape == ()
@@ -70,8 +78,10 @@ def test_train_step_loss_is_finite():
     x0 = jax.random.normal(k1, (B, 1, 8, 8))
     x1 = jax.random.normal(k2, (B, 1, 8, 8))
     t = jnp.array([0.3, 0.7])
+    cond = jnp.empty((B, 0))
+    cond_mask = jnp.zeros(B, dtype=bool)
 
-    _, loss = train_step(state, x0, x1, t)
+    _, loss = train_step(state, x0, x1, t, cond, cond_mask)
     assert jnp.isfinite(loss)
 
 
@@ -86,8 +96,10 @@ def test_train_step_updates_model_params():
     x0 = jax.random.normal(k1, (B, 1, 8, 8))
     x1 = jax.random.normal(k2, (B, 1, 8, 8))
     t = jnp.array([0.3, 0.7])
+    cond = jnp.empty((B, 0))
+    cond_mask = jnp.zeros(B, dtype=bool)
 
-    new_state, _ = train_step(state, x0, x1, t)
+    new_state, _ = train_step(state, x0, x1, t, cond, cond_mask)
 
     # At least one parameter should have changed
     orig_leaves = jax.tree_util.tree_leaves(eqx.filter(state.model, eqx.is_array))
@@ -121,6 +133,7 @@ def test_train_runs_and_returns_model():
             "log_every": 1,
             "checkpoint_every": 100,  # won't trigger in 3 steps
             "checkpoint_dir": "/tmp/test_ckpt",
+            "p_uncond": 0.0,
         },
         "flow": {"otfm": {"t_min": 0.0, "t_max": 1.0}},
     })
@@ -141,6 +154,7 @@ def test_train_reduces_loss():
             "log_every": 5,
             "checkpoint_every": 100,
             "checkpoint_dir": "/tmp/test_ckpt",
+            "p_uncond": 0.0,
         },
         "flow": {"otfm": {"t_min": 0.0, "t_max": 1.0}},
     })
@@ -166,3 +180,71 @@ def test_train_reduces_loss():
     train(cfg, big_model, dataloader(), optimizer)
     # We just check it runs without error; strict loss decrease is not
     # guaranteed for random data in just 20 steps.
+
+
+def test_train_step_with_cond():
+    """Verify train step works with conditioning."""
+    optimizer = optax.adam(1e-3)
+    state = make_train_state(SMALL_MODEL_COND, optimizer)
+    train_step = make_train_step(optimizer)
+
+    B = 2
+    k1, k2 = jax.random.split(KEY)
+    x0 = jax.random.normal(k1, (B, 1, 8, 8))
+    x1 = jax.random.normal(k2, (B, 1, 8, 8))
+    t = jnp.array([0.3, 0.7])
+    cond = jnp.array([[0.4], [0.8]])
+    cond_mask = jnp.ones(B, dtype=bool)
+
+    new_state, loss = train_step(state, x0, x1, t, cond, cond_mask)
+    assert isinstance(new_state, TrainState)
+    assert loss.shape == ()
+    assert jnp.isfinite(loss)
+
+
+def test_train_step_with_cond_dropped():
+    """Verify train step works when some conditions are dropped (CFG path)."""
+    optimizer = optax.adam(1e-3)
+    state = make_train_state(SMALL_MODEL_COND, optimizer)
+    train_step = make_train_step(optimizer)
+
+    B = 2
+    k1, k2 = jax.random.split(KEY)
+    x0 = jax.random.normal(k1, (B, 1, 8, 8))
+    x1 = jax.random.normal(k2, (B, 1, 8, 8))
+    t = jnp.array([0.3, 0.7])
+    cond = jnp.array([[0.4], [0.8]])
+    cond_mask = jnp.array([True, False])  # second sample uses null embedding
+
+    new_state, loss = train_step(state, x0, x1, t, cond, cond_mask)
+    assert isinstance(new_state, TrainState)
+    assert loss.shape == ()
+    assert jnp.isfinite(loss)
+
+
+def test_train_loop_with_cond():
+    """Verify training loop works with metadata conditioning."""
+    import torch
+    from omegaconf import OmegaConf
+
+    cfg = OmegaConf.create({
+        "seed": 0,
+        "train": {
+            "num_steps": 3,
+            "log_every": 1,
+            "checkpoint_every": 100,
+            "checkpoint_dir": "/tmp/test_ckpt_cond",
+            "p_uncond": 0.2,
+        },
+        "flow": {"otfm": {"t_min": 0.0, "t_max": 1.0}},
+    })
+
+    def dataloader():
+        for _ in range(3):
+            images = torch.randn(2, 1, 8, 8)
+            meta = torch.tensor([[0.4], [0.8]])
+            yield images, meta
+
+    optimizer = optax.adam(1e-3)
+    trained = train(cfg, SMALL_MODEL_COND, dataloader(), optimizer)
+    assert trained is not None
