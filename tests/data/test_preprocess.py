@@ -8,7 +8,9 @@ from torchvision.transforms import Compose
 from src.data.preprocess import (
     ArcsinhStretch,
     ClipAndPad,
+    GlobalNorm,
     LinearNormalize,
+    PDFNorm,
     PercentileClip,
     RandomHorizontalFlip,
     RandomRotation90,
@@ -93,6 +95,45 @@ class TestClipAndPad:
         img = np.ones((3, 50, 50))
         out = t(img)
         assert out.shape == (3, 64, 64)
+
+
+class TestPDFNorm:
+    """Tests for PDFNorm transform."""
+
+    def test_output_sums_to_one(self):
+        """Verify output pixel values sum to 1.0."""
+        t = PDFNorm()
+        img = np.array([[[1.0, 2.0], [3.0, 4.0]]])
+        out = t(img)
+        np.testing.assert_allclose(np.sum(out), 1.0)
+
+    def test_preserves_shape(self):
+        """Verify output shape matches input."""
+        t = PDFNorm()
+        img = np.ones((3, 32, 32))
+        out = t(img)
+        assert out.shape == (3, 32, 32)
+
+    def test_known_value(self):
+        """Verify division by total sum."""
+        t = PDFNorm()
+        img = np.array([[[2.0, 8.0]]])
+        out = t(img)
+        np.testing.assert_allclose(out, [[[0.2, 0.8]]])
+
+    def test_zero_image_returns_unchanged(self):
+        """Verify all-zero image returns zeros without error."""
+        t = PDFNorm()
+        img = np.zeros((1, 4, 4))
+        out = t(img)
+        np.testing.assert_array_equal(out, 0.0)
+
+    def test_near_zero_image_returns_unchanged(self):
+        """Verify near-zero total returns image unchanged."""
+        t = PDFNorm()
+        img = np.full((1, 4, 4), 1e-35)
+        out = t(img)
+        np.testing.assert_array_equal(out, img)
 
 
 class TestArcsinhStretch:

@@ -75,12 +75,27 @@ class ClipAndPad:
 
 
 class PDFNorm:
-    def __init__(self):
-        pass
+    """Normalize image to a probability distribution (pixel sum = 1).
+
+    Divides every pixel by the total sum of the image. If the total is
+    below a safety threshold (``1e-30``), the image is returned unchanged
+    to avoid numerical explosion.
+    """
 
     def __call__(self, img: np.ndarray) -> np.ndarray:
+        """Apply PDF normalization.
 
+        Args:
+            img: ``(C, H, W)`` flux array.
+
+        Returns:
+            Array whose pixel values sum to 1.0, same shape as input.
+            If the total flux is below ``1e-30``, returns the input
+            unchanged.
+        """
         total = np.sum(img)
+        if total < 1e-30:
+            return img
         return img / total
 
 
