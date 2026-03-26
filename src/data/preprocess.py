@@ -272,6 +272,10 @@ class GlobalNorm:
 class PercentileClip:
     """Clip image intensity by percentile value and normalize to [0, 1].
 
+    .. note::
+        Alternative transform, not part of the active pipeline.
+        The active pipeline uses ``PDFNorm`` + ``GlobalNorm`` instead.
+
     Computes the given percentile, divides the image by it, and clips
     to ``[0, 1]``. If the percentile value is zero (e.g., all-zero image),
     the image is returned unchanged.
@@ -300,6 +304,10 @@ class PercentileClip:
 
 class LinearNormalize:
     """Linearly map from [0, 1] to [norm_min, norm_max].
+
+    .. note::
+        Alternative transform, not part of the active pipeline.
+        The active pipeline uses ``PDFNorm`` + ``GlobalNorm`` instead.
 
     Input is assumed to be in ``[0, 1]`` (guaranteed by ``PercentileClip``).
 
