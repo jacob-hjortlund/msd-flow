@@ -52,18 +52,24 @@ def flow_matching_loss(
     x0: jnp.ndarray,
     x1: jnp.ndarray,
     t: jnp.ndarray,
+    cond: jnp.ndarray,
+    cond_mask: jnp.ndarray,
 ) -> jnp.ndarray:
     """Compute the flow matching MSE loss.
 
     Args:
-        model: UNet velocity-field network
-        x0:    shape (B, C, H, W) — noise samples, OT-coupled to x1
-        x1:    shape (B, C, H, W) — data samples
-        t:     shape (B,) — per-sample times in [0, 1]
+        model: Velocity-field network accepting ``(t, x_t, cond, cond_mask)``.
+        x0:    shape (B, C, H, W) — noise samples, OT-coupled to x1.
+        x1:    shape (B, C, H, W) — data samples.
+        t:     shape (B,) — per-sample times in [0, 1].
+        cond:  shape (B, cond_dim) — conditioning vectors. Pass
+            ``jnp.empty((B, 0))`` when the model is unconditional.
+        cond_mask: shape (B,) bool — per-sample mask. ``True`` = use
+            the real condition; ``False`` = use the null embedding.
 
     Returns:
         Scalar mean squared error between predicted and target velocities.
     """
     x_t, u_t = sample_ot_path(x0, x1, t)
-    v_t = eqx.filter_vmap(model)(t, x_t)
+    v_t = eqx.filter_vmap(model)(t, x_t, cond, cond_mask)
     return jnp.mean((v_t - u_t) ** 2)

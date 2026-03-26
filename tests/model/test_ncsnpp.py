@@ -189,7 +189,6 @@ def test_ncsnpp_cond_dim0_backward_compat():
 from src.flow.otfm import flow_matching_loss
 
 
-@pytest.mark.skip(reason="flow_matching_loss signature updated in Task 3")
 def test_ncsnpp_flow_matching_loss():
     """Verify NCSNpp plugs into flow_matching_loss without error."""
     model = NCSNpp(**SMALL_CFG, key=KEY)
