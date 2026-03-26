@@ -69,14 +69,23 @@ def sample(
     )  # TODO: Fix when controller has args / kwargs
 
     mask_true = jnp.array(True)
-    _cond = jnp.empty(0) if cond is None else cond
+    mask_false = jnp.array(False)
+    # When cond is None we are doing unconditional sampling: use the null
+    # embedding (mask_false) and pass a dummy zeros vector so that any
+    # cond[0] access inside the model is safe even though jnp.where evaluates
+    # both branches eagerly.
+    if cond is None:
+        _cond = jnp.zeros(1)
+        _mask = mask_false
+    else:
+        _cond = cond
+        _mask = mask_true
 
     def drift(t, y, args):
         # Python-level branch: evaluated at trace time, not a JAX conditional.
         # guidance_scale must remain a Python float (never a jax.Array).
         if guidance_scale == 1.0:
-            return model(t, y, _cond, mask_true)
-        mask_false = jnp.array(False)
+            return model(t, y, _cond, _mask)
         v_cond = model(t, y, _cond, mask_true)
         v_uncond = model(t, y, _cond, mask_false)
         return v_uncond + guidance_scale * (v_cond - v_uncond)

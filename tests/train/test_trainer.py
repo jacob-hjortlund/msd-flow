@@ -5,8 +5,10 @@ import jax.numpy as jnp
 import equinox as eqx
 import optax
 import pytest
+import diffrax
 from src.model.unet import UNet
 from src.train.trainer import TrainState, make_train_state
+from src.flow.sample import sample
 
 KEY = jax.random.PRNGKey(0)
 
@@ -248,3 +250,52 @@ def test_train_loop_with_cond():
     optimizer = optax.adam(1e-3)
     trained = train(cfg, SMALL_MODEL_COND, dataloader(), optimizer)
     assert trained is not None
+
+
+def test_end_to_end_conditional_training_and_sampling():
+    """Train a small conditional model and verify unconditional and guided sampling."""
+    import torch
+    from omegaconf import OmegaConf
+
+    cfg = OmegaConf.create({
+        "seed": 0,
+        "train": {
+            "num_steps": 5,
+            "log_every": 1,
+            "checkpoint_every": 100,
+            "checkpoint_dir": "/tmp/test_ckpt_e2e",
+            "p_uncond": 0.2,
+        },
+        "flow": {"otfm": {"t_min": 0.0, "t_max": 1.0}},
+    })
+
+    def dataloader():
+        for _ in range(5):
+            images = torch.randn(2, 1, 8, 8)
+            meta = torch.tensor([[0.4], [0.8]])
+            yield images, meta
+
+    optimizer = optax.adam(1e-3)
+    trained = train(cfg, SMALL_MODEL_COND, dataloader(), optimizer)
+
+    sample_kwargs = dict(
+        model=trained,
+        shape=(1, 8, 8),
+        key=KEY,
+        solver=diffrax.Euler,
+        dt0=0.1,
+        t0=0.0,
+        t1=1.0,
+        stepsize_controller=diffrax.ConstantStepSize,
+        stepsize_controller_cfg={},
+    )
+
+    # Unconditional sample (cond=None default)
+    out_uncond = sample(**sample_kwargs)
+    assert out_uncond.shape == (1, 8, 8)
+    assert jnp.all(jnp.isfinite(out_uncond))
+
+    # Guided sample
+    out_guided = sample(**sample_kwargs, cond=jnp.array([0.4]), guidance_scale=2.0)
+    assert out_guided.shape == (1, 8, 8)
+    assert jnp.all(jnp.isfinite(out_guided))
