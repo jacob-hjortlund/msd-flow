@@ -1,6 +1,7 @@
 defaults:
   - data@data.download: download
   - data@data.dataset: dataset
+  - data@data.split: split
   - model@model: unet
   - flow@flow.otfm: otfm
   - flow@flow.sample: sample
