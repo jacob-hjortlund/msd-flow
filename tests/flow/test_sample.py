@@ -81,7 +81,6 @@ def test_sample_conditional():
         stepsize_controller=diffrax.ConstantStepSize,
         stepsize_controller_cfg={},
         cond=jnp.array([0.4]),
-        guidance_scale=1.0,
     )
     assert out.shape == (1, 8, 8)
     assert jnp.all(jnp.isfinite(out))

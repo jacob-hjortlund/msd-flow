@@ -51,6 +51,12 @@ def sample(
         Sample array of shape `shape`.
     """
 
+    if cond is None and guidance_scale != 1.0:
+        raise ValueError(
+            "guidance_scale != 1.0 requires an explicit cond; "
+            "pass cond=jnp.empty(0) for unconditional sampling."
+        )
+
     if isinstance(solver, str):
         solver = resolve_import(solver)
 
@@ -63,12 +69,14 @@ def sample(
     )  # TODO: Fix when controller has args / kwargs
 
     mask_true = jnp.array(True)
-    mask_false = jnp.array(False)
     _cond = jnp.empty(0) if cond is None else cond
 
     def drift(t, y, args):
+        # Python-level branch: evaluated at trace time, not a JAX conditional.
+        # guidance_scale must remain a Python float (never a jax.Array).
         if guidance_scale == 1.0:
             return model(t, y, _cond, mask_true)
+        mask_false = jnp.array(False)
         v_cond = model(t, y, _cond, mask_true)
         v_uncond = model(t, y, _cond, mask_false)
         return v_uncond + guidance_scale * (v_cond - v_uncond)
