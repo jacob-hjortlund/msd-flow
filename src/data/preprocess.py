@@ -102,11 +102,24 @@ class PDFNorm:
 class ArcsinhStretch:
     """Apply arcsinh stretch to compress dynamic range.
 
-    Computes ``arcsinh(img / scale)``. The ``scale`` parameter corresponds
-    to the ``a`` parameter in the former ``arcsinh_stretch`` free function.
+    Computes ``arcsinh(img / scale)``. The scale can be supplied directly
+    or derived from a percentile of the pixel-value distribution, estimated
+    via a TDigest built over the dataset. When ``split`` is set, only files
+    whose ``split`` column matches are used to build the TDigest, so
+    statistics are always computed from training data only.
 
     Args:
-        scale: Softening parameter controlling the stretch.
+        scale: Softening parameter. Mutually exclusive with ``percentile``
+            + ``data_dir``.
+        transforms: Pre-processing pipeline applied to each image before
+            accumulating into the TDigest (e.g. flux conversion and padding).
+            Defaults to identity.
+        percentile: Percentile of non-zero pixel values used to derive
+            ``scale``. Requires ``data_dir``.
+        data_dir: Directory containing ``metadata.csv`` and ``.npy`` files.
+            Required when ``percentile`` is set.
+        split: Split name used to filter ``metadata.csv`` when building the
+            TDigest. Defaults to ``"train"``. Pass ``None`` to use all rows.
     """
 
     def __init__(
@@ -156,8 +169,16 @@ class ArcsinhStretch:
 
             self.scale = digest.percentile(self.percentile)
 
-    def _build_tdigest(self):
+    def _build_tdigest(self) -> TDigest:
+        """Build a TDigest over non-zero pixel values in the dataset.
 
+        Reads filenames from ``metadata.csv`` (filtered to ``self.split`` if
+        set), applies ``self.transforms`` to each image, and accumulates all
+        positive pixel values into the digest.
+
+        Returns:
+            Fitted ``TDigest`` instance.
+        """
         csv_path = os.path.join(self.data_dir, "metadata.csv")
         metadata = pd.read_csv(csv_path)
         if self.split is not None:
@@ -190,10 +211,30 @@ class ArcsinhStretch:
 class GlobalNorm:
     """Linearly map a dataset from a global [min, max] to [norm_min, norm_max].
 
-    This preserves relative concentration across the dataset while ensuring
-    the output fits within a stable range (e.g., [-1, 1]) for generative
-    training. Because the scale factors are global constants, this operation
-    is perfectly mathematically invertible.
+    This preserves relative intensity across the dataset while mapping
+    outputs to a stable range (e.g., [-1, 1]) for generative training.
+    The scale factors are global constants, so the operation is invertible.
+
+    Global bounds can be supplied directly or estimated from the dataset via
+    a TDigest. When ``split`` is set, only files whose ``split`` column
+    matches are used to build the TDigest, so statistics come from training
+    data only.
+
+    Args:
+        global_min: Lower bound of the input range. If ``None``, derived
+            from ``digest.min()`` over the dataset.
+        global_max: Upper bound of the input range. If ``None``, derived
+            from ``digest.max()`` over the dataset.
+        norm_min: Lower bound of the output range. Defaults to ``-1.0``.
+        norm_max: Upper bound of the output range. Defaults to ``1.0``.
+        transforms: Pipeline applied to each image before accumulating into
+            the TDigest. Defaults to identity.
+        percentile: Controls TDigest cache filename. Required when either
+            bound is ``None``.
+        data_dir: Directory containing ``metadata.csv`` and ``.npy`` files.
+            Required when either bound is ``None``.
+        split: Split name used to filter ``metadata.csv`` when building the
+            TDigest. Defaults to ``"train"``. Pass ``None`` to use all rows.
     """
 
     def __init__(
@@ -245,8 +286,16 @@ class GlobalNorm:
         self.global_min = global_min
         self.global_max = global_max
 
-    def _build_tdigest(self):
+    def _build_tdigest(self) -> TDigest:
+        """Build a TDigest over all pixel values in the dataset.
 
+        Reads filenames from ``metadata.csv`` (filtered to ``self.split`` if
+        set), applies ``self.transforms`` to each image, and accumulates all
+        pixel values into the digest to estimate global min/max.
+
+        Returns:
+            Fitted ``TDigest`` instance.
+        """
         csv_path = os.path.join(self.data_dir, "metadata.csv")
         metadata = pd.read_csv(csv_path)
         if self.split is not None:
