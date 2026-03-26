@@ -13,6 +13,7 @@ from src.data.dataset import TNG50Dataset
 def sample_dataset(tmp_path):
     """Create a minimal processed directory with .npy files and metadata."""
     records = []
+    splits = ["train", "train", "train", "val", "test"]
     for i in range(5):
         name = f"galaxy_{i:05d}.npy"
         data = np.random.default_rng(i).random((1, 64, 64)).astype(np.float32)
@@ -23,6 +24,7 @@ def sample_dataset(tmp_path):
             "band_map": "g",
             "hdr_mass": float(i) * 1.5,
             "hdr_redshift": float(i) * 0.1,
+            "split": splits[i],
         })
     pd.DataFrame(records).to_csv(tmp_path / "metadata.csv", index=False)
     return str(tmp_path)
@@ -119,3 +121,37 @@ def test_dataset_with_metadata_works_with_dataloader(sample_dataset):
     images, meta = next(iter(loader))
     assert images.shape == (2, 1, 64, 64)
     assert meta.shape == (2, 2)
+
+
+def test_dataset_split_filter_train(sample_dataset):
+    """Verify split='train' filters to train rows only."""
+    ds = TNG50Dataset(sample_dataset, split="train")
+    assert len(ds) == 3
+
+
+def test_dataset_split_filter_val(sample_dataset):
+    """Verify split='val' filters to val rows only."""
+    ds = TNG50Dataset(sample_dataset, split="val")
+    assert len(ds) == 1
+
+
+def test_dataset_split_filter_test(sample_dataset):
+    """Verify split='test' filters to test rows only."""
+    ds = TNG50Dataset(sample_dataset, split="test")
+    assert len(ds) == 1
+
+
+def test_dataset_split_none_returns_all(sample_dataset):
+    """Verify split=None returns all rows (default)."""
+    ds = TNG50Dataset(sample_dataset, split=None)
+    assert len(ds) == 5
+
+
+def test_dataset_split_correct_items(sample_dataset):
+    """Verify split filtering returns correct images."""
+    ds_all = TNG50Dataset(sample_dataset)
+    ds_val = TNG50Dataset(sample_dataset, split="val")
+    # Val is index 3 in the original dataset
+    img_all, _ = ds_all[3]
+    img_val, _ = ds_val[0]
+    torch.testing.assert_close(img_all, img_val)
