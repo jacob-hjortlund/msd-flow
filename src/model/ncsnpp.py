@@ -344,9 +344,12 @@ class NCSNpp(eqx.Module):
             x_t: Noisy image of shape ``(C, H, W)``.
             cond: Conditioning vector of shape ``(cond_dim,)``. When
                 ``cond_dim=1``, ``cond[0]`` is embedded as a scalar.
-                Pass ``jnp.empty(0)`` when ``cond_dim=0``.
+                When ``cond_dim=0`` the model ignores ``cond`` entirely;
+                pass ``jnp.zeros(1)`` as a safe dummy value.
             cond_mask: Scalar bool. ``True`` uses the real condition
                 embedding; ``False`` uses the null embedding.
+                When ``cond_dim=0`` this argument is ignored; pass
+                ``jnp.array(False)`` by convention.
 
         Returns:
             Predicted velocity field of shape ``(C, H, W)``.

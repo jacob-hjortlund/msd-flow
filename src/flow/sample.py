@@ -40,8 +40,9 @@ def sample(
         stepsize_controller:  Diffrax step controller
         stepsize_controller_cfg: Keyword arguments forwarded to the step-size
             controller constructor.
-        cond:                 Conditioning vector of shape ``(D,)``. ``None``
-            is equivalent to passing ``jnp.empty(0)`` (unconditional).
+        cond:                 Conditioning vector of shape ``(D,)``. Pass
+            ``None`` for unconditional sampling (the model's null embedding
+            is used).
         guidance_scale:       Classifier-free guidance scale. ``1.0`` performs
             a single conditional forward pass; values ``> 1.0`` blend the
             conditional and unconditional predictions via
@@ -54,7 +55,7 @@ def sample(
     if cond is None and guidance_scale != 1.0:
         raise ValueError(
             "guidance_scale != 1.0 requires an explicit cond; "
-            "pass cond=jnp.empty(0) for unconditional sampling."
+            "for unconditional sampling, leave cond=None (the default)."
         )
 
     if isinstance(solver, str):
