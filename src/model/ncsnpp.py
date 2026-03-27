@@ -95,7 +95,7 @@ class NCSNpp(eqx.Module):
 
         Args:
             in_channels: Number of input image channels.
-            out_channels: Number of output channels (velocity field).
+            out_channels: Number of output channels.
             base_channels: Channel count at the first level.
             channel_multipliers: Per-level channel multipliers.
             num_res_blocks: ResBlocks per encoder/decoder level.
