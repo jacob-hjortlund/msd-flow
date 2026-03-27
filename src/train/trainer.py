@@ -123,48 +123,37 @@ def make_val_step():
     return val_step
 
 
-def train(cfg, model, dataloader, optimizer: optax.GradientTransformation):
-    """Main training loop.
+def _run_validation(
+    ema_model,
+    val_dataloader,
+    val_step,
+    sample_path_fn,
+    key: jax.Array,
+    time_sampling: str,
+    t_min: float,
+    t_max: float,
+    p_uncond: float,
+) -> float:
+    """Run a full pass over val_dataloader and return mean flow matching loss.
 
     Args:
-        cfg:        Hydra DictConfig with cfg.seed, cfg.train.*, cfg.flow.otfm.*
-        model:      Velocity-field network to train.
-        dataloader: PyTorch DataLoader yielding ``(images, meta)`` tuples
-                    where images is ``(B, C, H, W)`` and meta is
-                    ``(B, cond_dim)`` or ``(B, 0)`` if unconditional.
-        optimizer:  Optax GradientTransformation (construct via
-                    hydra.utils.instantiate(cfg.train.optimizer) before calling).
+        ema_model:       EMA model used for inference.
+        val_dataloader:  Iterable of ``(images, meta)`` batches.
+        val_step:        JIT-compiled val step from ``make_val_step()``.
+        sample_path_fn:  JIT-compiled ``sample_path`` partial.
+        key:             JAX PRNG key (consumed internally via splitting).
+        time_sampling:   ``"uniform"`` or ``"logit_normal"``.
+        t_min:           Lower time bound (uniform sampling only).
+        t_max:           Upper time bound (uniform sampling only).
+        p_uncond:        Probability of dropping the condition per sample.
 
     Returns:
-        Trained model.
+        Mean validation loss over all batches.
     """
-    state = make_train_state(model, optimizer)
-    train_step = make_train_step(optimizer)
-    key = jax.random.PRNGKey(cfg.seed)
+    total_loss = 0.0
+    n_batches = 0
 
-    t_min = float(cfg.flow.otfm.t_min)
-    t_max = float(cfg.flow.otfm.t_max)
-    sigma_0 = float(cfg.flow.otfm.get("sigma_0", 0.0))
-    sigma_1 = float(cfg.flow.otfm.get("sigma_1", 0.0))
-    time_sampling = cfg.flow.otfm.get("time_sampling", "uniform")
-    num_steps = int(cfg.train.num_steps)
-    log_every = int(cfg.train.log_every)
-    ckpt_every = int(cfg.train.checkpoint_every)
-    ckpt_dir = cfg.train.checkpoint_dir
-    p_uncond = float(cfg.train.get("p_uncond", 0.0))
-
-    _sample_path = jax.jit(
-        functools.partial(sample_path, sigma_0=sigma_0, sigma_1=sigma_1)
-    )
-
-    data_iter = iter(dataloader)
-    for step in range(num_steps):
-        try:
-            batch = next(data_iter)
-        except StopIteration:
-            data_iter = iter(dataloader)
-            batch = next(data_iter)
-
+    for batch in val_dataloader:
         images, meta = batch
         x1_np = images.numpy()
         cond_np = meta.numpy()
@@ -180,8 +169,6 @@ def train(cfg, model, dataloader, optimizer: optax.GradientTransformation):
         if time_sampling == "uniform":
             t = sample_time_uniform(key_time, B, t_min, t_max)
         elif time_sampling == "logit_normal":
-            # logit_normal samples from (0, 1) by design; t_min/t_max are
-            # not applied because the sigmoid maps to the full open interval.
             t = sample_time_logit_normal(key_time, B)
         else:
             raise ValueError(
@@ -189,24 +176,140 @@ def train(cfg, model, dataloader, optimizer: optax.GradientTransformation):
                 "choose 'uniform' or 'logit_normal'."
             )
 
-        # CFG: randomly drop condition per sample with probability p_uncond
         cond_mask_np = (rng.random(B) >= p_uncond).astype(bool)
 
-        x_t, u_t = _sample_path(
+        x_t, u_t = sample_path_fn(
             jnp.array(x0_paired), jnp.array(x1_np), t, key=key_path
         )
         cond = jnp.array(cond_np)
         cond_mask = jnp.array(cond_mask_np)
 
-        state, loss = train_step(state, x_t, u_t, t, cond, cond_mask)
+        total_loss += float(val_step(ema_model, x_t, u_t, t, cond, cond_mask))
+        n_batches += 1
 
-        if step % log_every == 0:
-            logger.info(f"step={step}  loss={float(loss):.6f}")
+    return total_loss / n_batches
 
-        if step > 0 and step % ckpt_every == 0:
+
+def train(cfg, model, dataloader, val_dataloader, optimizer: optax.GradientTransformation):
+    """Main training loop with EMA and periodic validation.
+
+    Args:
+        cfg:            Hydra DictConfig with cfg.seed, cfg.train.*, cfg.flow.otfm.*
+        model:          Velocity-field network to train.
+        dataloader:     PyTorch DataLoader yielding ``(images, meta)`` tuples
+                        where images is ``(B, C, H, W)`` and meta is
+                        ``(B, cond_dim)`` or ``(B, 0)`` if unconditional.
+        val_dataloader: DataLoader for the validation split, same format as
+                        ``dataloader``. Used for periodic EMA model evaluation.
+        optimizer:      Optax GradientTransformation (construct via
+                        hydra.utils.instantiate(cfg.train.optimizer) before calling).
+
+    Returns:
+        Trained EMA model.
+    """
+    state = make_train_state(model, optimizer)
+    train_step = make_train_step(optimizer)
+    val_step = make_val_step()
+    key = jax.random.PRNGKey(cfg.seed)
+
+    t_min = float(cfg.flow.otfm.t_min)
+    t_max = float(cfg.flow.otfm.t_max)
+    sigma_0 = float(cfg.flow.otfm.get("sigma_0", 0.0))
+    sigma_1 = float(cfg.flow.otfm.get("sigma_1", 0.0))
+    time_sampling = cfg.flow.otfm.get("time_sampling", "uniform")
+    num_epochs = int(cfg.train.num_epochs)
+    num_steps_per_epoch = int(cfg.train.num_steps_per_epoch)
+    log_every = int(cfg.train.log_every)
+    ckpt_every = int(cfg.train.checkpoint_every)
+    ckpt_dir = cfg.train.checkpoint_dir
+    p_uncond = float(cfg.train.get("p_uncond", 0.0))
+    ema_decay = float(cfg.train.get("ema_decay", 0.9999))
+    val_every = int(cfg.train.val_every)
+
+    steps_per_epoch = (
+        len(dataloader) if num_steps_per_epoch == 0 else num_steps_per_epoch
+    )
+
+    _sample_path = jax.jit(
+        functools.partial(sample_path, sigma_0=sigma_0, sigma_1=sigma_1)
+    )
+
+    ema_model = model
+    data_iter = iter(dataloader)
+
+    for epoch in range(num_epochs):
+        epoch_loss = 0.0
+
+        for _ in range(steps_per_epoch):
+            try:
+                batch = next(data_iter)
+            except StopIteration:
+                data_iter = iter(dataloader)
+                batch = next(data_iter)
+
+            images, meta = batch
+            x1_np = images.numpy()
+            cond_np = meta.numpy()
+            B = x1_np.shape[0]
+
+            key, key_cpu, key_time, key_path = jax.random.split(key, 4)
+            cpu_seed = int(
+                jax.random.randint(key_cpu, shape=(), minval=0, maxval=2**31 - 1)
+            )
+            rng = np.random.default_rng(cpu_seed)
+
+            x0_np = rng.standard_normal(x1_np.shape).astype(np.float32)
+            x0_paired = ot_coupling(x0_np, x1_np)
+
+            if time_sampling == "uniform":
+                t = sample_time_uniform(key_time, B, t_min, t_max)
+            elif time_sampling == "logit_normal":
+                # logit_normal samples from (0, 1) by design; t_min/t_max are
+                # not applied because the sigmoid maps to the full open interval.
+                t = sample_time_logit_normal(key_time, B)
+            else:
+                raise ValueError(
+                    f"Unknown time_sampling={time_sampling!r}; "
+                    "choose 'uniform' or 'logit_normal'."
+                )
+
+            # CFG: randomly drop condition per sample with probability p_uncond
+            cond_mask_np = (rng.random(B) >= p_uncond).astype(bool)
+
+            x_t, u_t = _sample_path(
+                jnp.array(x0_paired), jnp.array(x1_np), t, key=key_path
+            )
+            cond = jnp.array(cond_np)
+            cond_mask = jnp.array(cond_mask_np)
+
+            state, loss = train_step(state, x_t, u_t, t, cond, cond_mask)
+            ema_model = ema_update(ema_model, state.model, ema_decay)
+            epoch_loss += float(loss)
+
+        if (epoch + 1) % log_every == 0:
+            logger.info(
+                f"epoch={epoch + 1}  loss={epoch_loss / steps_per_epoch:.6f}"
+            )
+
+        if (epoch + 1) % val_every == 0:
+            key, key_val = jax.random.split(key)
+            val_loss = _run_validation(
+                ema_model,
+                val_dataloader,
+                val_step,
+                _sample_path,
+                key_val,
+                time_sampling,
+                t_min,
+                t_max,
+                p_uncond,
+            )
+            logger.info(f"epoch={epoch + 1}  val_loss={val_loss:.6f}")
+
+        if (epoch + 1) % ckpt_every == 0:
             os.makedirs(ckpt_dir, exist_ok=True)
-            path = os.path.join(ckpt_dir, f"model_step{step}.eqx")
-            eqx.tree_serialise_leaves(path, state.model)
+            path = os.path.join(ckpt_dir, f"model_epoch{epoch + 1}.eqx")
+            eqx.tree_serialise_leaves(path, ema_model)
             logger.info(f"Saved checkpoint: {path}")
 
-    return state.model
+    return ema_model
