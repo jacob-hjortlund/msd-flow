@@ -74,6 +74,30 @@ def make_train_step(optimizer: optax.GradientTransformation):
     return train_step
 
 
+def ema_update(ema_model, new_model, decay: float):
+    """Update EMA model weights using exponential moving average.
+
+    Non-array leaves (static model configuration) are carried over from
+    ``ema_model`` unchanged.
+
+    Args:
+        ema_model: Current EMA model.
+        new_model: Latest trained model whose weights are blended in.
+        decay:     EMA decay rate. Typical value: 0.9999.
+
+    Returns:
+        Updated EMA model with blended array leaves.
+    """
+    ema_arrays, static = eqx.partition(ema_model, eqx.is_array)
+    new_arrays, _ = eqx.partition(new_model, eqx.is_array)
+    updated = jax.tree_util.tree_map(
+        lambda e, m: decay * e + (1.0 - decay) * m,
+        ema_arrays,
+        new_arrays,
+    )
+    return eqx.combine(updated, static)
+
+
 def train(cfg, model, dataloader, optimizer: optax.GradientTransformation):
     """Main training loop.
 

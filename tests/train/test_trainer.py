@@ -115,6 +115,48 @@ def test_train_step_updates_model_params():
     assert any(not jnp.allclose(o, n) for o, n in zip(orig_leaves, new_leaves))
 
 
+from src.train.trainer import ema_update
+
+
+def test_ema_update_decay_one_leaves_ema_unchanged():
+    """With decay=1.0, EMA model arrays must not change."""
+    key1, key2 = jax.random.split(jax.random.PRNGKey(10))
+    ema_model = eqx.nn.Linear(4, 4, key=key1)
+    new_model = eqx.nn.Linear(4, 4, key=key2)
+
+    result = ema_update(ema_model, new_model, decay=1.0)
+
+    assert jnp.allclose(result.weight, ema_model.weight)
+    assert jnp.allclose(result.bias, ema_model.bias)
+
+
+def test_ema_update_decay_zero_copies_new_model():
+    """With decay=0.0, EMA model arrays must equal the new model."""
+    key1, key2 = jax.random.split(jax.random.PRNGKey(11))
+    ema_model = eqx.nn.Linear(4, 4, key=key1)
+    new_model = eqx.nn.Linear(4, 4, key=key2)
+
+    result = ema_update(ema_model, new_model, decay=0.0)
+
+    assert jnp.allclose(result.weight, new_model.weight)
+    assert jnp.allclose(result.bias, new_model.bias)
+
+
+def test_ema_update_blends_arrays_correctly():
+    """EMA update applies decay * ema + (1 - decay) * new element-wise."""
+    key1, key2 = jax.random.split(jax.random.PRNGKey(12))
+    ema_model = eqx.nn.Linear(4, 4, key=key1)
+    new_model = eqx.nn.Linear(4, 4, key=key2)
+    decay = 0.9
+
+    result = ema_update(ema_model, new_model, decay=decay)
+
+    expected_weight = 0.9 * ema_model.weight + 0.1 * new_model.weight
+    expected_bias = 0.9 * ema_model.bias + 0.1 * new_model.bias
+    assert jnp.allclose(result.weight, expected_weight, atol=1e-6)
+    assert jnp.allclose(result.bias, expected_bias, atol=1e-6)
+
+
 from src.train.trainer import train
 from src.flow.coupling import ot_coupling
 
