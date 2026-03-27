@@ -4,7 +4,6 @@ Implements the linear interpolant path and the MSE flow matching objective.
 """
 
 import jax
-import numpy as np
 import equinox as eqx
 import jax.numpy as jnp
 
