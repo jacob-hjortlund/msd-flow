@@ -25,9 +25,16 @@ SMALL_MODEL = UNet(
 )
 
 SMALL_MODEL_COND = UNet(
-    in_channels=1, out_channels=1, base_channels=4,
-    channel_multipliers=[1, 2], num_res_blocks=1, num_heads=1,
-    num_groups=2, activation=jax.nn.silu, cond_dim=1, key=KEY,
+    in_channels=1,
+    out_channels=1,
+    base_channels=4,
+    channel_multipliers=[1, 2],
+    num_res_blocks=1,
+    num_heads=1,
+    num_groups=2,
+    activation=jax.nn.silu,
+    cond_dim=1,
+    key=KEY,
 )
 
 
@@ -79,7 +86,8 @@ def test_flow_matching_loss_is_scalar():
     t = jnp.array([0.3, 0.7])
     cond = jnp.empty((B, 0))
     cond_mask = jnp.zeros(B, dtype=bool)
-    loss = flow_matching_loss(SMALL_MODEL, x0, x1, t, cond, cond_mask)
+    x_t, u_t = sample_path(x0, x1, t)
+    loss = flow_matching_loss(SMALL_MODEL, x_t, u_t, t, cond, cond_mask)
     assert loss.shape == ()
 
 
@@ -92,7 +100,8 @@ def test_flow_matching_loss_is_positive():
     t = jnp.array([0.3, 0.7])
     cond = jnp.empty((B, 0))
     cond_mask = jnp.zeros(B, dtype=bool)
-    loss = flow_matching_loss(SMALL_MODEL, x0, x1, t, cond, cond_mask)
+    x_t, u_t = sample_path(x0, x1, t)
+    loss = flow_matching_loss(SMALL_MODEL, x_t, u_t, t, cond, cond_mask)
     assert loss >= 0.0
 
 
@@ -105,10 +114,10 @@ def test_flow_matching_loss_has_gradient():
     t = jnp.array([0.3, 0.7])
     cond = jnp.empty((B, 0))
     cond_mask = jnp.zeros(B, dtype=bool)
+    x_t, u_t = sample_path(x0, x1, t)
     loss, grads = eqx.filter_value_and_grad(flow_matching_loss)(
-        SMALL_MODEL, x0, x1, t, cond, cond_mask
+        SMALL_MODEL, x_t, u_t, t, cond, cond_mask
     )
-    # Check at least one grad leaf is non-zero
     grad_leaves = jax.tree_util.tree_leaves(eqx.filter(grads, eqx.is_array))
     assert any(jnp.any(g != 0.0) for g in grad_leaves)
 
@@ -122,7 +131,8 @@ def test_flow_matching_loss_with_cond():
     t = jnp.array([0.3, 0.7])
     cond = jnp.array([[0.4], [0.8]])
     cond_mask = jnp.ones(B, dtype=bool)
-    loss = flow_matching_loss(SMALL_MODEL_COND, x0, x1, t, cond, cond_mask)
+    x_t, u_t = sample_path(x0, x1, t)
+    loss = flow_matching_loss(SMALL_MODEL_COND, x_t, u_t, t, cond, cond_mask)
     assert loss.shape == ()
     assert jnp.isfinite(loss)
 
@@ -136,7 +146,8 @@ def test_flow_matching_loss_with_cond_mask_false():
     t = jnp.array([0.3, 0.7])
     cond = jnp.array([[0.4], [0.8]])
     cond_mask = jnp.zeros(B, dtype=bool)
-    loss = flow_matching_loss(SMALL_MODEL_COND, x0, x1, t, cond, cond_mask)
+    x_t, u_t = sample_path(x0, x1, t)
+    loss = flow_matching_loss(SMALL_MODEL_COND, x_t, u_t, t, cond, cond_mask)
     assert loss.shape == ()
     assert jnp.isfinite(loss)
 
@@ -150,8 +161,9 @@ def test_flow_matching_loss_gradient_with_cond():
     t = jnp.array([0.3, 0.7])
     cond = jnp.array([[0.4], [0.8]])
     cond_mask = jnp.array([True, False])
+    x_t, u_t = sample_path(x0, x1, t)
     loss, grads = eqx.filter_value_and_grad(flow_matching_loss)(
-        SMALL_MODEL_COND, x0, x1, t, cond, cond_mask
+        SMALL_MODEL_COND, x_t, u_t, t, cond, cond_mask
     )
     grad_leaves = jax.tree_util.tree_leaves(eqx.filter(grads, eqx.is_array))
     assert any(jnp.any(g != 0.0) for g in grad_leaves)
@@ -159,7 +171,6 @@ def test_flow_matching_loss_gradient_with_cond():
 
 def test_sample_path_stochastic_x_t_differs_from_deterministic():
     """With nonzero sigma, x_t must differ from the noiseless interpolant."""
-    import jax
     key = jax.random.PRNGKey(42)
     x0 = jnp.ones((2, 1, 4, 4)) * 2.0
     x1 = jnp.ones((2, 1, 4, 4)) * 5.0
@@ -171,7 +182,6 @@ def test_sample_path_stochastic_x_t_differs_from_deterministic():
 
 def test_sample_path_stochastic_velocity_unchanged():
     """Velocity u_t must equal x1 - x0 regardless of sigma values."""
-    import jax
     key = jax.random.PRNGKey(7)
     x0 = jnp.ones((2, 1, 4, 4)) * 2.0
     x1 = jnp.ones((2, 1, 4, 4)) * 5.0
@@ -182,7 +192,6 @@ def test_sample_path_stochastic_velocity_unchanged():
 
 def test_sample_path_zero_sigma_matches_deterministic():
     """sigma_0=0, sigma_1=0 with a key provided must give the same result as no key."""
-    import jax
     key = jax.random.PRNGKey(0)
     x0 = jnp.ones((2, 1, 4, 4)) * 2.0
     x1 = jnp.ones((2, 1, 4, 4)) * 5.0
@@ -193,20 +202,3 @@ def test_sample_path_zero_sigma_matches_deterministic():
     assert jnp.allclose(u_t_a, u_t_b)
 
 
-def test_flow_matching_loss_stochastic_runs():
-    """flow_matching_loss must accept sigma_0, sigma_1, and key without error."""
-    import jax
-    key = jax.random.PRNGKey(99)
-    B = 2
-    k1, k2 = jax.random.split(jax.random.PRNGKey(0))
-    x0 = jax.random.normal(k1, (B, 1, 8, 8))
-    x1 = jax.random.normal(k2, (B, 1, 8, 8))
-    t = jnp.array([0.3, 0.7])
-    cond = jnp.empty((B, 0))
-    cond_mask = jnp.zeros(B, dtype=bool)
-    loss = flow_matching_loss(
-        SMALL_MODEL, x0, x1, t, cond, cond_mask,
-        sigma_0=0.1, sigma_1=0.1, key=key,
-    )
-    assert loss.shape == ()
-    assert jnp.isfinite(loss)
