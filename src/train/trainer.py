@@ -98,6 +98,31 @@ def ema_update(ema_model, new_model, decay: float):
     return eqx.combine(updated, static)
 
 
+def make_val_step():
+    """Return a JIT-compiled validation step.
+
+    Computes flow matching loss without gradient. Mirrors the structure of
+    ``make_train_step`` but does not update any state.
+
+    Returns:
+        A ``filter_jit``-compiled callable with signature
+        ``(model, x_t, u_t, t, cond, cond_mask) -> scalar_loss``.
+    """
+
+    @eqx.filter_jit
+    def val_step(
+        model,
+        x_t: jax.Array,
+        u_t: jax.Array,
+        t: jax.Array,
+        cond: jax.Array,
+        cond_mask: jax.Array,
+    ) -> jax.Array:
+        return flow_matching_loss(model, x_t, u_t, t, cond, cond_mask)
+
+    return val_step
+
+
 def train(cfg, model, dataloader, optimizer: optax.GradientTransformation):
     """Main training loop.
 

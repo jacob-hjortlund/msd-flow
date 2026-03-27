@@ -157,6 +157,47 @@ def test_ema_update_blends_arrays_correctly():
     assert jnp.allclose(result.bias, expected_bias, atol=1e-6)
 
 
+from src.train.trainer import make_val_step
+
+
+def test_val_step_returns_scalar_loss():
+    """val_step must return a scalar JAX array."""
+    val_step = make_val_step()
+
+    B = 2
+    k1, k2 = jax.random.split(KEY)
+    x0 = jax.random.normal(k1, (B, 1, 8, 8))
+    x1 = jax.random.normal(k2, (B, 1, 8, 8))
+    t = jnp.array([0.3, 0.7])
+    cond = jnp.empty((B, 0))
+    cond_mask = jnp.zeros(B, dtype=bool)
+
+    from src.flow.otfm import sample_path as _sp
+    x_t, u_t = _sp(x0, x1, t)
+
+    loss = val_step(SMALL_MODEL, x_t, u_t, t, cond, cond_mask)
+    assert loss.shape == ()
+
+
+def test_val_step_loss_is_finite():
+    """val_step loss must be finite."""
+    val_step = make_val_step()
+
+    B = 2
+    k1, k2 = jax.random.split(KEY)
+    x0 = jax.random.normal(k1, (B, 1, 8, 8))
+    x1 = jax.random.normal(k2, (B, 1, 8, 8))
+    t = jnp.array([0.3, 0.7])
+    cond = jnp.empty((B, 0))
+    cond_mask = jnp.zeros(B, dtype=bool)
+
+    from src.flow.otfm import sample_path as _sp
+    x_t, u_t = _sp(x0, x1, t)
+
+    loss = val_step(SMALL_MODEL, x_t, u_t, t, cond, cond_mask)
+    assert jnp.isfinite(loss)
+
+
 from src.train.trainer import train
 from src.flow.coupling import ot_coupling
 
