@@ -22,6 +22,8 @@ def _to_velocity(
         t:               shape (B,) — per-sample times in [0, 1).
         prediction_type: ``"velocity"`` returns ``pred`` unchanged;
             ``"image"`` applies ``(pred - x_t) / (1 - t)``.
+            Must be a Python string constant (not a traced JAX value) when
+            this function is called inside ``jax.jit`` or ``eqx.filter_jit``.
 
     Returns:
         Velocity field of shape (B, C, H, W).
