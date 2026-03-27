@@ -42,33 +42,26 @@ def sample_path(
 
 def flow_matching_loss(
     model,
-    x0: jnp.ndarray,
-    x1: jnp.ndarray,
+    x_t: jnp.ndarray,
+    u_t: jnp.ndarray,
     t: jnp.ndarray,
     cond: jnp.ndarray,
     cond_mask: jnp.ndarray,
-    sigma_0: float = 0.0,
-    sigma_1: float = 0.0,
-    key: jax.Array | None = None,
 ) -> jnp.ndarray:
     """Compute the flow matching MSE loss.
 
     Args:
         model: Velocity-field network accepting ``(t, x_t, cond, cond_mask)``.
-        x0:    shape (B, C, H, W) — noise samples, coupled to x1.
-        x1:    shape (B, C, H, W) — data samples.
+        x_t:   shape (B, C, H, W) — interpolated samples at time t.
+        u_t:   shape (B, C, H, W) — target velocities (x1 - x0).
         t:     shape (B,) — per-sample times in [0, 1].
         cond:  shape (B, cond_dim) — conditioning vectors. Pass
             ``jnp.empty((B, 0))`` when the model is unconditional.
         cond_mask: shape (B,) bool — per-sample mask. ``True`` = use
             the real condition; ``False`` = use the null embedding.
-        sigma_0: Noise std at t=0 for the stochastic interpolant. Default 0.
-        sigma_1: Noise std at t=1 for the stochastic interpolant. Default 0.
-        key: JAX PRNG key required when sigma_0 or sigma_1 is nonzero.
 
     Returns:
         Scalar mean squared error between predicted and target velocities.
     """
-    x_t, u_t = sample_path(x0, x1, t, sigma_0=sigma_0, sigma_1=sigma_1, key=key)
     v_t = eqx.filter_vmap(model)(t, x_t, cond, cond_mask)
     return jnp.mean((v_t - u_t) ** 2)
