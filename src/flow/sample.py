@@ -31,7 +31,9 @@ def sample(
     """Draw one sample by integrating the learned ODE from t0 to t1.
 
     Args:
-        model:                UNet velocity-field network
+        model:                Network accepting ``(t, x_t, cond, cond_mask)``.
+            Must have a ``prediction_type`` attribute of ``"velocity"`` or
+            ``"image"``.
         shape:                Shape of a single sample, e.g. (C, H, W)
         key:                  JAX PRNG key for initial noise
         solver:               Diffrax solver (e.g. diffrax.Euler())

@@ -148,7 +148,7 @@ def test_sample_image_prediction_shape():
         solver=diffrax.Euler,
         dt0=0.1,
         t0=0.0,
-        t1=0.9,
+        t1=0.9,  # Stop before t=1 to avoid (1-t)->0 singularity in _to_velocity
         stepsize_controller=diffrax.ConstantStepSize,
         stepsize_controller_cfg={},
     )
@@ -164,7 +164,7 @@ def test_sample_image_prediction_finite():
         solver=diffrax.Euler,
         dt0=0.1,
         t0=0.0,
-        t1=0.9,
+        t1=0.9,  # Stop before t=1 to avoid (1-t)->0 singularity in _to_velocity
         stepsize_controller=diffrax.ConstantStepSize,
         stepsize_controller_cfg={},
     )
@@ -180,7 +180,7 @@ def test_sample_image_prediction_guided_shape():
         solver=diffrax.Euler,
         dt0=0.1,
         t0=0.0,
-        t1=0.9,
+        t1=0.9,  # Stop before t=1 to avoid (1-t)->0 singularity in _to_velocity
         stepsize_controller=diffrax.ConstantStepSize,
         stepsize_controller_cfg={},
         cond=jnp.array([0.4]),
