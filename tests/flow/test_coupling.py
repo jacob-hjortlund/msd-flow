@@ -39,5 +39,13 @@ def test_ot_coupling_is_permutation():
     x0_paired = ot_coupling(x0, x1)
     x0_flat = x0.reshape(4, -1)
     x0p_flat = x0_paired.reshape(4, -1)
-    for row in x0p_flat:
-        assert any(np.allclose(row, x0_row) for x0_row in x0_flat)
+    # Every row of x0_paired must appear exactly once in x0
+    matches = [
+        np.where([np.allclose(row, x0_row) for x0_row in x0_flat])[0]
+        for row in x0p_flat
+    ]
+    # Each result row must match exactly one source row
+    assert all(len(m) == 1 for m in matches), "each output row must match exactly one input row"
+    # All matched indices must be distinct (no source row used twice)
+    matched_indices = [m[0] for m in matches]
+    assert len(set(matched_indices)) == len(matched_indices), "output rows must be a permutation (no duplicates)"
