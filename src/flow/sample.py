@@ -10,6 +10,7 @@ import diffrax
 import jax.numpy as jnp
 
 from src.utils.utils import resolve_import
+from src.flow.otfm import _to_velocity
 
 # TODO: Move to inference
 
@@ -85,10 +86,19 @@ def sample(
     def drift(t, y, args):
         # Python-level branch: evaluated at trace time, not a JAX conditional.
         # guidance_scale must remain a Python float (never a jax.Array).
+        # t is a JAX scalar; _to_velocity expects shape (B,), so we
+        # temporarily add/remove a batch dimension.
+        t_batch = jnp.reshape(t, (1,))
+        y_batch = y[None]  # (1, C, H, W)
+
         if guidance_scale == 1.0:
-            return model(t, y, _cond, _mask)
-        v_cond = model(t, y, _cond, mask_true)
-        v_uncond = model(t, y, _cond, mask_false)
+            pred = model(t, y, _cond, _mask)
+            return _to_velocity(pred[None], y_batch, t_batch, model.prediction_type)[0]
+
+        pred_cond = model(t, y, _cond, mask_true)
+        pred_uncond = model(t, y, _cond, mask_false)
+        v_cond = _to_velocity(pred_cond[None], y_batch, t_batch, model.prediction_type)[0]
+        v_uncond = _to_velocity(pred_uncond[None], y_batch, t_batch, model.prediction_type)[0]
         return v_uncond + guidance_scale * (v_cond - v_uncond)
 
     x0 = jax.random.normal(key, shape)
