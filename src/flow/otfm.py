@@ -8,6 +8,75 @@ import equinox as eqx
 import jax.numpy as jnp
 
 
+def _to_velocity(
+    pred: jnp.ndarray,
+    x_t: jnp.ndarray,
+    t: jnp.ndarray,
+    prediction_type: str,
+) -> jnp.ndarray:
+    """Convert a model prediction to a velocity field.
+
+    Args:
+        pred:            shape (B, C, H, W) — raw model output.
+        x_t:             shape (B, C, H, W) — interpolated samples at time t.
+        t:               shape (B,) — per-sample times in [0, 1).
+        prediction_type: ``"velocity"`` returns ``pred`` unchanged;
+            ``"image"`` applies ``(pred - x_t) / (1 - t)``.
+
+    Returns:
+        Velocity field of shape (B, C, H, W).
+    """
+    if prediction_type == "image":
+        t_ = t[:, None, None, None]
+        return (pred - x_t) / (1.0 - t_)
+    return pred
+
+
+def sample_time_uniform(
+    key: jax.Array,
+    batch_size: int,
+    t_min: float = 0.0,
+    t_max: float = 1.0,
+) -> jnp.ndarray:
+    """Sample times uniformly from [t_min, t_max].
+
+    Args:
+        key:        JAX PRNG key.
+        batch_size: Number of time samples to draw.
+        t_min:      Lower bound of the uniform distribution. Default 0.0.
+        t_max:      Upper bound of the uniform distribution. Default 1.0.
+
+    Returns:
+        Array of shape (batch_size,) with values in [t_min, t_max].
+    """
+    return jax.random.uniform(key, (batch_size,), minval=t_min, maxval=t_max)
+
+
+def sample_time_logit_normal(
+    key: jax.Array,
+    batch_size: int,
+    mu: float = -0.8,
+    sigma: float = 0.8,
+) -> jnp.ndarray:
+    """Sample times via a logit-normal distribution.
+
+    Draws ``u ~ Normal(mu, sigma)`` then applies sigmoid to map to (0, 1).
+    The default ``mu=-0.8, sigma=0.8`` biases samples toward the middle of the
+    interval, following Esser et al. 2024 (Stable Diffusion 3).
+
+    Args:
+        key:        JAX PRNG key.
+        batch_size: Number of time samples to draw.
+        mu:         Mean of the underlying normal. Default -0.8.
+        sigma:      Std-dev of the underlying normal. Default 0.8.
+
+    Returns:
+        Array of shape (batch_size,) with values in (0, 1).
+    """
+    u = jax.random.normal(key, (batch_size,)) * sigma + mu
+    return jax.nn.sigmoid(u)
+
+
 def sample_path(
     x0: jnp.ndarray,
     x1: jnp.ndarray,

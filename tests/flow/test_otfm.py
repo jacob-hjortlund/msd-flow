@@ -202,3 +202,108 @@ def test_sample_path_zero_sigma_matches_deterministic():
     assert jnp.allclose(u_t_a, u_t_b)
 
 
+# --- _to_velocity ---
+
+def test_to_velocity_velocity_mode_returns_pred():
+    """In velocity mode, _to_velocity is an identity on pred."""
+    from src.flow.otfm import _to_velocity
+    pred = jnp.ones((2, 1, 4, 4)) * 3.0
+    x_t = jnp.ones((2, 1, 4, 4)) * 1.0
+    t = jnp.array([0.4, 0.6])
+    v = _to_velocity(pred, x_t, t, "velocity")
+    assert jnp.allclose(v, pred)
+
+
+def test_to_velocity_image_mode_formula():
+    """In image mode, _to_velocity applies (pred - x_t) / (1 - t)."""
+    from src.flow.otfm import _to_velocity
+    pred = jnp.ones((2, 1, 4, 4)) * 2.0
+    x_t = jnp.ones((2, 1, 4, 4)) * 0.5
+    t = jnp.array([0.5, 0.5])
+    v = _to_velocity(pred, x_t, t, "image")
+    expected = (pred - x_t) / (1.0 - t[:, None, None, None])
+    assert jnp.allclose(v, expected)
+
+
+def test_to_velocity_image_mode_shape():
+    """Output shape matches input shape."""
+    from src.flow.otfm import _to_velocity
+    B, C, H, W = 3, 2, 8, 8
+    pred = jax.random.normal(KEY, (B, C, H, W))
+    x_t = jax.random.normal(KEY, (B, C, H, W))
+    t = jnp.array([0.1, 0.5, 0.9])
+    v = _to_velocity(pred, x_t, t, "image")
+    assert v.shape == (B, C, H, W)
+
+
+# --- sample_time_uniform ---
+
+def test_sample_time_uniform_shape():
+    """Output has shape (batch_size,)."""
+    from src.flow.otfm import sample_time_uniform
+    t = sample_time_uniform(KEY, 64)
+    assert t.shape == (64,)
+
+
+def test_sample_time_uniform_range_defaults():
+    """All samples lie in [0, 1] with default t_min/t_max."""
+    from src.flow.otfm import sample_time_uniform
+    t = sample_time_uniform(KEY, 1000)
+    assert jnp.all(t >= 0.0) and jnp.all(t <= 1.0)
+
+
+def test_sample_time_uniform_custom_range():
+    """All samples lie in [t_min, t_max] when overridden."""
+    from src.flow.otfm import sample_time_uniform
+    t = sample_time_uniform(KEY, 1000, t_min=0.2, t_max=0.7)
+    assert jnp.all(t >= 0.2) and jnp.all(t <= 0.7)
+
+
+def test_sample_time_uniform_deterministic():
+    """Same key gives identical output."""
+    from src.flow.otfm import sample_time_uniform
+    t1 = sample_time_uniform(jax.random.PRNGKey(7), 32)
+    t2 = sample_time_uniform(jax.random.PRNGKey(7), 32)
+    assert jnp.allclose(t1, t2)
+
+
+def test_sample_time_uniform_different_keys_differ():
+    """Different keys give different samples."""
+    from src.flow.otfm import sample_time_uniform
+    t1 = sample_time_uniform(jax.random.PRNGKey(0), 32)
+    t2 = sample_time_uniform(jax.random.PRNGKey(1), 32)
+    assert not jnp.allclose(t1, t2)
+
+
+# --- sample_time_logit_normal ---
+
+def test_sample_time_logit_normal_shape():
+    """Output has shape (batch_size,)."""
+    from src.flow.otfm import sample_time_logit_normal
+    t = sample_time_logit_normal(KEY, 64)
+    assert t.shape == (64,)
+
+
+def test_sample_time_logit_normal_range():
+    """All samples are strictly in (0, 1) — sigmoid always outputs in that range."""
+    from src.flow.otfm import sample_time_logit_normal
+    t = sample_time_logit_normal(KEY, 1000)
+    assert jnp.all(t > 0.0) and jnp.all(t < 1.0)
+
+
+def test_sample_time_logit_normal_deterministic():
+    """Same key gives identical output."""
+    from src.flow.otfm import sample_time_logit_normal
+    t1 = sample_time_logit_normal(jax.random.PRNGKey(7), 32)
+    t2 = sample_time_logit_normal(jax.random.PRNGKey(7), 32)
+    assert jnp.allclose(t1, t2)
+
+
+def test_sample_time_logit_normal_different_keys_differ():
+    """Different keys give different samples."""
+    from src.flow.otfm import sample_time_logit_normal
+    t1 = sample_time_logit_normal(jax.random.PRNGKey(0), 32)
+    t2 = sample_time_logit_normal(jax.random.PRNGKey(1), 32)
+    assert not jnp.allclose(t1, t2)
+
+
