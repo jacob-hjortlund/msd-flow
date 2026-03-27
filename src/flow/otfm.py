@@ -121,11 +121,17 @@ def flow_matching_loss(
 ) -> jnp.ndarray:
     """Compute the flow matching MSE loss.
 
+    Supports velocity-predicting and image-predicting models. The loss is
+    always computed in velocity space; image-space predictions are converted
+    via ``v_t = (x_t_pred - x_t) / (1 - t)`` before the MSE is evaluated.
+
     Args:
-        model: Velocity-field network accepting ``(t, x_t, cond, cond_mask)``.
+        model: Network accepting ``(t, x_t, cond, cond_mask)``. Must have a
+            ``prediction_type`` attribute of ``"velocity"`` (default) or
+            ``"image"``.
         x_t:   shape (B, C, H, W) — interpolated samples at time t.
         u_t:   shape (B, C, H, W) — target velocities (x1 - x0).
-        t:     shape (B,) — per-sample times in [0, 1].
+        t:     shape (B,) — per-sample times in [0, 1).
         cond:  shape (B, cond_dim) — conditioning vectors. Pass
             ``jnp.empty((B, 0))`` when the model is unconditional.
         cond_mask: shape (B,) bool — per-sample mask. ``True`` = use
@@ -134,5 +140,6 @@ def flow_matching_loss(
     Returns:
         Scalar mean squared error between predicted and target velocities.
     """
-    v_t = eqx.filter_vmap(model)(t, x_t, cond, cond_mask)
+    pred = eqx.filter_vmap(model)(t, x_t, cond, cond_mask)
+    v_t = _to_velocity(pred, x_t, t, model.prediction_type)
     return jnp.mean((v_t - u_t) ** 2)
