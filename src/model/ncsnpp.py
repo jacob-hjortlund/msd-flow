@@ -41,6 +41,7 @@ class NCSNpp(eqx.Module):
         final_norm: Output GroupNorm.
         final_conv: Output 3x3 convolution.
         activation: Activation function.
+        prediction_type: Output semantics — ``"velocity"`` or ``"image"``.
     """
 
     stem: eqx.nn.Conv2d
@@ -69,6 +70,7 @@ class NCSNpp(eqx.Module):
     num_res_blocks: int = eqx.field(static=True)
     attn_resolutions: List[int] = eqx.field(static=True)
     image_size: int = eqx.field(static=True)
+    prediction_type: str = eqx.field(static=True)
 
     def __init__(
         self,
@@ -87,6 +89,7 @@ class NCSNpp(eqx.Module):
         image_size: int,
         key: jax.Array,
         cond_dim: int = 0,
+        prediction_type: str = "velocity",
     ):
         """Initialise the NCSN++ architecture.
 
@@ -108,6 +111,11 @@ class NCSNpp(eqx.Module):
             cond_dim: Number of conditioning dimensions. Supports 0 (unconditional)
                 or 1 (scalar condition such as redshift). Values > 1 raise
                 ``ValueError``.
+            prediction_type: Output semantics of the network. ``"velocity"``
+                (default) means the network predicts the velocity field
+                ``v_t`` directly. ``"image"`` means it predicts the target
+                image ``x_t_pred``; the caller converts to velocity via
+                ``(x_t_pred - x_t) / (1 - t)``.
         """
         if isinstance(activation, str):
             activation = resolve_import(activation)
@@ -124,6 +132,13 @@ class NCSNpp(eqx.Module):
                 f"cond_dim={cond_dim} is not supported; only cond_dim=0 "
                 "(unconditional) or cond_dim=1 (scalar condition) are implemented."
             )
+
+        if prediction_type not in ("velocity", "image"):
+            raise ValueError(
+                f"prediction_type={prediction_type!r} is not supported; "
+                "choose 'velocity' or 'image'."
+            )
+        self.prediction_type = prediction_type
 
         keys = jax.random.split(key, 512)
         ki = 0
@@ -352,7 +367,9 @@ class NCSNpp(eqx.Module):
                 ``jnp.array(False)`` by convention.
 
         Returns:
-            Predicted velocity field of shape ``(C, H, W)``.
+            Predicted velocity field of shape ``(C, H, W)`` when
+            ``prediction_type="velocity"``, or predicted image of shape
+            ``(C, H, W)`` when ``prediction_type="image"``.
         """
         time_emb = self.time_emb(t)
 
