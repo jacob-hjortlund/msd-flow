@@ -9,7 +9,7 @@ import jax.numpy as jnp
 
 from src.model.unet import UNet
 from src.flow.otfm import flow_matching_loss
-from src.flow.otfm import minibatch_ot_coupling, sample_ot_path
+from src.flow.otfm import sample_ot_path
 
 KEY = jax.random.PRNGKey(0)
 
@@ -30,28 +30,6 @@ SMALL_MODEL_COND = UNet(
     channel_multipliers=[1, 2], num_res_blocks=1, num_heads=1,
     num_groups=2, activation=jax.nn.silu, cond_dim=1, key=KEY,
 )
-
-
-def test_ot_coupling_output_shape():
-    """Verify OT coupling output shape matches input shape."""
-    rng = np.random.default_rng(0)
-    x0 = rng.standard_normal((4, 1, 8, 8)).astype(np.float32)
-    x1 = rng.standard_normal((4, 1, 8, 8)).astype(np.float32)
-    x0_paired = minibatch_ot_coupling(x0, x1)
-    assert x0_paired.shape == x0.shape
-
-
-def test_ot_coupling_is_permutation():
-    """Verify OT coupling returns a permutation of the source rows."""
-    rng = np.random.default_rng(1)
-    x0 = rng.standard_normal((4, 1, 8, 8)).astype(np.float32)
-    x1 = rng.standard_normal((4, 1, 8, 8)).astype(np.float32)
-    x0_paired = minibatch_ot_coupling(x0, x1)
-    # Every row of x0_paired must appear exactly once in x0
-    x0_flat = x0.reshape(4, -1)
-    x0p_flat = x0_paired.reshape(4, -1)
-    for row in x0p_flat:
-        assert any(np.allclose(row, x0_row) for x0_row in x0_flat)
 
 
 def test_sample_ot_path_at_t0_gives_x0():

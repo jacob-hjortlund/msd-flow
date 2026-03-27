@@ -1,30 +1,12 @@
 """Optimal-transport flow matching loss and utilities.
 
-Implements minibatch OT coupling, the linear interpolant path,
-and the MSE flow matching objective.
+Implements the linear interpolant path and the MSE flow matching objective.
 """
 
 import jax
 import numpy as np
 import equinox as eqx
 import jax.numpy as jnp
-
-from scipy.optimize import linear_sum_assignment
-
-
-def minibatch_ot_coupling(x0: np.ndarray, x1: np.ndarray) -> np.ndarray:
-    """Pair x0 ~ N(0,I) with x1 ~ p_data via minibatch optimal transport.
-
-    Runs on NumPy/CPU, outside JAX JIT. Both inputs shape (B, C, H, W).
-    Returns a permutation of x0 that minimises total squared L2 cost to x1.
-    """
-    B = x0.shape[0]
-    x0_flat = x0.reshape(B, -1)
-    x1_flat = x1.reshape(B, -1)
-    # Pairwise squared L2 cost matrix (B, B)
-    cost = np.sum((x0_flat[:, None, :] - x1_flat[None, :, :]) ** 2, axis=-1)
-    _, col_ind = linear_sum_assignment(cost)
-    return x0[col_ind]
 
 
 def sample_ot_path(
