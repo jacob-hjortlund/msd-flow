@@ -1,0 +1,81 @@
+pre_arcsinh_image_transforms:
+  _target_: torchvision.transforms.Compose
+  transforms:
+    - _target_: src.data.preprocess.SurfaceBrightnessToNanomaggies
+      mag_threshold: 99.0
+    - _target_: src.data.preprocess.ClipAndPad
+      n: 512
+    - _target_: src.data.preprocess.PDFNorm
+
+arcsinh_transform:
+  _target_: torchvision.transforms.Compose
+  transforms:
+    - _target_: src.data.preprocess.ArcsinhStretch
+      scale: null
+      transforms: ${data.dataset.pre_arcsinh_image_transforms}
+      percentile: 10
+      data_dir: ${data.dataset.train.processed_dir}
+      split: train
+
+post_arcsinh_image_transforms:
+  _target_: torchvision.transforms.Compose
+  transforms:
+    - _target_: src.data.preprocess.GlobalNorm
+      global_min: 0.0
+      global_max: null
+      norm_min: -1.0
+      norm_max: 1.0
+      data_dir: ${data.dataset.train.processed_dir}
+      percentile: ${data.dataset.arcsinh_transform.transforms.0.percentile}
+      split: train
+      transforms:
+        _target_ : torchvision.transforms.Compose
+        transforms:
+          - ${data.dataset.pre_arcsinh_image_transforms}
+          - ${data.dataset.arcsinh_transform}
+
+augmentations:
+  _target_: torchvision.transforms.Compose
+  transforms:
+    - _target_: src.data.preprocess.RandomHorizontalFlip
+      p: 0.5
+    - _target_: src.data.preprocess.RandomVerticalFlip
+      p: 0.5
+    - _target_: src.data.preprocess.RandomRotation90
+
+deterministic_transforms:
+  _target_: torchvision.transforms.Compose
+  transforms:
+    - ${data.dataset.pre_arcsinh_image_transforms}
+    - ${data.dataset.arcsinh_transform}
+    - ${data.dataset.post_arcsinh_image_transforms}
+
+train:
+  _target_: src.data.dataset.TNG50Dataset
+  processed_dir: ${hydra:runtime.cwd}/data/processed/hsc_i_band
+  split: train
+  image_transform:
+    _target_: torchvision.transforms.Compose
+    transforms:
+      - ${data.dataset.pre_arcsinh_image_transforms}
+      - ${data.dataset.arcsinh_transform}
+      - ${data.dataset.post_arcsinh_image_transforms}
+      - ${data.dataset.augmentations}
+  metadata_columns: null
+  metadata_transform: null
+
+val:
+  _target_: src.data.dataset.TNG50Dataset
+  processed_dir: ${hydra:runtime.cwd}/data/processed/hsc_i_band
+  split: val
+  image_transform: ${data.dataset.deterministic_transforms}
+  metadata_columns: null
+  metadata_transform: null
+
+test:
+  _target_: src.data.dataset.TNG50Dataset
+  processed_dir: ${hydra:runtime.cwd}/data/processed/hsc_i_band
+  split: test
+  image_transform: ${data.dataset.deterministic_transforms}
+  metadata_columns: null
+  metadata_transform: null

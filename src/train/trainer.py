@@ -70,8 +70,8 @@ def train(cfg, model, dataloader, optimizer: optax.GradientTransformation):
     Args:
         cfg:        Hydra DictConfig with cfg.seed, cfg.train.*, cfg.flow.otfm.*
         model:      UNet to train
-        dataloader: PyTorch DataLoader (or any iterator yielding batches as
-                    torch.Tensor of shape (B, C, H, W))
+        dataloader: PyTorch DataLoader yielding ``(images, meta)`` tuples
+                    where images is a ``(B, C, H, W)`` tensor.
         optimizer:  Optax GradientTransformation (construct via
                     hydra.utils.instantiate(cfg.train.optimizer) before calling)
 
@@ -98,7 +98,8 @@ def train(cfg, model, dataloader, optimizer: optax.GradientTransformation):
             data_iter = iter(dataloader)
             batch = next(data_iter)
 
-        x1_np = batch.numpy()
+        images, _meta = batch
+        x1_np = images.numpy()
         B = x1_np.shape[0]
 
         # Split key each step for reproducible, non-repeated noise draws.

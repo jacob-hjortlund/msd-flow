@@ -101,12 +101,14 @@ from src.flow.otfm import minibatch_ot_coupling
 
 
 def _make_fake_dataloader(B=2, num_batches=3):
-    """Yield simple fake PyTorch-style batches (just numpy arrays)."""
+    """Yield fake (images, meta) tuples matching DataLoader contract."""
     import torch
     for _ in range(num_batches):
-        yield torch.from_numpy(
+        images = torch.from_numpy(
             np.random.randn(B, 1, 8, 8).astype(np.float32)
         )
+        meta = torch.empty(B, 0)
+        yield images, meta
 
 
 def test_train_runs_and_returns_model():
@@ -143,12 +145,13 @@ def test_train_reduces_loss():
         "flow": {"otfm": {"t_min": 0.0, "t_max": 1.0}},
     })
     # Fixed batch — repeat the same data so loss can decrease
-    fixed_batch = torch.from_numpy(
+    fixed_images = torch.from_numpy(
         np.random.randn(4, 1, 8, 8).astype(np.float32)
     )
+    fixed_meta = torch.empty(4, 0)
     def dataloader():
         while True:
-            yield fixed_batch
+            yield fixed_images, fixed_meta
 
     optimizer = optax.adam(1e-3)
     losses = []
