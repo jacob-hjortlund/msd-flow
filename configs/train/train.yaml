@@ -6,3 +6,4 @@ log_every: 100
 optimizer:
   _target_: optax.adam
   learning_rate: 1.0e-4
+p_uncond: 0.1

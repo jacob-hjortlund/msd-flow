@@ -24,6 +24,8 @@ def sample(
     t1: float,
     stepsize_controller,
     stepsize_controller_cfg: dict,
+    cond: jax.Array | None = None,
+    guidance_scale: float = 1.0,
 ) -> jax.Array:
     """Draw one sample by integrating the learned ODE from t0 to t1.
 
@@ -38,10 +40,23 @@ def sample(
         stepsize_controller:  Diffrax step controller
         stepsize_controller_cfg: Keyword arguments forwarded to the step-size
             controller constructor.
+        cond:                 Conditioning vector of shape ``(D,)``. Pass
+            ``None`` for unconditional sampling (the model's null embedding
+            is used).
+        guidance_scale:       Classifier-free guidance scale. ``1.0`` performs
+            a single conditional forward pass; values ``> 1.0`` blend the
+            conditional and unconditional predictions via
+            ``v_uncond + guidance_scale * (v_cond - v_uncond)``.
 
     Returns:
         Sample array of shape `shape`.
     """
+
+    if cond is None and guidance_scale != 1.0:
+        raise ValueError(
+            "guidance_scale != 1.0 requires an explicit cond; "
+            "for unconditional sampling, leave cond=None (the default)."
+        )
 
     if isinstance(solver, str):
         solver = resolve_import(solver)
@@ -53,8 +68,31 @@ def sample(
     stepsize_controller = (
         stepsize_controller()
     )  # TODO: Fix when controller has args / kwargs
+
+    mask_true = jnp.array(True)
+    mask_false = jnp.array(False)
+    # When cond is None we are doing unconditional sampling: use the null
+    # embedding (mask_false) and pass a dummy zeros vector so that any
+    # cond[0] access inside the model is safe even though jnp.where evaluates
+    # both branches eagerly.
+    if cond is None:
+        _cond = jnp.zeros(1)
+        _mask = mask_false
+    else:
+        _cond = cond
+        _mask = mask_true
+
+    def drift(t, y, args):
+        # Python-level branch: evaluated at trace time, not a JAX conditional.
+        # guidance_scale must remain a Python float (never a jax.Array).
+        if guidance_scale == 1.0:
+            return model(t, y, _cond, _mask)
+        v_cond = model(t, y, _cond, mask_true)
+        v_uncond = model(t, y, _cond, mask_false)
+        return v_uncond + guidance_scale * (v_cond - v_uncond)
+
     x0 = jax.random.normal(key, shape)
-    term = diffrax.ODETerm(model)
+    term = diffrax.ODETerm(drift)
     saveat = diffrax.SaveAt(ts=jnp.array([t1]))
     solution = diffrax.diffeqsolve(
         term,

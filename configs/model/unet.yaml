@@ -6,3 +6,4 @@ num_res_blocks: 2
 num_heads: 8
 num_groups: 8
 activation: "jax.nn.silu"
+cond_dim: 0

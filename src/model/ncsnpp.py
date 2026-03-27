@@ -6,7 +6,7 @@ residual blocks with integrated up/down resampling, skip rescaling, and
 self-attention at configurable resolutions.
 """
 
-from typing import Callable, List
+from typing import Callable, List, Optional
 
 import jax
 import jax.numpy as jnp
@@ -26,6 +26,9 @@ class NCSNpp(eqx.Module):
     Attributes:
         stem: Initial 3x3 convolution.
         time_emb: Gaussian Fourier projection for time conditioning.
+        cond_dim: Number of conditioning dimensions (0 = unconditional).
+        cond_embed: Conditioning embedding module (``None`` when ``cond_dim=0``).
+        null_cond_emb: Null conditioning embedding (``None`` when ``cond_dim=0``).
         encoder_blocks: Flat list of encoder ResBlock/AttnBlock modules.
         encoder_is_attn: Boolean flag per encoder block (True = attention).
         downsample_blocks: ResBlockBigGAN with down=True, one per level except last.
@@ -42,6 +45,9 @@ class NCSNpp(eqx.Module):
 
     stem: eqx.nn.Conv2d
     time_emb: GaussianFourierProjection
+    cond_dim: int = eqx.field(static=True)
+    cond_embed: Optional[GaussianFourierProjection]
+    null_cond_emb: Optional[jax.Array]
 
     encoder_blocks: List
     encoder_is_attn: List[bool]
@@ -80,6 +86,7 @@ class NCSNpp(eqx.Module):
         skip_rescale: bool,
         image_size: int,
         key: jax.Array,
+        cond_dim: int = 0,
     ):
         """Initialise the NCSN++ architecture.
 
@@ -98,6 +105,9 @@ class NCSNpp(eqx.Module):
             skip_rescale: If True, divide residual sums by sqrt(2).
             image_size: Input spatial resolution (assumed square).
             key: JAX PRNG key.
+            cond_dim: Number of conditioning dimensions. Supports 0 (unconditional)
+                or 1 (scalar condition such as redshift). Values > 1 raise
+                ``ValueError``.
         """
         if isinstance(activation, str):
             activation = resolve_import(activation)
@@ -107,6 +117,13 @@ class NCSNpp(eqx.Module):
         self.num_res_blocks = num_res_blocks
         self.attn_resolutions = list(attn_resolutions)
         self.image_size = image_size
+        self.cond_dim = cond_dim
+
+        if cond_dim > 1:
+            raise ValueError(
+                f"cond_dim={cond_dim} is not supported; only cond_dim=0 "
+                "(unconditional) or cond_dim=1 (scalar condition) are implemented."
+            )
 
         keys = jax.random.split(key, 512)
         ki = 0
@@ -122,6 +139,18 @@ class NCSNpp(eqx.Module):
         # -- Time embedding --
         self.time_emb = GaussianFourierProjection(time_emb_dim, fourier_scale, keys[ki])
         ki += 1
+
+        # -- Conditioning embedding --
+        # Use GaussianFourierProjection for the condition embedding (matching
+        # NCSNpp's time embedding type) rather than SinusoidalEmbedding, so
+        # both embeddings live in the same representational space.
+        if cond_dim > 0:
+            self.cond_embed = GaussianFourierProjection(time_emb_dim, fourier_scale, keys[ki])
+            ki += 1
+            self.null_cond_emb = jnp.zeros(time_emb_dim)
+        else:
+            self.cond_embed = None
+            self.null_cond_emb = None
 
         # -- Encoder --
         # Track actual channel dim of every skip connection for decoder.
@@ -307,17 +336,32 @@ class NCSNpp(eqx.Module):
         )
         ki += 1
 
-    def __call__(self, t: jax.Array, x_t: jax.Array, *args, **kwargs) -> jax.Array:
+    def __call__(self, t: jax.Array, x_t: jax.Array, cond: jax.Array, cond_mask: jax.Array) -> jax.Array:
         """Predict the velocity field at time *t*.
 
         Args:
             t: Scalar time value in ``[0, 1]``.
             x_t: Noisy image of shape ``(C, H, W)``.
+            cond: Conditioning vector of shape ``(cond_dim,)``. When
+                ``cond_dim=1``, ``cond[0]`` is embedded as a scalar.
+                When ``cond_dim=0`` the model ignores ``cond`` entirely;
+                pass ``jnp.zeros(1)`` as a safe dummy value.
+            cond_mask: Scalar bool. ``True`` uses the real condition
+                embedding; ``False`` uses the null embedding.
+                When ``cond_dim=0`` this argument is ignored; pass
+                ``jnp.array(False)`` by convention.
 
         Returns:
             Predicted velocity field of shape ``(C, H, W)``.
         """
         time_emb = self.time_emb(t)
+
+        if self.cond_dim > 0:
+            cond_emb = self.cond_embed(cond[0])
+            combined_emb = time_emb + jnp.where(cond_mask, cond_emb, self.null_cond_emb)
+        else:
+            combined_emb = time_emb
+
         h = self.stem(x_t)
 
         # -- Encoder: collect skip connections --
@@ -327,7 +371,7 @@ class NCSNpp(eqx.Module):
 
         for level in range(L):
             for _ in range(self.num_res_blocks):
-                h = self.encoder_blocks[block_idx](h, time_emb)
+                h = self.encoder_blocks[block_idx](h, combined_emb)
                 block_idx += 1
                 if (
                     block_idx < len(self.encoder_blocks)
@@ -338,13 +382,13 @@ class NCSNpp(eqx.Module):
                 skips.append(h)
 
             if level < L - 1:
-                h = self.downsample_blocks[level](h, time_emb)
+                h = self.downsample_blocks[level](h, combined_emb)
                 skips.append(h)
 
         # -- Bottleneck --
-        h = self.mid_block1(h, time_emb)
+        h = self.mid_block1(h, combined_emb)
         h = self.mid_attn(h)
-        h = self.mid_block2(h, time_emb)
+        h = self.mid_block2(h, combined_emb)
 
         # -- Decoder: consume skip connections in reverse --
         dec_idx = 0
@@ -352,7 +396,7 @@ class NCSNpp(eqx.Module):
             for _ in range(self.num_res_blocks + 1):
                 skip = skips.pop()
                 h = jnp.concatenate([h, skip], axis=0)
-                h = self.decoder_blocks[dec_idx](h, time_emb)
+                h = self.decoder_blocks[dec_idx](h, combined_emb)
                 dec_idx += 1
                 if dec_idx < len(self.decoder_blocks) and self.decoder_is_attn[dec_idx]:
                     h = self.decoder_blocks[dec_idx](h)
@@ -360,7 +404,7 @@ class NCSNpp(eqx.Module):
 
             if level > 0:
                 up_idx = L - 1 - level
-                h = self.upsample_blocks[up_idx](h, time_emb)
+                h = self.upsample_blocks[up_idx](h, combined_emb)
 
         # -- Output head --
         h = self.final_norm(h)
