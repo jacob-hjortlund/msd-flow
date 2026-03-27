@@ -39,6 +39,7 @@ class UNet(eqx.Module):
         final_norm: Output ``GroupNorm``.
         final_conv: 3x3 convolution projecting to output channels.
         activation: Activation function used throughout.
+        prediction_type: Output semantics — ``"velocity"`` or ``"image"``.
     """
 
     stem: eqx.nn.Conv2d
@@ -56,6 +57,7 @@ class UNet(eqx.Module):
     final_norm: eqx.nn.GroupNorm
     final_conv: eqx.nn.Conv2d
     activation: Callable = eqx.field(static=True)
+    prediction_type: str = eqx.field(static=True)
 
     def __init__(
         self,
@@ -69,6 +71,7 @@ class UNet(eqx.Module):
         activation: Callable,
         key: jax.Array,
         cond_dim: int = 0,
+        prediction_type: str = "velocity",
     ):
         """Initialise encoder, bottleneck, and decoder stages.
 
@@ -85,6 +88,11 @@ class UNet(eqx.Module):
             cond_dim: Number of conditioning dimensions. Supports 0 (unconditional)
                 or 1 (scalar condition such as redshift). Values > 1 raise
                 ``ValueError``.
+            prediction_type: Output semantics of the network. ``"velocity"``
+                (default) means the network predicts the velocity field
+                ``v_t`` directly. ``"image"`` means it predicts the target
+                image ``x_t_pred``; the caller converts to velocity via
+                ``(x_t_pred - x_t) / (1 - t)``.
         """
         keys = jax.random.split(key, 256)
         ki = 0
@@ -97,10 +105,17 @@ class UNet(eqx.Module):
                 "(unconditional) or cond_dim=1 (scalar condition) are implemented."
             )
 
+        if prediction_type not in ("velocity", "image"):
+            raise ValueError(
+                f"prediction_type={prediction_type!r} is not supported; "
+                "choose 'velocity' or 'image'."
+            )
+
         if isinstance(activation, str):
             activation = resolve_import(activation)
 
         self.activation = activation
+        self.prediction_type = prediction_type
         self.stem = eqx.nn.Conv2d(
             in_channels, base_channels, 3, padding=1, key=keys[ki]
         )
@@ -201,7 +216,7 @@ class UNet(eqx.Module):
         ki += 1
 
     def __call__(self, t: jax.Array, x_t: jax.Array, cond: jax.Array, cond_mask: jax.Array) -> jax.Array:
-        """Predict the velocity field at time *t*.
+        """Predict the velocity field or image at time *t*.
 
         Args:
             t: Scalar time value in ``[0, 1]``.
@@ -216,7 +231,9 @@ class UNet(eqx.Module):
                 ``jnp.array(False)`` by convention.
 
         Returns:
-            Predicted velocity field of shape ``(C, H, W)``.
+            Predicted velocity field (when ``prediction_type="velocity"``) or
+            predicted image (when ``prediction_type="image"``), both of shape
+            ``(C, H, W)``.
         """
         time_emb = self.time_emb(t)
 

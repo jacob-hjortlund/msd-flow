@@ -147,3 +147,29 @@ def test_unet_cond_dim_gt1_raises():
     """Verify cond_dim > 1 raises ValueError."""
     with pytest.raises(ValueError, match="not supported"):
         UNet(**{**SMALL_CFG, "cond_dim": 2}, key=KEY)
+
+
+_KEY = jax.random.PRNGKey(0)
+_SMALL = dict(
+    in_channels=1, out_channels=1, base_channels=4,
+    channel_multipliers=[1, 2], num_res_blocks=1, num_heads=1,
+    num_groups=2, activation=jax.nn.silu,
+)
+
+
+def test_unet_prediction_type_default():
+    """UNet defaults to velocity prediction."""
+    model = UNet(**_SMALL, key=_KEY)
+    assert model.prediction_type == "velocity"
+
+
+def test_unet_prediction_type_image():
+    """UNet accepts prediction_type='image'."""
+    model = UNet(**_SMALL, key=_KEY, prediction_type="image")
+    assert model.prediction_type == "image"
+
+
+def test_unet_prediction_type_invalid():
+    """UNet raises ValueError for unknown prediction_type."""
+    with pytest.raises(ValueError, match="prediction_type"):
+        UNet(**_SMALL, key=_KEY, prediction_type="score")
