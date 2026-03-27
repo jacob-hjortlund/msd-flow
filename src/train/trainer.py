@@ -15,7 +15,8 @@ import os
 import logging
 import numpy as np
 
-from src.flow.otfm import flow_matching_loss, minibatch_ot_coupling
+from src.flow.otfm import flow_matching_loss
+from src.flow.coupling import ot_coupling
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +113,7 @@ def train(cfg, model, dataloader, optimizer: optax.GradientTransformation):
 
         x0_np = rng.standard_normal(x1_np.shape).astype(np.float32)
         t_np = rng.uniform(t_min, t_max, size=(B,)).astype(np.float32)
-        x0_paired = minibatch_ot_coupling(x0_np, x1_np)
+        x0_paired = ot_coupling(x0_np, x1_np)
 
         # CFG: randomly drop condition per sample with probability p_uncond
         cond_mask_np = (rng.random(B) >= p_uncond).astype(bool)

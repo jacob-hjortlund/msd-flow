@@ -111,7 +111,7 @@ def test_train_step_updates_model_params():
 
 import numpy as np
 from src.train.trainer import train
-from src.flow.otfm import minibatch_ot_coupling
+from src.flow.coupling import ot_coupling
 
 
 def _make_fake_dataloader(B=2, num_batches=3):
