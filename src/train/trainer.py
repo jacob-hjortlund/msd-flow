@@ -17,7 +17,12 @@ import os
 import logging
 import numpy as np
 
-from src.flow.otfm import flow_matching_loss, sample_path
+from src.flow.otfm import (
+    flow_matching_loss,
+    sample_path,
+    sample_time_uniform,
+    sample_time_logit_normal,
+)
 from src.flow.coupling import ot_coupling
 
 logger = logging.getLogger(__name__)
@@ -92,6 +97,7 @@ def train(cfg, model, dataloader, optimizer: optax.GradientTransformation):
     t_max = float(cfg.flow.otfm.t_max)
     sigma_0 = float(cfg.flow.otfm.get("sigma_0", 0.0))
     sigma_1 = float(cfg.flow.otfm.get("sigma_1", 0.0))
+    time_sampling = cfg.flow.otfm.get("time_sampling", "uniform")
     num_steps = int(cfg.train.num_steps)
     log_every = int(cfg.train.log_every)
     ckpt_every = int(cfg.train.checkpoint_every)
@@ -115,21 +121,29 @@ def train(cfg, model, dataloader, optimizer: optax.GradientTransformation):
         cond_np = meta.numpy()
         B = x1_np.shape[0]
 
-        key, key_cpu, key_path = jax.random.split(key, 3)
+        key, key_cpu, key_time, key_path = jax.random.split(key, 4)
         cpu_seed = int(jax.random.randint(key_cpu, shape=(), minval=0, maxval=2**31 - 1))
         rng = np.random.default_rng(cpu_seed)
 
         x0_np = rng.standard_normal(x1_np.shape).astype(np.float32)
-        t_np = rng.uniform(t_min, t_max, size=(B,)).astype(np.float32)
         x0_paired = ot_coupling(x0_np, x1_np)
+
+        if time_sampling == "uniform":
+            t = sample_time_uniform(key_time, B, t_min, t_max)
+        elif time_sampling == "logit_normal":
+            t = sample_time_logit_normal(key_time, B)
+        else:
+            raise ValueError(
+                f"Unknown time_sampling={time_sampling!r}; "
+                "choose 'uniform' or 'logit_normal'."
+            )
 
         # CFG: randomly drop condition per sample with probability p_uncond
         cond_mask_np = (rng.random(B) >= p_uncond).astype(bool)
 
         x_t, u_t = _sample_path(
-            jnp.array(x0_paired), jnp.array(x1_np), jnp.array(t_np), key=key_path
+            jnp.array(x0_paired), jnp.array(x1_np), t, key=key_path
         )
-        t = jnp.array(t_np)
         cond = jnp.array(cond_np)
         cond_mask = jnp.array(cond_mask_np)
 
