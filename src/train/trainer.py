@@ -6,6 +6,8 @@ the main training loop with periodic checkpointing.
 
 from typing import Any
 
+import functools
+
 import jax
 import jax.numpy as jnp
 import equinox as eqx
@@ -15,7 +17,7 @@ import os
 import logging
 import numpy as np
 
-from src.flow.otfm import flow_matching_loss
+from src.flow.otfm import flow_matching_loss, sample_path
 from src.flow.coupling import ot_coupling
 
 logger = logging.getLogger(__name__)
@@ -49,14 +51,14 @@ def make_train_step(optimizer: optax.GradientTransformation):
     @eqx.filter_jit
     def train_step(
         state: TrainState,
-        x0: jax.Array,
-        x1: jax.Array,
+        x_t: jax.Array,
+        u_t: jax.Array,
         t: jax.Array,
         cond: jax.Array,
         cond_mask: jax.Array,
     ) -> tuple[TrainState, jax.Array]:
         loss, grads = eqx.filter_value_and_grad(flow_matching_loss)(
-            state.model, x0, x1, t, cond, cond_mask
+            state.model, x_t, u_t, t, cond, cond_mask
         )
         updates, new_opt_state = optimizer.update(
             grads, state.opt_state, eqx.filter(state.model, eqx.is_array)
@@ -88,11 +90,17 @@ def train(cfg, model, dataloader, optimizer: optax.GradientTransformation):
 
     t_min = float(cfg.flow.otfm.t_min)
     t_max = float(cfg.flow.otfm.t_max)
+    sigma_0 = float(cfg.flow.otfm.get("sigma_0", 0.0))
+    sigma_1 = float(cfg.flow.otfm.get("sigma_1", 0.0))
     num_steps = int(cfg.train.num_steps)
     log_every = int(cfg.train.log_every)
     ckpt_every = int(cfg.train.checkpoint_every)
     ckpt_dir = cfg.train.checkpoint_dir
     p_uncond = float(cfg.train.get("p_uncond", 0.0))
+
+    _sample_path = jax.jit(
+        functools.partial(sample_path, sigma_0=sigma_0, sigma_1=sigma_1)
+    )
 
     data_iter = iter(dataloader)
     for step in range(num_steps):
@@ -107,8 +115,8 @@ def train(cfg, model, dataloader, optimizer: optax.GradientTransformation):
         cond_np = meta.numpy()
         B = x1_np.shape[0]
 
-        key, subkey = jax.random.split(key)
-        cpu_seed = int(jax.random.randint(subkey, shape=(), minval=0, maxval=2**31 - 1))
+        key, key_cpu, key_path = jax.random.split(key, 3)
+        cpu_seed = int(jax.random.randint(key_cpu, shape=(), minval=0, maxval=2**31 - 1))
         rng = np.random.default_rng(cpu_seed)
 
         x0_np = rng.standard_normal(x1_np.shape).astype(np.float32)
@@ -118,13 +126,14 @@ def train(cfg, model, dataloader, optimizer: optax.GradientTransformation):
         # CFG: randomly drop condition per sample with probability p_uncond
         cond_mask_np = (rng.random(B) >= p_uncond).astype(bool)
 
-        x0 = jnp.array(x0_paired)
-        x1 = jnp.array(x1_np)
+        x_t, u_t = _sample_path(
+            jnp.array(x0_paired), jnp.array(x1_np), jnp.array(t_np), key=key_path
+        )
         t = jnp.array(t_np)
         cond = jnp.array(cond_np)
         cond_mask = jnp.array(cond_mask_np)
 
-        state, loss = train_step(state, x0, x1, t, cond, cond_mask)
+        state, loss = train_step(state, x_t, u_t, t, cond, cond_mask)
 
         if step % log_every == 0:
             logger.info(f"step={step}  loss={float(loss):.6f}")
