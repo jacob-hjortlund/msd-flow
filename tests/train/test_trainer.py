@@ -5,10 +5,12 @@ import jax.numpy as jnp
 import equinox as eqx
 import optax
 import pytest
+import numpy as np
 import diffrax
 from src.model.unet import UNet
 from src.train.trainer import TrainState, make_train_state
 from src.flow.sample import sample
+from src.flow.otfm import sample_path
 
 KEY = jax.random.PRNGKey(0)
 
@@ -63,7 +65,8 @@ def test_train_step_returns_updated_state_and_loss():
     cond = jnp.empty((B, 0))
     cond_mask = jnp.zeros(B, dtype=bool)
 
-    new_state, loss = train_step(state, x0, x1, t, cond, cond_mask)
+    x_t, u_t = sample_path(x0, x1, t)
+    new_state, loss = train_step(state, x_t, u_t, t, cond, cond_mask)
 
     assert isinstance(new_state, TrainState)
     assert loss.shape == ()
@@ -83,7 +86,8 @@ def test_train_step_loss_is_finite():
     cond = jnp.empty((B, 0))
     cond_mask = jnp.zeros(B, dtype=bool)
 
-    _, loss = train_step(state, x0, x1, t, cond, cond_mask)
+    x_t, u_t = sample_path(x0, x1, t)
+    _, loss = train_step(state, x_t, u_t, t, cond, cond_mask)
     assert jnp.isfinite(loss)
 
 
@@ -101,7 +105,8 @@ def test_train_step_updates_model_params():
     cond = jnp.empty((B, 0))
     cond_mask = jnp.zeros(B, dtype=bool)
 
-    new_state, _ = train_step(state, x0, x1, t, cond, cond_mask)
+    x_t, u_t = sample_path(x0, x1, t)
+    new_state, _ = train_step(state, x_t, u_t, t, cond, cond_mask)
 
     # At least one parameter should have changed
     orig_leaves = jax.tree_util.tree_leaves(eqx.filter(state.model, eqx.is_array))
@@ -109,7 +114,6 @@ def test_train_step_updates_model_params():
     assert any(not jnp.allclose(o, n) for o, n in zip(orig_leaves, new_leaves))
 
 
-import numpy as np
 from src.train.trainer import train
 from src.flow.coupling import ot_coupling
 
@@ -198,7 +202,8 @@ def test_train_step_with_cond():
     cond = jnp.array([[0.4], [0.8]])
     cond_mask = jnp.ones(B, dtype=bool)
 
-    new_state, loss = train_step(state, x0, x1, t, cond, cond_mask)
+    x_t, u_t = sample_path(x0, x1, t)
+    new_state, loss = train_step(state, x_t, u_t, t, cond, cond_mask)
     assert isinstance(new_state, TrainState)
     assert loss.shape == ()
     assert jnp.isfinite(loss)
@@ -218,7 +223,8 @@ def test_train_step_with_cond_dropped():
     cond = jnp.array([[0.4], [0.8]])
     cond_mask = jnp.array([True, False])  # second sample uses null embedding
 
-    new_state, loss = train_step(state, x0, x1, t, cond, cond_mask)
+    x_t, u_t = sample_path(x0, x1, t)
+    new_state, loss = train_step(state, x_t, u_t, t, cond, cond_mask)
     assert isinstance(new_state, TrainState)
     assert loss.shape == ()
     assert jnp.isfinite(loss)
