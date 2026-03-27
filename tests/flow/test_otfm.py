@@ -191,3 +191,22 @@ def test_sample_path_zero_sigma_matches_deterministic():
     x_t_b, u_t_b = sample_path(x0, x1, t, sigma_0=0.0, sigma_1=0.0, key=key)
     assert jnp.allclose(x_t_a, x_t_b)
     assert jnp.allclose(u_t_a, u_t_b)
+
+
+def test_flow_matching_loss_stochastic_runs():
+    """flow_matching_loss must accept sigma_0, sigma_1, and key without error."""
+    import jax
+    key = jax.random.PRNGKey(99)
+    B = 2
+    k1, k2 = jax.random.split(jax.random.PRNGKey(0))
+    x0 = jax.random.normal(k1, (B, 1, 8, 8))
+    x1 = jax.random.normal(k2, (B, 1, 8, 8))
+    t = jnp.array([0.3, 0.7])
+    cond = jnp.empty((B, 0))
+    cond_mask = jnp.zeros(B, dtype=bool)
+    loss = flow_matching_loss(
+        SMALL_MODEL, x0, x1, t, cond, cond_mask,
+        sigma_0=0.1, sigma_1=0.1, key=key,
+    )
+    assert loss.shape == ()
+    assert jnp.isfinite(loss)
