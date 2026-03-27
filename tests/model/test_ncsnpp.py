@@ -186,7 +186,7 @@ def test_ncsnpp_cond_dim0_backward_compat():
     assert out.shape == (1, 8, 8)
 
 
-from src.flow.otfm import flow_matching_loss
+from src.flow.otfm import flow_matching_loss, sample_path
 
 
 def test_ncsnpp_flow_matching_loss():
@@ -199,6 +199,7 @@ def test_ncsnpp_flow_matching_loss():
     t = jax.random.uniform(k3, (B,))
     cond = jnp.empty((B, 0))
     cond_mask = jnp.zeros(B, dtype=bool)
-    loss = flow_matching_loss(model, x0, x1, t, cond, cond_mask)
+    x_t, u_t = sample_path(x0, x1, t)
+    loss = flow_matching_loss(model, x_t, u_t, t, cond, cond_mask)
     assert jnp.isfinite(loss), f"Loss is not finite: {loss}"
     assert loss.shape == (), f"Loss should be scalar, got {loss.shape}"
