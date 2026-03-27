@@ -8,7 +8,8 @@ import pytest
 import numpy as np
 import diffrax
 from src.model.unet import UNet
-from src.train.trainer import TrainState, make_train_state
+from unittest.mock import MagicMock
+from src.train.trainer import TrainState, make_train_state, train
 from src.flow.sample import sample
 from src.flow.otfm import sample_path
 
@@ -260,13 +261,7 @@ def test_train_loop_with_cond():
 
 def test_train_raises_on_unknown_time_sampling():
     """train() raises ValueError for an unrecognised time_sampling value."""
-    import jax
-    import jax.numpy as jnp
-    import equinox as eqx
-    import optax
-    from unittest.mock import MagicMock
-    from src.model.unet import UNet
-    from src.train.trainer import train
+    import torch
 
     key = jax.random.PRNGKey(0)
     model = UNet(
@@ -277,7 +272,6 @@ def test_train_raises_on_unknown_time_sampling():
     optimizer = optax.adam(1e-3)
 
     # Minimal fake dataloader: one batch of ones
-    import torch
     images = torch.ones(2, 1, 4, 4)
     meta = torch.zeros(2, 0)
     dataloader = [(images, meta)]

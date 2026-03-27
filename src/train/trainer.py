@@ -131,6 +131,8 @@ def train(cfg, model, dataloader, optimizer: optax.GradientTransformation):
         if time_sampling == "uniform":
             t = sample_time_uniform(key_time, B, t_min, t_max)
         elif time_sampling == "logit_normal":
+            # logit_normal samples from (0, 1) by design; t_min/t_max are
+            # not applied because the sigmoid maps to the full open interval.
             t = sample_time_logit_normal(key_time, B)
         else:
             raise ValueError(
