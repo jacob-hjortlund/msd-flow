@@ -29,7 +29,7 @@ def main(cfg: DictConfig):
     # 2. Download data
     log.info("--- Step 2: Data Download ---")
     download_cfg = cfg.data.download
-    # call(download_cfg)
+    call(download_cfg)
 
     # 3. Assign splits
     log.info("--- Step 3: Split Assignment ---")
