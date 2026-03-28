@@ -6,8 +6,7 @@ the main training loop with periodic checkpointing.
 
 from typing import Any
 
-import functools
-
+import time
 import jax
 import jax.numpy as jnp
 import equinox as eqx
@@ -17,9 +16,10 @@ import os
 import logging
 import numpy as np
 
-from src.flow.coupling import ot_coupling
+from tqdm import tqdm
 from src.flow.otfm import flow_matching_loss
 from src.utils import register_all_resolvers
+from tqdm.contrib.logging import logging_redirect_tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -257,35 +257,57 @@ def train(
     ema_model = model
     data_iter = iter(dataloader)
 
+    total_epoch_time = 0.0
+    avg_epoch_time = 0.0
+
+    total_train_time = 0.0
+    avg_train_time = 0.0
+
+    total_val_time = 0.0
+    avg_val_time = np.nan
+    val_loss = np.nan
+    val_runs = 0
+
     for epoch in range(num_epochs):
         epoch_loss = 0.0
+        epoch_start_time = time.perf_counter()
 
-        for _ in range(steps_per_epoch):
-            try:
-                batch = next(data_iter)
-            except StopIteration:
-                data_iter = iter(dataloader)
-                batch = next(data_iter)
-
-            batch_key, key = jax.random.split(key)
-
-            t, x_t, u_t, cond, cond_mask = prepare_batch(
-                batch=batch,
-                key=batch_key,
-                coupling=coupling,
-                time_sampler=time_sampler,
-                path_sampler=path_sampler,
-                p_uncond=p_uncond,
+        with logging_redirect_tqdm():
+            pbar = tqdm(
+                range(steps_per_epoch),
+                desc=f"Epoch {epoch + 1}/{num_epochs}",
+                leave=False,
+                dynamic_ncols=True,
             )
+            for _ in pbar:
+                try:
+                    batch = next(data_iter)
+                except StopIteration:
+                    data_iter = iter(dataloader)
+                    batch = next(data_iter)
 
-            state, loss = train_step(state, x_t, u_t, t, cond, cond_mask)
-            ema_model = ema_update(ema_model, state.model, ema_decay)
-            epoch_loss += float(loss)
+                batch_key, key = jax.random.split(key)
 
-        if (epoch + 1) % log_every == 0:
-            logger.info(f"epoch={epoch + 1}  loss={epoch_loss / steps_per_epoch:.6f}")
+                t, x_t, u_t, cond, cond_mask = prepare_batch(
+                    batch=batch,
+                    key=batch_key,
+                    coupling=coupling,
+                    time_sampler=time_sampler,
+                    path_sampler=path_sampler,
+                    p_uncond=p_uncond,
+                )
+
+                state, loss = train_step(state, x_t, u_t, t, cond, cond_mask)
+                ema_model = ema_update(ema_model, state.model, ema_decay)
+                epoch_loss += float(loss)
+
+        train_time = time.perf_counter() - epoch_start_time
+        total_train_time += train_time
+        avg_train_time = total_train_time / (epoch + 1)
 
         if (epoch + 1) % val_every == 0:
+            val_start_time = time.perf_counter()
+
             key, key_val = jax.random.split(key)
             val_loss = validation_loop(
                 ema_model=ema_model,
@@ -296,7 +318,10 @@ def train(
                 time_sampler=time_sampler,
                 p_uncond=p_uncond,
             )
-            logger.info(f"epoch={epoch + 1}  val_loss={val_loss:.6f}")
+            val_time = time.perf_counter() - val_start_time
+            total_val_time += val_time
+            val_runs += 1
+            avg_val_time = total_val_time / val_runs
 
         if (epoch + 1) % ckpt_every == 0:
             os.makedirs(ckpt_dir, exist_ok=True)
@@ -305,5 +330,20 @@ def train(
             eqx.tree_serialise_leaves(raw_path, state.model)
             eqx.tree_serialise_leaves(ema_path, ema_model)
             logger.info(f"Saved checkpoint: {ema_path}")
+
+        epoch_time = time.perf_counter() - epoch_start_time
+        total_epoch_time += epoch_time
+        avg_epoch_time = total_epoch_time / (epoch + 1)
+
+        if (epoch + 1) % log_every == 0:
+            log_string = (
+                f"Epoch {epoch + 1}/{num_epochs} | "
+                + f"Train Loss: {epoch_loss / steps_per_epoch:.4g} | "
+                + f"Val Loss: {val_loss:.4g} | "
+                + f"Epoch Time: {epoch_time:.2g}s (avg {avg_epoch_time:.2g}s) | "
+                + f"Train Time: {train_time:.2g}s (avg {avg_train_time:.2g}s) | "
+                + f"Val Time: {val_time:.2f}s (avg {avg_val_time:.2f}s)"
+            )
+            logger.info(log_string)
 
     return ema_model
