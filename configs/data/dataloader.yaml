@@ -1,0 +1,17 @@
+train:
+  _target_: torch.utils.data.DataLoader
+  dataset: ${data.dataset.train}
+  batch_size: 32
+  shuffle: true
+
+val:
+  _target_: torch.utils.data.DataLoader
+  dataset: ${data.dataset.val}
+  batch_size: 64
+  shuffle: false
+
+test:
+  _target_: torch.utils.data.DataLoader
+  dataset: ${data.dataset.test}
+  batch_size: 64
+  shuffle: false
