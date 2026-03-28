@@ -18,6 +18,9 @@ from src.model.blocks import (
     ResBlockBigGAN,
 )
 from src.utils.utils import resolve_import
+from src.utils import register_all_resolvers
+
+register_all_resolvers()
 
 
 class NCSNpp(eqx.Module):
@@ -160,7 +163,9 @@ class NCSNpp(eqx.Module):
         # NCSNpp's time embedding type) rather than SinusoidalEmbedding, so
         # both embeddings live in the same representational space.
         if cond_dim > 0:
-            self.cond_embed = GaussianFourierProjection(time_emb_dim, fourier_scale, keys[ki])
+            self.cond_embed = GaussianFourierProjection(
+                time_emb_dim, fourier_scale, keys[ki]
+            )
             ki += 1
             self.null_cond_emb = jnp.zeros(time_emb_dim)
         else:
@@ -351,7 +356,9 @@ class NCSNpp(eqx.Module):
         )
         ki += 1
 
-    def __call__(self, t: jax.Array, x_t: jax.Array, cond: jax.Array, cond_mask: jax.Array) -> jax.Array:
+    def __call__(
+        self, t: jax.Array, x_t: jax.Array, cond: jax.Array, cond_mask: jax.Array
+    ) -> jax.Array:
         """Predict the velocity field at time *t*.
 
         Args:

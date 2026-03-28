@@ -25,6 +25,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 log = logging.getLogger(__name__)
 
+register_all_resolvers()
+
 
 def load_fits(filename: str, bands: list[str]) -> tuple[np.ndarray, dict]:
     """Load one or more bands from a multi-extension FITS file.
