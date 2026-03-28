@@ -59,6 +59,8 @@ def sample_time_logit_normal(
     batch_size: int,
     mu: float = -0.8,
     sigma: float = 0.8,
+    t_min: float = 1e-5,
+    t_max: float = 0.99999,
 ) -> jnp.ndarray:
     """Sample times via a logit-normal distribution.
 
@@ -71,12 +73,16 @@ def sample_time_logit_normal(
         batch_size: Number of time samples to draw.
         mu:         Mean of the underlying normal. Default -0.8.
         sigma:      Std-dev of the underlying normal. Default 0.8.
+        t_min:      Lower bound of the output times. Default 1e-5.
+        t_max:      Upper bound of the output times. Default 0.99999.
 
     Returns:
-        Array of shape (batch_size,) with values in (0, 1).
+        Array of shape (batch_size,) with values in (t_min, t_max).
     """
     u = jax.random.normal(key, (batch_size,)) * sigma + mu
-    return jax.nn.sigmoid(u)
+    t = jax.nn.sigmoid(u)
+    t = jnp.clip(t, t_min, t_max)
+    return t
 
 
 def sample_path(
