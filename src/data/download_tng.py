@@ -19,6 +19,7 @@ from astropy.io import fits
 from tqdm import tqdm
 from hydra.utils import call
 from omegaconf import DictConfig, OmegaConf
+from tqdm.contrib.logging import logging_redirect_tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 log = logging.getLogger(__name__)
@@ -132,22 +133,23 @@ def extract_tng_urls(
     url_list = []
     combos = list(itertools.product(version_ids, snap_ids))
 
-    for vId, snap in tqdm(combos):
-        endpoint_url = f"http://www.tng-project.org/api/TNG50-1/files/skirt_images_hsc_idealized_v{vId}_{snap}/"
+    with logging_redirect_tqdm():
+        for vId, snap in tqdm(combos):
+            endpoint_url = f"http://www.tng-project.org/api/TNG50-1/files/skirt_images_hsc_idealized_v{vId}_{snap}/"
 
-        try:
-            response = requests.get(endpoint_url, headers=headers)
-            response.raise_for_status()
-            urls = response.json()["files"]
-            selected_urls = urls[:N] if N > 0 else urls
-            url_list.extend(selected_urls)
+            try:
+                response = requests.get(endpoint_url, headers=headers)
+                response.raise_for_status()
+                urls = response.json()["files"]
+                selected_urls = urls[:N] if N > 0 else urls
+                url_list.extend(selected_urls)
 
-        except requests.exceptions.HTTPError as err:
-            log.warning(
-                f"Skipping version {vId}, snapID {snap} - API returned {err.response.status_code}"
-            )
-        except requests.exceptions.RequestException as err:
-            log.error(f"Network error on version {vId}, snapID {snap}: {err}")
+            except requests.exceptions.HTTPError as err:
+                log.warning(
+                    f"Skipping version {vId}, snapID {snap} - API returned {err.response.status_code}"
+                )
+            except requests.exceptions.RequestException as err:
+                log.error(f"Network error on version {vId}, snapID {snap}: {err}")
 
     return url_list
 
@@ -382,32 +384,37 @@ def download_tng_data(
     remaining_urls = [
         url for url in urls if fits_name_from_url(url) not in existing_ids
     ]
-    log.info(f"{len(remaining_urls)} URLs remaining after resumption filter.")
+    n_to_process = len(remaining_urls)
+    log.info(f"{n_to_process} URLs remaining after resumption filter.")
+
+    if n_to_process == 0:
+        log.info("No new files to process.")
+        return None
 
     batch_size = batch_size
     num_batches = (len(remaining_urls) + batch_size - 1) // batch_size
     start_idx = len(existing_ids)
 
-    for batch_num in range(num_batches):
-        batch_start = batch_num * batch_size
-        batch_urls = remaining_urls[batch_start : batch_start + batch_size]
-        log.info(
-            f"Batch {batch_num + 1}/{num_batches}: downloading {len(batch_urls)} files..."
-        )
+    n_processed = 0
+    with logging_redirect_tqdm():
+        for batch_num in tqdm(
+            range(num_batches),
+            desc="Downloading/Processing FITSbatches",
+            total=num_batches,
+        ):
+            batch_start = batch_num * batch_size
+            batch_urls = remaining_urls[batch_start : batch_start + batch_size]
+            paths = download_batch(batch_urls, raw_dir, headers, max_workers)
+            records = extract_batch(paths, list(bands), processed_dir, start_idx)
+            if records:
+                save_metadata(records, processed_dir)
 
-        paths = download_batch(batch_urls, raw_dir, headers, max_workers)
-        log.info(f"Downloaded {len(paths)}/{len(batch_urls)} files.")
+            cleanup_batch(paths)
+            n_processed += len(records)
+            start_idx += len(records)
 
-        records = extract_batch(paths, list(bands), processed_dir, start_idx)
-        log.info(f"Extracted {len(records)} galaxies.")
-
-        if records:
-            save_metadata(records, processed_dir)
-
-        cleanup_batch(paths)
-        start_idx += len(records)
-
-    log.info("Pipeline complete.")
+    frac_success = n_processed / n_to_process
+    log.info(f"Download and processing complete. Success rate: {frac_success:.2%}")
 
 
 @hydra.main(version_base=None, config_path="../../configs", config_name="config")
