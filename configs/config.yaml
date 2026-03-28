@@ -1,12 +1,14 @@
 defaults:
   - data@data.download: download
   - data@data.dataset: dataset
+  - data@data.dataloader: dataloader
   - data@data.split: split
-  - model@model: unet
+  - model@model: ncsnpp
   - flow@flow.otfm: otfm
   - flow@flow.sample: sample
   - train@train: train
   - _self_
 
 seed: 42
+image_size: 512
 work_dir: ${hydra:runtime.cwd}

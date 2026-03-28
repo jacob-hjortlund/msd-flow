@@ -4,7 +4,7 @@ pre_arcsinh_image_transforms:
     - _target_: src.data.preprocess.SurfaceBrightnessToNanomaggies
       mag_threshold: 99.0
     - _target_: src.data.preprocess.ClipAndPad
-      n: 512
+      n: ${image_size}
     - _target_: src.data.preprocess.PDFNorm
 
 arcsinh_transform:
@@ -39,9 +39,12 @@ augmentations:
   transforms:
     - _target_: src.data.preprocess.RandomHorizontalFlip
       p: 0.5
+      seed: ${seed}
     - _target_: src.data.preprocess.RandomVerticalFlip
       p: 0.5
+      seed: ${seed}
     - _target_: src.data.preprocess.RandomRotation90
+      seed: ${seed}
 
 deterministic_transforms:
   _target_: torchvision.transforms.Compose
