@@ -2,6 +2,25 @@ import jax
 import equinox as eqx
 import jax.numpy as jnp
 
+# ---------------------------------------------------------------------------
+# Metric signatures
+# ---------------------------------------------------------------------------
+# All metrics are plain callables configured via Hydra ``_target_``. Two
+# signatures are expected, depending on when the metric is evaluated:
+#
+#   Batch metric:  (model, x_t, u_t, t, cond, cond_mask) -> scalar
+#     Evaluated per-batch during validation. Receives prepared interpolant
+#     tensors. Must return a scalar JAX array. Used for logging and
+#     overfitting detection (train vs. val comparison).
+#
+#   Epoch metric:  (model, val_batches, key) -> scalar
+#     Evaluated once per validation cycle over a fixed set of raw
+#     ``(images, meta)`` tuples from the val dataloader. Any additional
+#     dependencies (solver, n_samples, etc.) should be baked in via Hydra
+#     ``_partial_: true``. Used for generation-based metrics (e.g. FID)
+#     and early stopping.
+# ---------------------------------------------------------------------------
+
 
 def _to_velocity(
     pred: jnp.ndarray,
