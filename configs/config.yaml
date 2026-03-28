@@ -4,7 +4,6 @@ defaults:
   - data@data.dataloader: dataloader
   - data@data.split: split
   - model@model: ncsnpp
-  - flow@flow.otfm: otfm
   - flow@flow.sample: sample
   - train@train: train
   - _self_

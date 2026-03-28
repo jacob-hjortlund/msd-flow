@@ -1,4 +1,4 @@
-"""Tests for src.flow.otfm."""
+"""Tests for src.train.metrics."""
 
 import jax
 import pytest
@@ -8,6 +8,8 @@ import equinox as eqx
 import jax.numpy as jnp
 
 from src.model.unet import UNet
+from src.flow.interpolate import sample_path
+from src.train.metrics import flow_matching_loss, _to_velocity
 
 KEY = jax.random.PRNGKey(0)
 

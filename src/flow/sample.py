@@ -9,7 +9,7 @@ import diffrax
 
 import jax.numpy as jnp
 
-from src.flow.otfm import _to_velocity
+from src.train.metrics import _to_velocity
 
 # TODO: Move to inference
 

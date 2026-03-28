@@ -10,7 +10,7 @@ import diffrax
 from src.model.unet import UNet
 from src.train.trainer import TrainState, make_train_state, train
 from src.flow.sample import sample
-from src.flow.otfm import sample_path
+from src.flow.interpolate import sample_path
 
 KEY = jax.random.PRNGKey(0)
 
@@ -171,7 +171,7 @@ def test_val_step_returns_scalar_loss():
     cond = jnp.empty((B, 0))
     cond_mask = jnp.zeros(B, dtype=bool)
 
-    from src.flow.otfm import sample_path as _sp
+    from src.flow.interpolate import sample_path as _sp
     x_t, u_t = _sp(x0, x1, t)
 
     loss = val_step(SMALL_MODEL, x_t, u_t, t, cond, cond_mask)
@@ -190,7 +190,7 @@ def test_val_step_loss_is_finite():
     cond = jnp.empty((B, 0))
     cond_mask = jnp.zeros(B, dtype=bool)
 
-    from src.flow.otfm import sample_path as _sp
+    from src.flow.interpolate import sample_path as _sp
     x_t, u_t = _sp(x0, x1, t)
 
     loss = val_step(SMALL_MODEL, x_t, u_t, t, cond, cond_mask)
@@ -201,7 +201,7 @@ from functools import partial
 
 from src.train.trainer import train
 from src.flow.coupling import independent_coupling
-from src.flow.otfm import sample_time_uniform
+from src.flow.interpolate import sample_time_uniform
 import torch
 
 

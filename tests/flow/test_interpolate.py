@@ -1,4 +1,4 @@
-"""Tests for src.flow.otfm."""
+"""Tests for src.flow.interpolate."""
 
 import jax
 import pytest
