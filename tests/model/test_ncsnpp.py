@@ -203,3 +203,21 @@ def test_ncsnpp_flow_matching_loss():
     loss = flow_matching_loss(model, x_t, u_t, t, cond, cond_mask)
     assert jnp.isfinite(loss), f"Loss is not finite: {loss}"
     assert loss.shape == (), f"Loss should be scalar, got {loss.shape}"
+
+
+def test_ncsnpp_prediction_type_default():
+    """NCSNpp defaults to velocity prediction."""
+    model = NCSNpp(**SMALL_CFG, key=KEY)
+    assert model.prediction_type == "velocity"
+
+
+def test_ncsnpp_prediction_type_image():
+    """NCSNpp accepts prediction_type='image'."""
+    model = NCSNpp(**SMALL_CFG, key=KEY, prediction_type="image")
+    assert model.prediction_type == "image"
+
+
+def test_ncsnpp_prediction_type_invalid():
+    """NCSNpp raises ValueError for unknown prediction_type."""
+    with pytest.raises(ValueError, match="prediction_type"):
+        NCSNpp(**SMALL_CFG, key=KEY, prediction_type="score")

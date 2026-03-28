@@ -8,7 +8,8 @@ import pytest
 import numpy as np
 import diffrax
 from src.model.unet import UNet
-from src.train.trainer import TrainState, make_train_state
+from unittest.mock import MagicMock
+from src.train.trainer import TrainState, make_train_state, train
 from src.flow.sample import sample
 from src.flow.otfm import sample_path
 
@@ -256,6 +257,42 @@ def test_train_loop_with_cond():
     optimizer = optax.adam(1e-3)
     trained = train(cfg, SMALL_MODEL_COND, dataloader(), optimizer)
     assert trained is not None
+
+
+def test_train_raises_on_unknown_time_sampling():
+    """train() raises ValueError for an unrecognised time_sampling value."""
+    import torch
+
+    key = jax.random.PRNGKey(0)
+    model = UNet(
+        in_channels=1, out_channels=1, base_channels=4,
+        channel_multipliers=[1, 2], num_res_blocks=1, num_heads=1,
+        num_groups=2, activation=jax.nn.silu, key=key,
+    )
+    optimizer = optax.adam(1e-3)
+
+    # Minimal fake dataloader: one batch of ones
+    images = torch.ones(2, 1, 4, 4)
+    meta = torch.zeros(2, 0)
+    dataloader = [(images, meta)]
+
+    cfg = MagicMock()
+    cfg.seed = 0
+    cfg.flow.otfm.t_min = 0.0
+    cfg.flow.otfm.t_max = 1.0
+    cfg.flow.otfm.get.side_effect = lambda key, default=None: {
+        "sigma_0": 0.0,
+        "sigma_1": 0.0,
+        "time_sampling": "bad_value",
+    }.get(key, default)
+    cfg.train.num_steps = 1
+    cfg.train.log_every = 1
+    cfg.train.checkpoint_every = 100
+    cfg.train.checkpoint_dir = "/tmp/ckpt_test"
+    cfg.train.get.return_value = 0.0  # p_uncond
+
+    with pytest.raises(ValueError, match="time_sampling"):
+        train(cfg, model, dataloader, optimizer)
 
 
 def test_end_to_end_conditional_training_and_sampling():
