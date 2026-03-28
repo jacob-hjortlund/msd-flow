@@ -15,5 +15,5 @@ activation:
 fourier_scale: 16.0
 skip_rescale: true
 image_size: ${image_size}
-cond_dim: 0
+cond_dim: ${if_cond: ${data.dataset.metadata_columns}, 1, 0}
 prediction_type: "velocity"

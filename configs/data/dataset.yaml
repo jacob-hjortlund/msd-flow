@@ -53,6 +53,9 @@ deterministic_transforms:
     - ${data.dataset.arcsinh_transform}
     - ${data.dataset.post_arcsinh_image_transforms}
 
+metadata_columns: ${metadata_columns}
+metadata_transform: null
+
 train:
   _target_: src.data.dataset.TNG50Dataset
   processed_dir: ${hydra:runtime.cwd}/data/processed/hsc_i_band
@@ -64,21 +67,21 @@ train:
       - ${data.dataset.arcsinh_transform}
       - ${data.dataset.post_arcsinh_image_transforms}
       - ${data.dataset.augmentations}
-  metadata_columns: null
-  metadata_transform: null
+  metadata_columns: ${data.dataset.metadata_columns}
+  metadata_transform: ${data.dataset.metadata_transform}
 
 val:
   _target_: src.data.dataset.TNG50Dataset
   processed_dir: ${hydra:runtime.cwd}/data/processed/hsc_i_band
   split: val
   image_transform: ${data.dataset.deterministic_transforms}
-  metadata_columns: null
-  metadata_transform: null
+  metadata_columns: ${data.dataset.metadata_columns}
+  metadata_transform: ${data.dataset.metadata_transform}
 
 test:
   _target_: src.data.dataset.TNG50Dataset
   processed_dir: ${hydra:runtime.cwd}/data/processed/hsc_i_band
   split: test
   image_transform: ${data.dataset.deterministic_transforms}
-  metadata_columns: null
-  metadata_transform: null
+  metadata_columns: ${data.dataset.metadata_columns}
+  metadata_transform: ${data.dataset.metadata_transform}

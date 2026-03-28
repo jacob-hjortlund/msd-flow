@@ -11,4 +11,5 @@ defaults:
 
 seed: 42
 image_size: 512
+metadata_columns: null
 work_dir: ${hydra:runtime.cwd}

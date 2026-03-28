@@ -14,19 +14,16 @@ import itertools
 
 import numpy as np
 import pandas as pd
-from astropy.io import fits
 
 from tqdm import tqdm
+from astropy.io import fits
 from hydra.utils import call
 from omegaconf import DictConfig, OmegaConf
+from src.utils import register_all_resolvers
 from tqdm.contrib.logging import logging_redirect_tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 log = logging.getLogger(__name__)
-
-OmegaConf.register_new_resolver(
-    "generate_snapshot_ids", lambda start, count: [start + i for i in range(count)]
-)
 
 
 def load_fits(filename: str, bands: list[str]) -> tuple[np.ndarray, dict]:
