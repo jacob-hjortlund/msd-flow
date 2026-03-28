@@ -8,7 +8,6 @@ import pytest
 import numpy as np
 import diffrax
 from src.model.unet import UNet
-from unittest.mock import MagicMock
 from src.train.trainer import TrainState, make_train_state, train
 from src.flow.sample import sample
 from src.flow.otfm import sample_path
@@ -198,8 +197,11 @@ def test_val_step_loss_is_finite():
     assert jnp.isfinite(loss)
 
 
+from functools import partial
+
 from src.train.trainer import train
-from src.flow.coupling import ot_coupling
+from src.flow.coupling import independent_coupling
+from src.flow.otfm import sample_time_uniform
 import torch
 
 
@@ -220,30 +222,35 @@ def _fake_val_dataloader(B=2):
     return [(images, meta)]
 
 
-def _base_cfg(num_epochs=1, num_steps_per_epoch=3):
-    from omegaconf import OmegaConf
-    return OmegaConf.create({
-        "seed": 0,
-        "train": {
-            "num_epochs": num_epochs,
-            "num_steps_per_epoch": num_steps_per_epoch,
-            "log_every": 1,
-            "checkpoint_every": 100,
-            "checkpoint_dir": "/tmp/test_ckpt",
-            "p_uncond": 0.0,
-            "ema_decay": 0.9999,
-            "val_every": 1,
-        },
-        "flow": {"otfm": {"t_min": 0.0, "t_max": 1.0}},
-    })
+def _make_train_kwargs(num_epochs=1, num_steps_per_epoch=3, p_uncond=0.0):
+    """Return default keyword args matching the current train() signature."""
+    return dict(
+        key=jax.random.PRNGKey(0),
+        optimizer=optax.adam(1e-3),
+        coupling=independent_coupling,
+        time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
+        path_sampler=partial(sample_path),
+        num_epochs=num_epochs,
+        num_steps_per_epoch=num_steps_per_epoch,
+        p_uncond=p_uncond,
+        ema_decay=0.9999,
+        log_every=1,
+        val_every=1,
+        checkpoint_every=100,
+        checkpoint_dir="/tmp/test_ckpt",
+    )
 
 
 def test_train_runs_and_returns_model():
     """Verify the full training loop completes and returns a model."""
-    optimizer = optax.adam(1e-3)
     dataloader = list(_make_fake_dataloader(B=2, num_batches=3))
     val_dataloader = _fake_val_dataloader()
-    trained_model = train(_base_cfg(), SMALL_MODEL, dataloader, val_dataloader, optimizer)
+    trained_model = train(
+        model=SMALL_MODEL,
+        dataloader=dataloader,
+        val_dataloader=val_dataloader,
+        **_make_train_kwargs(),
+    )
     assert trained_model is not None
 
 
@@ -251,14 +258,14 @@ def test_train_returns_ema_model_not_live_model():
     """train() must return the EMA model, which differs from the initial model after training."""
     dataloader = list(_make_fake_dataloader(B=2, num_batches=5))
     val_dataloader = _fake_val_dataloader()
+    kwargs = _make_train_kwargs(num_epochs=1, num_steps_per_epoch=5)
     # High learning rate so live model diverges quickly; EMA lags behind
-    big_lr_optimizer = optax.adam(1e-1)
+    kwargs["optimizer"] = optax.adam(1e-1)
     trained = train(
-        _base_cfg(num_epochs=1, num_steps_per_epoch=5),
-        SMALL_MODEL,
-        dataloader,
-        val_dataloader,
-        big_lr_optimizer,
+        model=SMALL_MODEL,
+        dataloader=dataloader,
+        val_dataloader=val_dataloader,
+        **kwargs,
     )
     init_leaves = jax.tree_util.tree_leaves(eqx.filter(SMALL_MODEL, eqx.is_array))
     trained_leaves = jax.tree_util.tree_leaves(eqx.filter(trained, eqx.is_array))
@@ -273,14 +280,18 @@ def test_train_reduces_loss():
     fixed_meta = torch.empty(4, 0)
     dataloader = [(fixed_images, fixed_meta) for _ in range(20)]
     val_dataloader = _fake_val_dataloader()
-    optimizer = optax.adam(1e-3)
     big_model = UNet(
         in_channels=1, out_channels=1, base_channels=4,
         channel_multipliers=[1, 2], num_res_blocks=1, num_heads=1,
         num_groups=2, activation=jax.nn.silu,
         key=jax.random.PRNGKey(99),
     )
-    train(_base_cfg(num_steps_per_epoch=20), big_model, dataloader, val_dataloader, optimizer)
+    train(
+        model=big_model,
+        dataloader=dataloader,
+        val_dataloader=val_dataloader,
+        **_make_train_kwargs(num_steps_per_epoch=20),
+    )
 
 
 def test_train_step_with_cond():
@@ -327,98 +338,52 @@ def test_train_step_with_cond_dropped():
 
 def test_train_loop_with_cond():
     """Verify training loop works with metadata conditioning."""
-    from omegaconf import OmegaConf
-
-    cfg = OmegaConf.create({
-        "seed": 0,
-        "train": {
-            "num_epochs": 1,
-            "num_steps_per_epoch": 3,
-            "log_every": 1,
-            "checkpoint_every": 100,
-            "checkpoint_dir": "/tmp/test_ckpt_cond",
-            "p_uncond": 0.2,
-            "ema_decay": 0.9999,
-            "val_every": 1,
-        },
-        "flow": {"otfm": {"t_min": 0.0, "t_max": 1.0}},
-    })
-
     dataloader = [
         (torch.randn(2, 1, 8, 8), torch.tensor([[0.4], [0.8]]))
         for _ in range(3)
     ]
     val_dataloader = [(torch.randn(2, 1, 8, 8), torch.tensor([[0.4], [0.8]]))]
-    optimizer = optax.adam(1e-3)
-    trained = train(cfg, SMALL_MODEL_COND, dataloader, val_dataloader, optimizer)
+    kwargs = _make_train_kwargs(p_uncond=0.2)
+    kwargs["checkpoint_dir"] = "/tmp/test_ckpt_cond"
+    trained = train(
+        model=SMALL_MODEL_COND,
+        dataloader=dataloader,
+        val_dataloader=val_dataloader,
+        **kwargs,
+    )
     assert trained is not None
 
 
-def test_train_raises_on_unknown_time_sampling():
-    """train() raises ValueError for an unrecognised time_sampling value."""
-    model = UNet(
-        in_channels=1, out_channels=1, base_channels=4,
-        channel_multipliers=[1, 2], num_res_blocks=1, num_heads=1,
-        num_groups=2, activation=jax.nn.silu, key=jax.random.PRNGKey(0),
+def test_train_num_steps_per_epoch_zero_uses_dataloader_length():
+    """num_steps_per_epoch=0 should run exactly len(dataloader) steps per epoch."""
+    dataloader = list(_make_fake_dataloader(B=2, num_batches=4))
+    val_dataloader = _fake_val_dataloader()
+    # Simply verify it completes without error when num_steps_per_epoch=0
+    trained = train(
+        model=SMALL_MODEL,
+        dataloader=dataloader,
+        val_dataloader=val_dataloader,
+        **_make_train_kwargs(num_steps_per_epoch=0),
     )
-    optimizer = optax.adam(1e-3)
-
-    images = torch.ones(2, 1, 4, 4)
-    meta = torch.zeros(2, 0)
-    dataloader = [(images, meta)]
-    val_dataloader = [(images, meta)]
-
-    cfg = MagicMock()
-    cfg.seed = 0
-    cfg.flow.otfm.t_min = 0.0
-    cfg.flow.otfm.t_max = 1.0
-    cfg.flow.otfm.get.side_effect = lambda key, default=None: {
-        "sigma_0": 0.0,
-        "sigma_1": 0.0,
-        "time_sampling": "bad_value",
-    }.get(key, default)
-    cfg.train.num_epochs = 1
-    cfg.train.num_steps_per_epoch = 1
-    cfg.train.log_every = 100
-    cfg.train.checkpoint_every = 100
-    cfg.train.checkpoint_dir = "/tmp/ckpt_test"
-    cfg.train.val_every = 100
-    cfg.train.get.side_effect = lambda key, default=None: {
-        "p_uncond": 0.0,
-        "ema_decay": 0.9999,
-    }.get(key, default)
-
-    with pytest.raises(ValueError, match="time_sampling"):
-        train(cfg, model, dataloader, val_dataloader, optimizer)
+    assert trained is not None
 
 
 def test_end_to_end_conditional_training_and_sampling():
     """Train a small conditional model and verify unconditional and guided sampling."""
-    from omegaconf import OmegaConf
-
-    cfg = OmegaConf.create({
-        "seed": 0,
-        "train": {
-            "num_epochs": 1,
-            "num_steps_per_epoch": 5,
-            "log_every": 1,
-            "checkpoint_every": 100,
-            "checkpoint_dir": "/tmp/test_ckpt_e2e",
-            "p_uncond": 0.2,
-            "ema_decay": 0.9999,
-            "val_every": 1,
-        },
-        "flow": {"otfm": {"t_min": 0.0, "t_max": 1.0}},
-    })
-
     dataloader = [
         (torch.randn(2, 1, 8, 8), torch.tensor([[0.4], [0.8]]))
         for _ in range(5)
     ]
     val_dataloader = [(torch.randn(2, 1, 8, 8), torch.tensor([[0.4], [0.8]]))]
 
-    optimizer = optax.adam(1e-3)
-    trained = train(cfg, SMALL_MODEL_COND, dataloader, val_dataloader, optimizer)
+    kwargs = _make_train_kwargs(num_steps_per_epoch=5, p_uncond=0.2)
+    kwargs["checkpoint_dir"] = "/tmp/test_ckpt_e2e"
+    trained = train(
+        model=SMALL_MODEL_COND,
+        dataloader=dataloader,
+        val_dataloader=val_dataloader,
+        **kwargs,
+    )
 
     sample_kwargs = dict(
         model=trained,
@@ -439,3 +404,175 @@ def test_end_to_end_conditional_training_and_sampling():
     out_guided = sample(**sample_kwargs, cond=jnp.array([0.4]), guidance_scale=2.0)
     assert out_guided.shape == (1, 8, 8)
     assert jnp.all(jnp.isfinite(out_guided))
+
+
+# --- prepare_batch ---
+
+from src.train.trainer import prepare_batch
+
+
+def test_prepare_batch_output_shapes():
+    """prepare_batch returns tensors with correct shapes."""
+    B = 4
+    images = torch.from_numpy(np.random.randn(B, 1, 8, 8).astype(np.float32))
+    meta = torch.empty(B, 0)
+    batch = (images, meta)
+
+    key = jax.random.PRNGKey(0)
+    t, x_t, u_t, cond, cond_mask = prepare_batch(
+        batch=batch,
+        key=key,
+        coupling=independent_coupling,
+        time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
+        path_sampler=partial(sample_path),
+        p_uncond=0.0,
+    )
+
+    assert t.shape == (B,)
+    assert x_t.shape == (B, 1, 8, 8)
+    assert u_t.shape == (B, 1, 8, 8)
+    assert cond.shape == (B, 0)
+    assert cond_mask.shape == (B,)
+
+
+def test_prepare_batch_times_in_range():
+    """prepare_batch samples t values in [0, 1]."""
+    B = 8
+    images = torch.from_numpy(np.random.randn(B, 1, 8, 8).astype(np.float32))
+    meta = torch.empty(B, 0)
+    batch = (images, meta)
+
+    key = jax.random.PRNGKey(1)
+    t, _, _, _, _ = prepare_batch(
+        batch=batch,
+        key=key,
+        coupling=independent_coupling,
+        time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
+        path_sampler=partial(sample_path),
+        p_uncond=0.0,
+    )
+
+    assert jnp.all(t >= 0.0) and jnp.all(t <= 1.0)
+
+
+def test_prepare_batch_p_uncond_one_masks_all():
+    """With p_uncond=1.0, all cond_mask values must be False."""
+    B = 16
+    images = torch.from_numpy(np.random.randn(B, 1, 8, 8).astype(np.float32))
+    meta = torch.empty(B, 0)
+    batch = (images, meta)
+
+    key = jax.random.PRNGKey(2)
+    _, _, _, _, cond_mask = prepare_batch(
+        batch=batch,
+        key=key,
+        coupling=independent_coupling,
+        time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
+        path_sampler=partial(sample_path),
+        p_uncond=1.0,
+    )
+
+    assert jnp.all(~cond_mask)
+
+
+def test_prepare_batch_p_uncond_zero_keeps_all():
+    """With p_uncond=0.0, all cond_mask values must be True."""
+    B = 16
+    images = torch.from_numpy(np.random.randn(B, 1, 8, 8).astype(np.float32))
+    meta = torch.empty(B, 0)
+    batch = (images, meta)
+
+    key = jax.random.PRNGKey(3)
+    _, _, _, _, cond_mask = prepare_batch(
+        batch=batch,
+        key=key,
+        coupling=independent_coupling,
+        time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
+        path_sampler=partial(sample_path),
+        p_uncond=0.0,
+    )
+
+    assert jnp.all(cond_mask)
+
+
+def test_prepare_batch_different_keys_give_different_results():
+    """Different keys must produce different x_t values."""
+    B = 4
+    images = torch.from_numpy(np.random.randn(B, 1, 8, 8).astype(np.float32))
+    meta = torch.empty(B, 0)
+    batch = (images, meta)
+
+    kwargs = dict(
+        batch=batch,
+        coupling=independent_coupling,
+        time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
+        path_sampler=partial(sample_path),
+        p_uncond=0.0,
+    )
+    _, x_t_a, _, _, _ = prepare_batch(key=jax.random.PRNGKey(0), **kwargs)
+    _, x_t_b, _, _, _ = prepare_batch(key=jax.random.PRNGKey(1), **kwargs)
+    assert not jnp.allclose(x_t_a, x_t_b)
+
+
+# --- validation_loop ---
+
+from src.train.trainer import validation_loop, make_val_step as _make_val_step
+
+
+def _make_val_dataloader(B=2, num_batches=2):
+    """Return a re-iterable list of fake (images, meta) batches."""
+    return [
+        (
+            torch.from_numpy(np.random.randn(B, 1, 8, 8).astype(np.float32)),
+            torch.empty(B, 0),
+        )
+        for _ in range(num_batches)
+    ]
+
+
+def test_validation_loop_returns_float():
+    """validation_loop must return a Python float."""
+    val_loader = _make_val_dataloader()
+    result = validation_loop(
+        key=jax.random.PRNGKey(0),
+        ema_model=SMALL_MODEL,
+        dataloader=val_loader,
+        step_fn=_make_val_step(),
+        coupling=independent_coupling,
+        time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
+        path_sampler=partial(sample_path),
+        p_uncond=0.0,
+    )
+    assert isinstance(result, float)
+
+
+def test_validation_loop_loss_is_finite():
+    """validation_loop must return a finite loss."""
+    val_loader = _make_val_dataloader()
+    result = validation_loop(
+        key=jax.random.PRNGKey(0),
+        ema_model=SMALL_MODEL,
+        dataloader=val_loader,
+        step_fn=_make_val_step(),
+        coupling=independent_coupling,
+        time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
+        path_sampler=partial(sample_path),
+        p_uncond=0.0,
+    )
+    assert np.isfinite(result)
+
+
+def test_validation_loop_loss_is_nonnegative():
+    """validation_loop loss must be non-negative (MSE)."""
+    val_loader = _make_val_dataloader()
+    result = validation_loop(
+        key=jax.random.PRNGKey(42),
+        ema_model=SMALL_MODEL,
+        dataloader=val_loader,
+        step_fn=_make_val_step(),
+        coupling=independent_coupling,
+        time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
+        path_sampler=partial(sample_path),
+        p_uncond=0.0,
+    )
+    assert result >= 0.0

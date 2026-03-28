@@ -180,14 +180,13 @@ def validation_loop(
     """Run a full pass over val_dataloader and return mean flow matching loss.
 
     Args:
+        key:             JAX PRNG key (consumed internally via splitting).
         ema_model:       EMA model used for inference.
         dataloader:      Iterable of ``(images, meta)`` batches.
         step_fn:         JIT-compiled step function from ``make_val_step()``.
-        path_sampler:    JIT-compiled ``sample_path`` partial.
-        key:             JAX PRNG key (consumed internally via splitting).
+        coupling:        Callable for batch coupling.
         time_sampler:    Callable for sampling time steps.
-        t_min:           Lower time bound (uniform sampling only).
-        t_max:           Upper time bound (uniform sampling only).
+        path_sampler:    Callable for constructing the interpolant.
         p_uncond:        Probability of dropping the condition per sample.
 
     Returns:
@@ -233,15 +232,31 @@ def train(
     """Main training loop with EMA and periodic validation.
 
     Args:
-        cfg:            Hydra DictConfig with cfg.seed, cfg.train.*, cfg.flow.otfm.*
-        model:          Velocity-field network to train.
-        dataloader:     PyTorch DataLoader yielding ``(images, meta)`` tuples
-                        where images is ``(B, C, H, W)`` and meta is
-                        ``(B, cond_dim)`` or ``(B, 0)`` if unconditional.
-        val_dataloader: DataLoader for the validation split, same format as
-                        ``dataloader``. Used for periodic EMA model evaluation.
-        optimizer:      Optax GradientTransformation (construct via
-                        hydra.utils.instantiate(cfg.train.optimizer) before calling).
+        key:                JAX PRNG key.
+        model:              Velocity-field network to train.
+        dataloader:         PyTorch DataLoader yielding ``(images, meta)`` tuples
+                            where images is ``(B, C, H, W)`` and meta is
+                            ``(B, cond_dim)`` or ``(B, 0)`` if unconditional.
+        val_dataloader:     DataLoader for the validation split, same format as
+                            ``dataloader``. Used for periodic EMA model evaluation.
+        optimizer:          Optax GradientTransformation.
+        coupling:           Callable ``(x0_np, x1_np) -> x0_paired`` for batch
+                            coupling (e.g. ``independent_coupling`` or
+                            ``ot_coupling``).
+        time_sampler:       Callable ``(key, batch_size) -> t`` for sampling
+                            per-sample times.
+        path_sampler:       Callable ``(x0, x1, t, *, key) -> (x_t, u_t)``
+                            for constructing the interpolant.
+        num_epochs:         Total number of training epochs.
+        num_steps_per_epoch: Steps per epoch. Use ``0`` to consume the full
+                            dataloader each epoch.
+        p_uncond:           Probability of dropping the condition per sample
+                            (classifier-free guidance training).
+        ema_decay:          EMA decay rate (typical: 0.9999).
+        log_every:          Log metrics every this many epochs.
+        val_every:          Run validation every this many epochs.
+        checkpoint_every:   Save checkpoints every this many epochs.
+        checkpoint_dir:     Directory for checkpoint files.
 
     Returns:
         Trained EMA model.
@@ -266,6 +281,7 @@ def train(
     total_val_time = 0.0
     avg_val_time = np.nan
     val_loss = np.nan
+    val_time = np.nan
     val_runs = 0
 
     for epoch in range(num_epochs):
@@ -326,8 +342,8 @@ def train(
 
         if (epoch + 1) % checkpoint_every == 0:
             os.makedirs(checkpoint_dir, exist_ok=True)
-            raw_path = os.path.join(checkpoint_dir, f"model_epoch{epoch + 1}.eqx")
-            ema_path = os.path.join(checkpoint_dir, f"model_epoch{epoch + 1}.eqx")
+            raw_path = os.path.join(checkpoint_dir, f"model_epoch{epoch + 1}_raw.eqx")
+            ema_path = os.path.join(checkpoint_dir, f"model_epoch{epoch + 1}_ema.eqx")
             eqx.tree_serialise_leaves(raw_path, state.model)
             eqx.tree_serialise_leaves(ema_path, ema_model)
             logger.info(f"Saved checkpoint: {ema_path}")

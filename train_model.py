@@ -2,8 +2,6 @@ import os
 import hydra
 import logging
 
-import numpy as np
-import pandas as pd
 import jax.random as jr
 import src.data as data
 
