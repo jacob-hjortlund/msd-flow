@@ -170,8 +170,8 @@ def make_val_step():
 def validation_loop(
     key: jax.Array,
     ema_model,
-    val_dataloader,
-    val_step: callable,
+    dataloader,
+    step_fn: callable,
     coupling: callable,
     time_sampler: callable,
     path_sampler: callable,
@@ -181,8 +181,8 @@ def validation_loop(
 
     Args:
         ema_model:       EMA model used for inference.
-        val_dataloader:  Iterable of ``(images, meta)`` batches.
-        val_step:        JIT-compiled val step from ``make_val_step()``.
+        dataloader:      Iterable of ``(images, meta)`` batches.
+        step_fn:         JIT-compiled step function from ``make_val_step()``.
         path_sampler:    JIT-compiled ``sample_path`` partial.
         key:             JAX PRNG key (consumed internally via splitting).
         time_sampler:    Callable for sampling time steps.
@@ -196,7 +196,7 @@ def validation_loop(
     total_loss = 0.0
     n_batches = 0
 
-    for batch in val_dataloader:
+    for batch in dataloader:
         batch_key, key = jax.random.split(key)
         t, x_t, u_t, cond, cond_mask = prepare_batch(
             batch=batch,
@@ -206,7 +206,7 @@ def validation_loop(
             path_sampler=path_sampler,
             p_uncond=p_uncond,
         )
-        total_loss += float(val_step(ema_model, x_t, u_t, t, cond, cond_mask))
+        total_loss += float(step_fn(ema_model, x_t, u_t, t, cond, cond_mask))
         n_batches += 1
 
     return total_loss / n_batches
@@ -227,8 +227,8 @@ def train(
     ema_decay: float,
     log_every: int,
     val_every: int,
-    ckpt_every: int,
-    ckpt_dir: str,
+    checkpoint_every: int,
+    checkpoint_dir: str,
 ):
     """Main training loop with EMA and periodic validation.
 
@@ -310,12 +310,13 @@ def train(
 
             key, key_val = jax.random.split(key)
             val_loss = validation_loop(
+                key=key_val,
                 ema_model=ema_model,
-                val_dataloader=val_dataloader,
-                val_step=val_step,
-                path_sampler=path_sampler,
-                key_val=key_val,
+                dataloader=val_dataloader,
+                step_fn=val_step,
+                coupling=coupling,
                 time_sampler=time_sampler,
+                path_sampler=path_sampler,
                 p_uncond=p_uncond,
             )
             val_time = time.perf_counter() - val_start_time
@@ -323,10 +324,10 @@ def train(
             val_runs += 1
             avg_val_time = total_val_time / val_runs
 
-        if (epoch + 1) % ckpt_every == 0:
-            os.makedirs(ckpt_dir, exist_ok=True)
-            raw_path = os.path.join(ckpt_dir, f"model_epoch{epoch + 1}.eqx")
-            ema_path = os.path.join(ckpt_dir, f"model_epoch{epoch + 1}.eqx")
+        if (epoch + 1) % checkpoint_every == 0:
+            os.makedirs(checkpoint_dir, exist_ok=True)
+            raw_path = os.path.join(checkpoint_dir, f"model_epoch{epoch + 1}.eqx")
+            ema_path = os.path.join(checkpoint_dir, f"model_epoch{epoch + 1}.eqx")
             eqx.tree_serialise_leaves(raw_path, state.model)
             eqx.tree_serialise_leaves(ema_path, ema_model)
             logger.info(f"Saved checkpoint: {ema_path}")
