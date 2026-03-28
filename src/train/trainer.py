@@ -17,8 +17,8 @@ import logging
 import numpy as np
 
 from tqdm import tqdm
-from src.flow.otfm import flow_matching_loss
 from src.utils import register_all_resolvers
+from src.train.metrics import flow_matching_loss
 from tqdm.contrib.logging import logging_redirect_tqdm
 
 logger = logging.getLogger(__name__)
