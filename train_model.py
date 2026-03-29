@@ -35,6 +35,7 @@ def main(cfg: DictConfig):
     )
 
     # 2. Inject resolved path into dataloader config
+    log.info("--- Step 2: Config Injection ---")
     with open_dict(cfg):
         cfg.data.dataloader.data_dir = dataset_path
 
@@ -47,6 +48,7 @@ def main(cfg: DictConfig):
     log.info(f"Initialized train loader with {len(train_loader)} batches.")
 
     # 4. Seed
+    log.info("--- Step 4: Seeding ---")
     seed = cfg.seed
     rng_key = jr.PRNGKey(seed)
 
