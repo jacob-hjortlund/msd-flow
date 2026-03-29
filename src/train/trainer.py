@@ -310,6 +310,24 @@ def validation_loop(
     return total_loss / n_batches
 
 
+def collect_batches(dataloader, num_batches: int) -> list:
+    """Collect raw batches from a dataloader into a list.
+
+    Args:
+        dataloader:  Iterable of ``(images, meta)`` batches.
+        num_batches: Maximum number of batches to collect. ``0`` collects all.
+
+    Returns:
+        List of ``(images, meta)`` tuples.
+    """
+    batches = []
+    for batch in dataloader:
+        batches.append(batch)
+        if num_batches > 0 and len(batches) >= num_batches:
+            break
+    return batches
+
+
 def train(
     key,
     model,

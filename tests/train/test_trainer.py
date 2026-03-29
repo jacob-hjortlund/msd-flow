@@ -788,3 +788,30 @@ def test_batch_metric_loop_returns_mean_not_sum():
     assert isinstance(result["simple_metric"], float)
     # The result should be 3.0 (mean of 2 and 4)
     assert abs(result["simple_metric"] - 3.0) < 1e-5
+
+
+from src.train.trainer import collect_batches
+
+
+def test_collect_batches_returns_correct_count():
+    """collect_batches returns exactly num_batches tuples."""
+    loader = _make_val_dataloader(num_batches=5)
+    batches = collect_batches(loader, num_batches=3)
+    assert len(batches) == 3
+
+
+def test_collect_batches_zero_returns_all():
+    """collect_batches with num_batches=0 returns the full dataloader."""
+    loader = _make_val_dataloader(num_batches=5)
+    batches = collect_batches(loader, num_batches=0)
+    assert len(batches) == 5
+
+
+def test_collect_batches_each_tuple_is_images_meta():
+    """Each element returned by collect_batches is a (images, meta) pair."""
+    loader = _make_val_dataloader(B=2, num_batches=3)
+    batches = collect_batches(loader, num_batches=0)
+    for batch in batches:
+        images, meta = batch
+        assert images.shape[0] == 2
+        assert images.shape[1:] == (1, 8, 8)
