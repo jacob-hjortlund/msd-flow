@@ -674,3 +674,70 @@ def test_validation_loop_loss_is_nonnegative():
         p_uncond=0.0,
     )
     assert result >= 0.0
+
+
+from src.train.trainer import batch_metric_loop
+
+
+def test_batch_metric_loop_returns_dict_of_floats():
+    """batch_metric_loop must return dict[str, float]."""
+    step = make_batch_metric_step([_fml])
+    val_loader = _make_val_dataloader()
+    result = batch_metric_loop(
+        key=jax.random.PRNGKey(0),
+        ema_model=SMALL_MODEL,
+        dataloader=val_loader,
+        step_fn=step,
+        coupling=independent_coupling,
+        time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
+        path_sampler=partial(sample_path),
+        p_uncond=0.0,
+        num_batches=0,
+    )
+    assert isinstance(result, dict)
+    assert all(isinstance(v, float) for v in result.values())
+
+
+def test_batch_metric_loop_values_are_finite():
+    """batch_metric_loop must return finite values."""
+    step = make_batch_metric_step([_fml])
+    val_loader = _make_val_dataloader()
+    result = batch_metric_loop(
+        key=jax.random.PRNGKey(1),
+        ema_model=SMALL_MODEL,
+        dataloader=val_loader,
+        step_fn=step,
+        coupling=independent_coupling,
+        time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
+        path_sampler=partial(sample_path),
+        p_uncond=0.0,
+        num_batches=0,
+    )
+    assert all(np.isfinite(v) for v in result.values())
+
+
+def test_batch_metric_loop_num_batches_limit():
+    """batch_metric_loop stops after num_batches batches when limit > 0."""
+    call_count = []
+
+    def counting_loader():
+        for _ in range(10):
+            call_count.append(1)
+            yield (
+                torch.from_numpy(np.random.randn(2, 1, 8, 8).astype(np.float32)),
+                torch.empty(2, 0),
+            )
+
+    step = make_batch_metric_step([_fml])
+    batch_metric_loop(
+        key=jax.random.PRNGKey(2),
+        ema_model=SMALL_MODEL,
+        dataloader=counting_loader(),
+        step_fn=step,
+        coupling=independent_coupling,
+        time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
+        path_sampler=partial(sample_path),
+        p_uncond=0.0,
+        num_batches=3,
+    )
+    assert len(call_count) == 3

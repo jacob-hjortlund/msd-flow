@@ -207,6 +207,63 @@ def make_batch_metric_step(batch_metrics: list):
     return batch_metric_step
 
 
+def batch_metric_loop(
+    key: jax.Array,
+    ema_model,
+    dataloader,
+    step_fn: callable,
+    coupling: callable,
+    time_sampler: callable,
+    path_sampler: callable,
+    p_uncond: float,
+    num_batches: int = 0,
+) -> dict:
+    """Stream a dataloader through a batch metric step and return per-metric means.
+
+    Args:
+        key:          JAX PRNG key (consumed internally via splitting).
+        ema_model:    EMA model used for inference.
+        dataloader:   Iterable of ``(images, meta)`` batches.
+        step_fn:      JIT-compiled step function from ``make_batch_metric_step()``.
+        coupling:     Callable for batch coupling.
+        time_sampler: Callable for sampling time steps.
+        path_sampler: Callable for constructing the interpolant.
+        p_uncond:     Probability of dropping the condition per sample.
+        num_batches:  Maximum number of batches to process. ``0`` processes the
+                      full dataloader.
+
+    Returns:
+        ``dict[str, float]`` mapping metric name to its mean value over all
+        processed batches.
+    """
+    totals: dict = {}
+    n_batches = 0
+    data_iter = iter(dataloader)
+
+    while True:
+        if num_batches > 0 and n_batches >= num_batches:
+            break
+        try:
+            batch = next(data_iter)
+        except StopIteration:
+            break
+        batch_key, key = jax.random.split(key)
+        t, x_t, u_t, cond, cond_mask = prepare_batch(
+            batch=batch,
+            key=batch_key,
+            coupling=coupling,
+            time_sampler=time_sampler,
+            path_sampler=path_sampler,
+            p_uncond=p_uncond,
+        )
+        results = step_fn(ema_model, x_t, u_t, t, cond, cond_mask)
+        for k, v in results.items():
+            totals[k] = totals.get(k, 0.0) + float(v)
+        n_batches += 1
+
+    return {k: v / n_batches for k, v in totals.items()}
+
+
 def validation_loop(
     key: jax.Array,
     ema_model,
