@@ -396,10 +396,13 @@ class RandomHorizontalFlip:
 
     Args:
         p: Probability of flipping.
+        seed: Random seed. Defaults to ``None`` for non-deterministic behavior.
     """
 
-    def __init__(self, p: float = 0.5):
+    def __init__(self, p: float = 0.5, seed: int = None):
         self.p = p
+        self.seed = seed
+        self.rng = np.random.default_rng(seed)
 
     def __call__(self, img: np.ndarray) -> np.ndarray:
         """Apply random horizontal flip along the last axis.
@@ -410,7 +413,7 @@ class RandomHorizontalFlip:
         Returns:
             Possibly flipped array, same shape as input.
         """
-        if np.random.random() < self.p:
+        if self.rng.random() < self.p:
             return np.ascontiguousarray(np.flip(img, axis=-1))
         return img
 
@@ -420,10 +423,13 @@ class RandomVerticalFlip:
 
     Args:
         p: Probability of flipping.
+        seed: Random seed. Defaults to ``None`` for non-deterministic behavior.
     """
 
-    def __init__(self, p: float = 0.5):
+    def __init__(self, p: float = 0.5, seed: int = None):
         self.p = p
+        self.seed = seed
+        self.rng = np.random.default_rng(seed)
 
     def __call__(self, img: np.ndarray) -> np.ndarray:
         """Apply random vertical flip along the second-to-last axis.
@@ -434,7 +440,7 @@ class RandomVerticalFlip:
         Returns:
             Possibly flipped array, same shape as input.
         """
-        if np.random.random() < self.p:
+        if self.rng.random() < self.p:
             return np.ascontiguousarray(np.flip(img, axis=-2))
         return img
 
@@ -443,7 +449,13 @@ class RandomRotation90:
     """Randomly apply 0, 1, 2, or 3 quarter-turns (90-degree rotations).
 
     All four outcomes are equally likely.
+    Args:
+        seed: Random seed. Defaults to ``None`` for non-deterministic behavior.
     """
+
+    def __init__(self, seed: int = None):
+        self.seed = seed
+        self.rng = np.random.default_rng(seed)
 
     def __call__(self, img: np.ndarray) -> np.ndarray:
         """Apply random 90-degree rotation on spatial axes.
@@ -454,5 +466,5 @@ class RandomRotation90:
         Returns:
             Rotated array, same shape as input.
         """
-        k = np.random.randint(4)
+        k = self.rng.integers(4)
         return np.ascontiguousarray(np.rot90(img, k=k, axes=(-2, -1)))

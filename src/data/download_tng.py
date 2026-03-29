@@ -14,17 +14,18 @@ import itertools
 
 import numpy as np
 import pandas as pd
-from astropy.io import fits
 
 from tqdm import tqdm
+from astropy.io import fits
+from hydra.utils import call
 from omegaconf import DictConfig, OmegaConf
+from src.utils import register_all_resolvers
+from tqdm.contrib.logging import logging_redirect_tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 log = logging.getLogger(__name__)
 
-OmegaConf.register_new_resolver(
-    "generate_snapshot_ids", lambda start, count: [start + i for i in range(count)]
-)
+register_all_resolvers()
 
 
 def load_fits(filename: str, bands: list[str]) -> tuple[np.ndarray, dict]:
@@ -131,22 +132,23 @@ def extract_tng_urls(
     url_list = []
     combos = list(itertools.product(version_ids, snap_ids))
 
-    for vId, snap in tqdm(combos):
-        endpoint_url = f"http://www.tng-project.org/api/TNG50-1/files/skirt_images_hsc_idealized_v{vId}_{snap}/"
+    with logging_redirect_tqdm():
+        for vId, snap in tqdm(combos):
+            endpoint_url = f"http://www.tng-project.org/api/TNG50-1/files/skirt_images_hsc_idealized_v{vId}_{snap}/"
 
-        try:
-            response = requests.get(endpoint_url, headers=headers)
-            response.raise_for_status()
-            urls = response.json()["files"]
-            selected_urls = urls[:N] if N > 0 else urls
-            url_list.extend(selected_urls)
+            try:
+                response = requests.get(endpoint_url, headers=headers)
+                response.raise_for_status()
+                urls = response.json()["files"]
+                selected_urls = urls[:N] if N > 0 else urls
+                url_list.extend(selected_urls)
 
-        except requests.exceptions.HTTPError as err:
-            log.warning(
-                f"Skipping version {vId}, snapID {snap} - API returned {err.response.status_code}"
-            )
-        except requests.exceptions.RequestException as err:
-            log.error(f"Network error on version {vId}, snapID {snap}: {err}")
+            except requests.exceptions.HTTPError as err:
+                log.warning(
+                    f"Skipping version {vId}, snapID {snap} - API returned {err.response.status_code}"
+                )
+            except requests.exceptions.RequestException as err:
+                log.error(f"Network error on version {vId}, snapID {snap}: {err}")
 
     return url_list
 
@@ -230,7 +232,9 @@ def download_tng_fits_file(
         except requests.exceptions.RequestException as e:
             if os.path.exists(part_path):
                 os.remove(part_path)
-            log.error(f"Failed to download {unique_filename} (Attempt {attempt+1}): {e}")
+            log.error(
+                f"Failed to download {unique_filename} (Attempt {attempt+1}): {e}"
+            )
             return None
 
     if os.path.exists(part_path):
@@ -332,54 +336,90 @@ def cleanup_batch(fits_paths: list[str]) -> None:
             pass
 
 
-@hydra.main(version_base=None, config_path="../../configs", config_name="config")
-def main(cfg: DictConfig):
-    """Entry point: download TNG FITS in batches, extract bands, and clean up."""
+def download_tng_data(
+    raw_dir: str,
+    processed_dir: str,
+    version_ids: list[int],
+    snapshots: list[int],
+    bands: list[str],
+    api_key: str,
+    num_files_per_view: int,
+    batch_size: int,
+    max_workers: int,
+) -> None:
+    """
+    Download TNG FITS files in batches, extract specified bands and metadata, and clean up raw files.
+    Images are saved as .npy arrays and metadata is appended to metadata.csv. The function handles
+    resumption by checking existing metadata entries and skips already-processed files.
 
-    dl_cfg = cfg.data.download
-    os.makedirs(dl_cfg.raw_dir, exist_ok=True)
-    os.makedirs(dl_cfg.processed_dir, exist_ok=True)
-    headers = {"api-key": dl_cfg.api_key}
+    Args:
+        raw_dir: Directory to save downloaded FITS files.
+        processed_dir: Directory to save extracted .npy files and metadata.csv.
+        version_ids: List of TNG version integers to process (e.g. [0, 1, 2, 3]).
+        snapshots: List of snapshot integers to process (e.g. [72, 73, 74]).
+        bands: List of band names to extract from FITS files (e.g. ['SUBARU_HSC.G', 'SUBARU_HSC.R', 'SUBARU_HSC.I']).
+        api_key: API key for TNG data access; must be included in HTTP headers.
+        num_files_per_view: Maximum number of FITS URLs to extract per version/snapshot combination (0 for all).
+        batch_size: Number of FITS files to download and process in each batch.
+        max_workers: Maximum number of threads for parallel downloading.
+    """
+
+    os.makedirs(raw_dir, exist_ok=True)
+    os.makedirs(processed_dir, exist_ok=True)
+    headers = {"api-key": api_key}
 
     log.info("Extracting TNG URLs...")
     urls = extract_tng_urls(
-        version_ids=dl_cfg.version_ids,
-        snap_ids=dl_cfg.snapshots,
+        version_ids=version_ids,
+        snap_ids=snapshots,
         headers=headers,
-        N=dl_cfg.num_files_per_view,
+        N=num_files_per_view,
     )
     log.info(f"Found {len(urls)} total URLs.")
 
-    existing_ids = get_existing_ids(dl_cfg.processed_dir)
+    existing_ids = get_existing_ids(processed_dir)
     log.info(f"Resuming: {len(existing_ids)} galaxies already processed.")
 
     remaining_urls = [
         url for url in urls if fits_name_from_url(url) not in existing_ids
     ]
-    log.info(f"{len(remaining_urls)} URLs remaining after resumption filter.")
+    n_to_process = len(remaining_urls)
+    log.info(f"{n_to_process} URLs remaining after resumption filter.")
 
-    batch_size = dl_cfg.batch_size
+    if n_to_process == 0:
+        log.info("No new files to process.")
+        return None
+
+    batch_size = batch_size
     num_batches = (len(remaining_urls) + batch_size - 1) // batch_size
     start_idx = len(existing_ids)
 
-    for batch_num in range(num_batches):
-        batch_start = batch_num * batch_size
-        batch_urls = remaining_urls[batch_start : batch_start + batch_size]
-        log.info(f"Batch {batch_num + 1}/{num_batches}: downloading {len(batch_urls)} files...")
+    n_processed = 0
+    with logging_redirect_tqdm():
+        for batch_num in tqdm(
+            range(num_batches),
+            desc="Downloading/Processing FITSbatches",
+            total=num_batches,
+        ):
+            batch_start = batch_num * batch_size
+            batch_urls = remaining_urls[batch_start : batch_start + batch_size]
+            paths = download_batch(batch_urls, raw_dir, headers, max_workers)
+            records = extract_batch(paths, list(bands), processed_dir, start_idx)
+            if records:
+                save_metadata(records, processed_dir)
 
-        paths = download_batch(batch_urls, dl_cfg.raw_dir, headers, dl_cfg.max_workers)
-        log.info(f"Downloaded {len(paths)}/{len(batch_urls)} files.")
+            cleanup_batch(paths)
+            n_processed += len(records)
+            start_idx += len(records)
 
-        records = extract_batch(paths, list(dl_cfg.bands), dl_cfg.processed_dir, start_idx)
-        log.info(f"Extracted {len(records)} galaxies.")
+    frac_success = n_processed / n_to_process
+    log.info(f"Download and processing complete. Success rate: {frac_success:.2%}")
 
-        if records:
-            save_metadata(records, dl_cfg.processed_dir)
 
-        cleanup_batch(paths)
-        start_idx += len(records)
-
-    log.info("Pipeline complete.")
+@hydra.main(version_base=None, config_path="../../configs", config_name="config")
+def main(cfg: DictConfig):
+    """Entry point: download TNG FITS in batches, extract bands, and clean up."""
+    call(cfg.data.download)
 
 
 if __name__ == "__main__":

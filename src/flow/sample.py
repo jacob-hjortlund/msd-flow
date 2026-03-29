@@ -9,8 +9,7 @@ import diffrax
 
 import jax.numpy as jnp
 
-from src.utils.utils import resolve_import
-from src.flow.otfm import _to_velocity
+from src.train.metrics import _to_velocity
 
 # TODO: Move to inference
 
@@ -36,11 +35,11 @@ def sample(
             ``"image"``.
         shape:                Shape of a single sample, e.g. (C, H, W)
         key:                  JAX PRNG key for initial noise
-        solver:               Diffrax solver (e.g. diffrax.Euler())
-        dt0:                  Initial step size
-        t0:                   Start time (0.0 = noise)
-        t1:                   End time (1.0 = data)
-        stepsize_controller:  Diffrax step controller
+        solver:               Diffrax solver class (e.g. ``diffrax.Euler``).
+        dt0:                  Initial step size.
+        t0:                   Start time (0.0 = noise).
+        t1:                   End time (1.0 = data).
+        stepsize_controller:  Diffrax step-size controller class.
         stepsize_controller_cfg: Keyword arguments forwarded to the step-size
             controller constructor.
         cond:                 Conditioning vector of shape ``(D,)``. Pass
@@ -60,12 +59,6 @@ def sample(
             "guidance_scale != 1.0 requires an explicit cond; "
             "for unconditional sampling, leave cond=None (the default)."
         )
-
-    if isinstance(solver, str):
-        solver = resolve_import(solver)
-
-    if isinstance(stepsize_controller, str):
-        stepsize_controller = resolve_import(stepsize_controller)
 
     solver = solver()
     stepsize_controller = (

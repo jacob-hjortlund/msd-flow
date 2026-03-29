@@ -1,3 +1,4 @@
+_target_: src.data.download_tng.download_tng_data
 api_key: ${oc.env:TNG_API_KEY}
 version_ids: [0,1,2,3]
 snapshots: ${generate_snapshot_ids:72,20}

@@ -16,7 +16,6 @@ from src.model.blocks import (
     SinusoidalEmbedding,
     Upsample,
 )
-from src.utils.utils import resolve_import
 from typing import Callable, List, Optional
 
 
@@ -94,8 +93,6 @@ class UNet(eqx.Module):
                 image ``x_t_pred``; the caller converts to velocity via
                 ``(x_t_pred - x_t) / (1 - t)``.
         """
-        keys = jax.random.split(key, 256)
-        ki = 0
         time_emb_dim = base_channels * 4
         L = len(channel_multipliers)
 
@@ -111,21 +108,20 @@ class UNet(eqx.Module):
                 "choose 'velocity' or 'image'."
             )
 
-        if isinstance(activation, str):
-            activation = resolve_import(activation)
-
         self.activation = activation
         self.prediction_type = prediction_type
+        stem_key, key = jax.random.split(key)
         self.stem = eqx.nn.Conv2d(
-            in_channels, base_channels, 3, padding=1, key=keys[ki]
+            in_channels, base_channels, 3, padding=1, key=stem_key
         )
-        ki += 1
-        self.time_emb = SinusoidalEmbedding(time_emb_dim, activation, keys[ki])
-        ki += 1
+        time_emb_key, key = jax.random.split(key)
+        self.time_emb = SinusoidalEmbedding(time_emb_dim, activation, time_emb_key)
         self.cond_dim = cond_dim
         if cond_dim > 0:
-            self.cond_embed = SinusoidalEmbedding(time_emb_dim, activation, keys[ki])
-            ki += 1
+            cond_emb_key, key = jax.random.split(key)
+            self.cond_embed = SinusoidalEmbedding(
+                time_emb_dim, activation, cond_emb_key
+            )
             self.null_cond_emb = jnp.zeros(time_emb_dim)
         else:
             self.cond_embed = None
@@ -138,6 +134,7 @@ class UNet(eqx.Module):
             ch_out = base_channels * channel_multipliers[l]
             level = []
             for i in range(num_res_blocks):
+                block_key, key = jax.random.split(key)
                 block_ch_in = ch_in if i == 0 else ch_out
                 level.append(
                     ResBlock(
@@ -146,32 +143,29 @@ class UNet(eqx.Module):
                         time_emb_dim,
                         num_groups,
                         activation,
-                        keys[ki],
+                        block_key,
                     )
                 )
-                ki += 1
             enc_blocks.append(level)
             ch_in = ch_out
             if l < L - 1:
-                downsamples.append(Downsample(ch_out, keys[ki]))
-                ki += 1
+                downsample_key, key = jax.random.split(key)
+                downsamples.append(Downsample(ch_out, downsample_key))
             else:
                 downsamples.append(None)
         self.encoder_blocks = enc_blocks
         self.downsamples = downsamples
 
         # Bottleneck
+        mid1_key, attn_key, mid2_key, key = jax.random.split(key, 4)
         ch_bot = base_channels * channel_multipliers[-1]
         self.mid_block1 = ResBlock(
-            ch_bot, ch_bot, time_emb_dim, num_groups, activation, keys[ki]
+            ch_bot, ch_bot, time_emb_dim, num_groups, activation, mid1_key
         )
-        ki += 1
-        self.mid_attn = AttentionBlock(ch_bot, num_heads, keys[ki])
-        ki += 1
+        self.mid_attn = AttentionBlock(ch_bot, num_heads, attn_key)
         self.mid_block2 = ResBlock(
-            ch_bot, ch_bot, time_emb_dim, num_groups, activation, keys[ki]
+            ch_bot, ch_bot, time_emb_dim, num_groups, activation, mid2_key
         )
-        ki += 1
 
         # Decoder (iterate levels from L-1 down to 0)
         dec_blocks, upsample_list = [], []
@@ -180,11 +174,12 @@ class UNet(eqx.Module):
             ch_skip = base_channels * channel_multipliers[l]
             ch_out = ch_skip
             if l < L - 1:
-                upsample_list.append(Upsample(ch_current, keys[ki]))
-                ki += 1
+                upsample_key, key = jax.random.split(key)
+                upsample_list.append(Upsample(ch_current, upsample_key))
             else:
                 upsample_list.append(None)
             level = []
+            block_key, key = jax.random.split(key)
             level.append(
                 ResBlock(
                     ch_current + ch_skip,
@@ -192,30 +187,31 @@ class UNet(eqx.Module):
                     time_emb_dim,
                     num_groups,
                     activation,
-                    keys[ki],
+                    block_key,
                 )
             )
-            ki += 1
             for _ in range(num_res_blocks - 1):
+                block_key, key = jax.random.split(key)
                 level.append(
                     ResBlock(
-                        ch_out, ch_out, time_emb_dim, num_groups, activation, keys[ki]
+                        ch_out, ch_out, time_emb_dim, num_groups, activation, block_key
                     )
                 )
-                ki += 1
             dec_blocks.append(level)
             ch_current = ch_out
         self.decoder_blocks = dec_blocks
         self.upsamples = upsample_list
 
         # Final head (output channels = base_channels after last decoder level)
+        out_key, key = jax.random.split(key)
         self.final_norm = eqx.nn.GroupNorm(num_groups, base_channels)
         self.final_conv = eqx.nn.Conv2d(
-            base_channels, out_channels, 3, padding=1, key=keys[ki]
+            base_channels, out_channels, 3, padding=1, key=out_key
         )
-        ki += 1
 
-    def __call__(self, t: jax.Array, x_t: jax.Array, cond: jax.Array, cond_mask: jax.Array) -> jax.Array:
+    def __call__(
+        self, t: jax.Array, x_t: jax.Array, cond: jax.Array, cond_mask: jax.Array
+    ) -> jax.Array:
         """Predict the velocity field or image at time *t*.
 
         Args:

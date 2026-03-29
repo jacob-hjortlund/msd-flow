@@ -17,7 +17,9 @@ from src.model.blocks import (
     GaussianFourierProjection,
     ResBlockBigGAN,
 )
-from src.utils.utils import resolve_import
+from src.utils import register_all_resolvers
+
+register_all_resolvers()
 
 
 class NCSNpp(eqx.Module):
@@ -117,8 +119,6 @@ class NCSNpp(eqx.Module):
                 image ``x_t_pred``; the caller converts to velocity via
                 ``(x_t_pred - x_t) / (1 - t)``.
         """
-        if isinstance(activation, str):
-            activation = resolve_import(activation)
 
         self.activation = activation
         self.channel_multipliers = list(channel_multipliers)
@@ -140,28 +140,30 @@ class NCSNpp(eqx.Module):
             )
         self.prediction_type = prediction_type
 
-        keys = jax.random.split(key, 512)
-        ki = 0
         L = len(channel_multipliers)
         time_emb_dim = base_channels * 4
 
         # -- Stem --
+        stem_key, key = jax.random.split(key)
         self.stem = eqx.nn.Conv2d(
-            in_channels, base_channels, 3, padding=1, key=keys[ki]
+            in_channels, base_channels, 3, padding=1, key=stem_key
         )
-        ki += 1
 
         # -- Time embedding --
-        self.time_emb = GaussianFourierProjection(time_emb_dim, fourier_scale, keys[ki])
-        ki += 1
+        time_emb_key, key = jax.random.split(key)
+        self.time_emb = GaussianFourierProjection(
+            time_emb_dim, fourier_scale, time_emb_key
+        )
 
         # -- Conditioning embedding --
         # Use GaussianFourierProjection for the condition embedding (matching
         # NCSNpp's time embedding type) rather than SinusoidalEmbedding, so
         # both embeddings live in the same representational space.
         if cond_dim > 0:
-            self.cond_embed = GaussianFourierProjection(time_emb_dim, fourier_scale, keys[ki])
-            ki += 1
+            cond_emb_key, key = jax.random.split(key)
+            self.cond_embed = GaussianFourierProjection(
+                time_emb_dim, fourier_scale, cond_emb_key
+            )
             self.null_cond_emb = jnp.zeros(time_emb_dim)
         else:
             self.cond_embed = None
@@ -181,6 +183,7 @@ class NCSNpp(eqx.Module):
             ch_out = base_channels * channel_multipliers[level]
 
             for block_idx in range(num_res_blocks):
+                block_key, key = jax.random.split(key)
                 block_in = ch_in if block_idx == 0 else ch_out
                 enc_blocks.append(
                     ResBlockBigGAN(
@@ -191,30 +194,30 @@ class NCSNpp(eqx.Module):
                         activation=activation,
                         dropout=dropout,
                         skip_rescale=skip_rescale,
-                        key=keys[ki],
+                        key=block_key,
                     )
                 )
                 enc_is_attn.append(False)
-                ki += 1
 
                 if current_res in attn_resolutions:
+                    attn_key, key = jax.random.split(key)
                     enc_blocks.append(
                         AttnBlockNCSN(
                             channels=ch_out,
                             num_heads=num_heads,
                             num_groups=num_groups,
                             skip_rescale=skip_rescale,
-                            key=keys[ki],
+                            key=attn_key,
                         )
                     )
                     enc_is_attn.append(True)
-                    ki += 1
 
                 skip_channels.append(ch_out)
 
             ch_in = ch_out
 
             if level < L - 1:
+                block_key, key = jax.random.split(key)
                 downsample_blocks.append(
                     ResBlockBigGAN(
                         in_channels=ch_out,
@@ -224,11 +227,10 @@ class NCSNpp(eqx.Module):
                         activation=activation,
                         dropout=dropout,
                         skip_rescale=skip_rescale,
-                        key=keys[ki],
+                        key=block_key,
                         down=True,
                     )
                 )
-                ki += 1
                 skip_channels.append(ch_out)
                 current_res = current_res // 2
 
@@ -238,6 +240,7 @@ class NCSNpp(eqx.Module):
 
         # -- Bottleneck --
         ch_bot = base_channels * channel_multipliers[-1]
+        mid1_key, mid2_key, attn_key, key = jax.random.split(key, 4)
         self.mid_block1 = ResBlockBigGAN(
             ch_bot,
             ch_bot,
@@ -246,17 +249,15 @@ class NCSNpp(eqx.Module):
             activation,
             dropout,
             skip_rescale,
-            keys[ki],
+            mid1_key,
         )
-        ki += 1
         self.mid_attn = AttnBlockNCSN(
             ch_bot,
             num_heads,
             num_groups,
             skip_rescale,
-            keys[ki],
+            attn_key,
         )
-        ki += 1
         self.mid_block2 = ResBlockBigGAN(
             ch_bot,
             ch_bot,
@@ -265,9 +266,8 @@ class NCSNpp(eqx.Module):
             activation,
             dropout,
             skip_rescale,
-            keys[ki],
+            mid2_key,
         )
-        ki += 1
 
         # -- Decoder --
         # Pop from skip_channels to get the correct input dimension
@@ -282,6 +282,7 @@ class NCSNpp(eqx.Module):
             ch_out = base_channels * channel_multipliers[level]
 
             for block_idx in range(num_res_blocks + 1):
+                block_key, key = jax.random.split(key)
                 actual_skip_ch = skip_channels.pop()
                 block_in = ch_current + actual_skip_ch
                 dec_blocks.append(
@@ -293,27 +294,27 @@ class NCSNpp(eqx.Module):
                         activation,
                         dropout,
                         skip_rescale,
-                        keys[ki],
+                        key=block_key,
                     )
                 )
                 dec_is_attn.append(False)
-                ki += 1
                 ch_current = ch_out
 
                 if current_res in attn_resolutions:
+                    attn_key, key = jax.random.split(key)
                     dec_blocks.append(
                         AttnBlockNCSN(
                             ch_out,
                             num_heads,
                             num_groups,
                             skip_rescale,
-                            keys[ki],
+                            key=attn_key,
                         )
                     )
                     dec_is_attn.append(True)
-                    ki += 1
 
             if level > 0:
+                block_key, key = jax.random.split(key)
                 upsample_blocks.append(
                     ResBlockBigGAN(
                         ch_out,
@@ -323,11 +324,10 @@ class NCSNpp(eqx.Module):
                         activation,
                         dropout,
                         skip_rescale,
-                        keys[ki],
+                        block_key,
                         up=True,
                     )
                 )
-                ki += 1
                 current_res = current_res * 2
 
         assert (
@@ -339,6 +339,7 @@ class NCSNpp(eqx.Module):
         self.upsample_blocks = upsample_blocks
 
         # -- Output head --
+        out_key, key = jax.random.split(key)
         self.final_norm = eqx.nn.GroupNorm(
             num_groups, base_channels * channel_multipliers[0]
         )
@@ -347,11 +348,12 @@ class NCSNpp(eqx.Module):
             out_channels,
             3,
             padding=1,
-            key=keys[ki],
+            key=out_key,
         )
-        ki += 1
 
-    def __call__(self, t: jax.Array, x_t: jax.Array, cond: jax.Array, cond_mask: jax.Array) -> jax.Array:
+    def __call__(
+        self, t: jax.Array, x_t: jax.Array, cond: jax.Array, cond_mask: jax.Array
+    ) -> jax.Array:
         """Predict the velocity field at time *t*.
 
         Args:

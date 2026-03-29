@@ -186,7 +186,8 @@ def test_ncsnpp_cond_dim0_backward_compat():
     assert out.shape == (1, 8, 8)
 
 
-from src.flow.otfm import flow_matching_loss, sample_path
+from src.flow.interpolate import sample_path
+from src.train.metrics import flow_matching_loss
 
 
 def test_ncsnpp_flow_matching_loss():

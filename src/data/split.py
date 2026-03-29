@@ -6,11 +6,12 @@ existing split column.
 """
 
 import os
+import hydra
 import logging
 
 import numpy as np
 import pandas as pd
-import hydra
+
 from omegaconf import DictConfig
 
 log = logging.getLogger(__name__)
@@ -39,11 +40,13 @@ def assign_splits(
     if ratios is None:
         ratios = {"train": 0.9, "val": 0.05, "test": 0.05}
 
+    log.info("Assigning splits with ratios:")
+    for name, ratio in ratios.items():
+        log.info(f"  {name}: {ratio:.2%}")
+
     total = sum(ratios.values())
     if abs(total - 1.0) > 1e-6:
-        raise ValueError(
-            f"Split ratios must sum to 1.0, got {total:.6f}: {ratios}"
-        )
+        raise ValueError(f"Split ratios must sum to 1.0, got {total:.6f}: {ratios}")
 
     csv_path = os.path.join(processed_dir, "metadata.csv")
     df = pd.read_csv(csv_path)
@@ -66,19 +69,18 @@ def assign_splits(
 
     df["split"] = splits
     df.to_csv(csv_path, index=False)
+    log.info("Split assignment complete.")
 
 
 @hydra.main(version_base=None, config_path="../../configs", config_name="config")
 def main(cfg: DictConfig):
     """Entry point: assign train/val/test splits to metadata."""
     split_cfg = cfg.data.split
-    log.info(f"Assigning splits with ratios: {dict(split_cfg.ratios)}")
     assign_splits(
         processed_dir=split_cfg.processed_dir,
         seed=split_cfg.seed,
         ratios=dict(split_cfg.ratios),
     )
-    log.info("Split assignment complete.")
 
 
 if __name__ == "__main__":

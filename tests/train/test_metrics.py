@@ -1,4 +1,4 @@
-"""Tests for src.flow.otfm."""
+"""Tests for src.train.metrics."""
 
 import jax
 import pytest
@@ -8,13 +8,8 @@ import equinox as eqx
 import jax.numpy as jnp
 
 from src.model.unet import UNet
-from src.flow.otfm import (
-    flow_matching_loss,
-    sample_path,
-    _to_velocity,
-    sample_time_uniform,
-    sample_time_logit_normal,
-)
+from src.flow.interpolate import sample_path
+from src.train.metrics import flow_matching_loss, _to_velocity
 
 KEY = jax.random.PRNGKey(0)
 
@@ -42,45 +37,6 @@ SMALL_MODEL_COND = UNet(
     cond_dim=1,
     key=KEY,
 )
-
-
-def test_sample_path_at_t0_gives_x0():
-    """Verify interpolant at t=0 equals x0."""
-    x0 = jnp.ones((2, 1, 4, 4)) * 2.0
-    x1 = jnp.ones((2, 1, 4, 4)) * 5.0
-    t = jnp.zeros(2)
-    x_t, u_t = sample_path(x0, x1, t)
-    assert jnp.allclose(x_t, x0)
-
-
-def test_sample_path_at_t1_gives_x1():
-    """Verify interpolant at t=1 equals x1."""
-    x0 = jnp.ones((2, 1, 4, 4)) * 2.0
-    x1 = jnp.ones((2, 1, 4, 4)) * 5.0
-    t = jnp.ones(2)
-    x_t, u_t = sample_path(x0, x1, t)
-    assert jnp.allclose(x_t, x1)
-
-
-def test_sample_path_velocity_is_x1_minus_x0():
-    """Verify linear interpolant velocity equals x1 - x0."""
-    x0 = jnp.ones((2, 1, 4, 4)) * 2.0
-    x1 = jnp.ones((2, 1, 4, 4)) * 5.0
-    t = jnp.array([0.3, 0.7])
-    _, u_t = sample_path(x0, x1, t)
-    expected = x1 - x0
-    assert jnp.allclose(u_t, expected)
-
-
-def test_sample_path_shapes():
-    """Verify x_t and u_t shapes match the input batch shape."""
-    B, C, H, W = 3, 1, 4, 4
-    x0 = jnp.zeros((B, C, H, W))
-    x1 = jnp.ones((B, C, H, W))
-    t = jnp.array([0.1, 0.5, 0.9])
-    x_t, u_t = sample_path(x0, x1, t)
-    assert x_t.shape == (B, C, H, W)
-    assert u_t.shape == (B, C, H, W)
 
 
 def test_flow_matching_loss_is_scalar():
@@ -210,6 +166,7 @@ def test_sample_path_zero_sigma_matches_deterministic():
 
 # --- _to_velocity ---
 
+
 def test_to_velocity_velocity_mode_returns_pred():
     """In velocity mode, _to_velocity is an identity on pred."""
     pred = jnp.ones((2, 1, 4, 4)) * 3.0
@@ -237,68 +194,6 @@ def test_to_velocity_image_mode_shape():
     t = jnp.array([0.1, 0.5, 0.9])
     v = _to_velocity(pred, x_t, t, "image")
     assert v.shape == (B, C, H, W)
-
-
-# --- sample_time_uniform ---
-
-def test_sample_time_uniform_shape():
-    """Output has shape (batch_size,)."""
-    t = sample_time_uniform(KEY, 64)
-    assert t.shape == (64,)
-
-
-def test_sample_time_uniform_range_defaults():
-    """All samples lie in [0, 1] with default t_min/t_max."""
-    t = sample_time_uniform(KEY, 1000)
-    assert jnp.all(t >= 0.0) and jnp.all(t <= 1.0)
-
-
-def test_sample_time_uniform_custom_range():
-    """All samples lie in [t_min, t_max] when overridden."""
-    t = sample_time_uniform(KEY, 1000, t_min=0.2, t_max=0.7)
-    assert jnp.all(t >= 0.2) and jnp.all(t <= 0.7)
-
-
-def test_sample_time_uniform_deterministic():
-    """Same key gives identical output."""
-    t1 = sample_time_uniform(jax.random.PRNGKey(7), 32)
-    t2 = sample_time_uniform(jax.random.PRNGKey(7), 32)
-    assert jnp.allclose(t1, t2)
-
-
-def test_sample_time_uniform_different_keys_differ():
-    """Different keys give different samples."""
-    t1 = sample_time_uniform(jax.random.PRNGKey(0), 32)
-    t2 = sample_time_uniform(jax.random.PRNGKey(1), 32)
-    assert not jnp.allclose(t1, t2)
-
-
-# --- sample_time_logit_normal ---
-
-def test_sample_time_logit_normal_shape():
-    """Output has shape (batch_size,)."""
-    t = sample_time_logit_normal(KEY, 64)
-    assert t.shape == (64,)
-
-
-def test_sample_time_logit_normal_range():
-    """All samples are strictly in (0, 1) — sigmoid always outputs in that range."""
-    t = sample_time_logit_normal(KEY, 1000)
-    assert jnp.all(t > 0.0) and jnp.all(t < 1.0)
-
-
-def test_sample_time_logit_normal_deterministic():
-    """Same key gives identical output."""
-    t1 = sample_time_logit_normal(jax.random.PRNGKey(7), 32)
-    t2 = sample_time_logit_normal(jax.random.PRNGKey(7), 32)
-    assert jnp.allclose(t1, t2)
-
-
-def test_sample_time_logit_normal_different_keys_differ():
-    """Different keys give different samples."""
-    t1 = sample_time_logit_normal(jax.random.PRNGKey(0), 32)
-    t2 = sample_time_logit_normal(jax.random.PRNGKey(1), 32)
-    assert not jnp.allclose(t1, t2)
 
 
 # --- Image-mode prediction tests ---

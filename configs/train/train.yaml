@@ -1,12 +1,35 @@
+_target_: src.train.trainer.train
+_partial_: true
+loss_fn:
+  _target_: src.train.metrics.flow_matching_loss
+  _partial_: true
+batch_metrics:
+  - _target_: src.train.metrics.flow_matching_loss
+    _partial_: true
+epoch_metrics: []
+num_train_eval_batches: 0
+num_val_eval_batches: 0
+optimizer:
+  _target_: optax.adamw
+  learning_rate: 1.0e-4
+coupling:
+  _target_: src.flow.independent_coupling
+  _partial_: true
+time_sampler:
+  _target_: src.flow.sample_time_uniform
+  _partial_: true
+  t_min: 0.0
+  t_max: 1.0
+path_sampler:
+  _target_: src.flow.sample_path
+  _partial_: true
+  sigma_0: 0.0
+  sigma_1: 0.0
 num_epochs: 100
 num_steps_per_epoch: 0
-batch_size: 16
+p_uncond: "${if_cond: ${data.dataset.metadata_columns}, 0.1, 1.0}"
 checkpoint_dir: ${work_dir}/checkpoints
 checkpoint_every: 5
 log_every: 1
 val_every: 1
 ema_decay: 0.9999
-optimizer:
-  _target_: optax.adam
-  learning_rate: 1.0e-4
-p_uncond: 0.1
