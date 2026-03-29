@@ -119,13 +119,13 @@ def test_log_samples_calls_report_image_per_sample():
     log_samples(mock_task, images, epoch=3)
     logger = mock_task.get_logger.return_value
     assert logger.report_image.call_count == 3
+    calls = logger.report_image.call_args_list
     for i in range(3):
-        logger.report_image.assert_any_call(
-            title="samples",
-            series="epoch_3",
-            iteration=3,
-            image=images[i],
-        )
+        kw = calls[i][1]  # kwargs of i-th call
+        assert kw["title"] == "samples"
+        assert kw["series"] == "epoch_3"
+        assert kw["iteration"] == 3
+        assert np.array_equal(kw["image"], images[i])
 
 
 # ---------------------------------------------------------------------------
