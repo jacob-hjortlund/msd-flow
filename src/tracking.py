@@ -46,13 +46,17 @@ def setup_task(clearml_cfg) -> Any:
         logger.warning(
             "ClearML server unreachable (%s). Falling back to offline mode.", exc
         )
-        os.environ["CLEARML_OFFLINE_MODE"] = "1"
-        os.makedirs(clearml_cfg.offline_dir, exist_ok=True)
-        Task.set_offline(offline_mode=True)
-        return Task.init(
-            project_name=clearml_cfg.project_name,
-            task_name=clearml_cfg.task_name,
-        )
+        try:
+            os.environ["CLEARML_OFFLINE_MODE"] = "1"
+            os.makedirs(clearml_cfg.offline_dir, exist_ok=True)
+            Task.set_offline(offline_mode=True)
+            return Task.init(
+                project_name=clearml_cfg.project_name,
+                task_name=clearml_cfg.task_name,
+            )
+        except Exception as exc2:
+            logger.warning("ClearML offline init also failed (%s). Disabling tracking.", exc2)
+            return None
 
 
 def _compute_dataset_hash(
@@ -110,30 +114,34 @@ def register_or_get_dataset(
     if task is None:
         return None
 
-    config_hash = _compute_dataset_hash(bands, version_ids, snapshots, num_files_per_view)
-    dataset_name = "TNG50"
-    dataset_project = task.get_project_name()
-
     try:
-        dataset = Dataset.get(
-            dataset_name=dataset_name,
-            dataset_project=dataset_project,
-            dataset_tags=[config_hash],
-        )
-        logger.info("Found existing ClearML dataset: %s", dataset.id)
-        return dataset.id
-    except ValueError:
-        logger.info("Creating new ClearML dataset with tag %s", config_hash)
-        dataset = Dataset.create(
-            dataset_name=dataset_name,
-            dataset_project=dataset_project,
-            dataset_tags=[config_hash],
-        )
-        dataset.add_files(processed_dir)
-        dataset.finalize()
-        task.get_logger().report_text(f"Registered new dataset: {dataset.id}")
-        logger.info("Registered new dataset: %s", dataset.id)
-        return dataset.id
+        config_hash = _compute_dataset_hash(bands, version_ids, snapshots, num_files_per_view)
+        dataset_name = "TNG50"
+        dataset_project = task.get_project_name()
+
+        try:
+            dataset = Dataset.get(
+                dataset_name=dataset_name,
+                dataset_project=dataset_project,
+                dataset_tags=[config_hash],
+            )
+            logger.info("Found existing ClearML dataset: %s", dataset.id)
+            return dataset.id
+        except ValueError:
+            logger.info("Creating new ClearML dataset with tag %s", config_hash)
+            dataset = Dataset.create(
+                dataset_name=dataset_name,
+                dataset_project=dataset_project,
+                dataset_tags=[config_hash],
+            )
+            dataset.add_files(processed_dir)
+            dataset.finalize()
+            task.get_logger().report_text(f"Registered new dataset: {dataset.id}")
+            logger.info("Registered new dataset: %s", dataset.id)
+            return dataset.id
+    except Exception as exc:
+        logger.warning("ClearML dataset registration failed (%s). Skipping.", exc)
+        return None
 
 
 def log_metrics(task: Any, scalars: dict, epoch: int) -> None:

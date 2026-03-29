@@ -39,7 +39,8 @@ def test_setup_task_calls_task_init_when_enabled():
     assert result is mock_task
 
 
-def test_setup_task_falls_back_to_offline_on_connection_error(tmp_path):
+def test_setup_task_falls_back_to_offline_on_connection_error(tmp_path, monkeypatch):
+    monkeypatch.delenv("CLEARML_OFFLINE_MODE", raising=False)
     mock_task = MagicMock()
     call_count = {"n": 0}
 
@@ -205,3 +206,11 @@ def test_register_or_get_dataset_hash_differs_for_different_inputs():
     h1 = _compute_dataset_hash(["SUBARU_HSC.I"], [0, 1], [72, 73], 50)
     h2 = _compute_dataset_hash(["SUBARU_HSC.R"], [0, 1], [72, 73], 50)
     assert h1 != h2
+
+
+def test_register_or_get_dataset_hash_order_independent():
+    """Hash is the same regardless of input list order."""
+    from src.tracking import _compute_dataset_hash
+    h1 = _compute_dataset_hash(["B", "A"], [1, 0], [73, 72], 50)
+    h2 = _compute_dataset_hash(["A", "B"], [0, 1], [72, 73], 50)
+    assert h1 == h2
