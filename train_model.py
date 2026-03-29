@@ -1,14 +1,15 @@
-import os
-import hydra
 import logging
 
+import hydra
 import jax.random as jr
-import src.data as data
 
-from hydra.utils import call, instantiate
-from omegaconf import DictConfig, OmegaConf
+from hydra.utils import instantiate, call
+from omegaconf import DictConfig, OmegaConf, open_dict
+
 from src.utils import register_all_resolvers
 from src.tracking import setup_task
+from src.data.pipeline import resolve_dataset
+
 
 register_all_resolvers()
 log = logging.getLogger(__name__)
@@ -20,33 +21,34 @@ def main(cfg: DictConfig):
     # 0. ClearML setup
     task = setup_task(cfg.clearml)
 
-    # 1. Variables and logging
-    seed = cfg.seed
-    rng_key = jr.PRNGKey(seed)
-
-    log.info("Starting full training pipeline...")
-
-    # 2. Download data
-    log.info("--- Step 2: Data Download ---")
-    call(cfg.data.download)(clearml_task=task)
-
-    # 3. Assign splits
-    log.info("--- Step 3: Split Assignment ---")
-    split_cfg = cfg.data.split
-    data.assign_splits(
-        processed_dir=split_cfg.processed_dir,
-        seed=split_cfg.seed,
-        ratios=dict(split_cfg.ratios),
+    # 1. Dataset resolution — download / re-split / reuse as needed
+    log.info("--- Step 1: Dataset Resolution ---")
+    dataset_cfg = cfg.data.dataset
+    dataset_path = resolve_dataset(
+        task=task,
+        dataset_name=dataset_cfg.dataset_name,
+        data_dir=dataset_cfg.data_dir,
+        seed=dataset_cfg.seed,
+        ratios=OmegaConf.to_container(dataset_cfg.ratios, resolve=True),
+        download_cfg=cfg.data.download,
+        skip_download=dataset_cfg.skip_download,
     )
 
-    # 4. Build dataloaders
-    log.info("--- Step 4: Dataloader Initialization ---")
+    # 2. Inject resolved path into dataloader config
+    with open_dict(cfg):
+        cfg.data.dataloader.data_dir = dataset_path
 
+    # 3. Build dataloaders
+    log.info("--- Step 3: Dataloader Initialization ---")
     train_loader = instantiate(cfg.data.dataloader.train)
     val_loader = instantiate(cfg.data.dataloader.val)
     test_loader = instantiate(cfg.data.dataloader.test)
 
     log.info(f"Initialized train loader with {len(train_loader)} batches.")
+
+    # 4. Seed
+    seed = cfg.seed
+    rng_key = jr.PRNGKey(seed)
 
     # 5. Build model
     log.info("--- Step 5: Model Initialization ---")
