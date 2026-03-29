@@ -419,15 +419,14 @@ def download_tng_data(
         frac_success = n_processed / n_to_process
         log.info(f"Download and processing complete. Success rate: {frac_success:.2%}")
 
-    if clearml_task is not None:
-        register_or_get_dataset(
-            clearml_task,
-            processed_dir,
-            list(bands),
-            list(version_ids),
-            list(snapshots),
-            num_files_per_view,
-        )
+    register_or_get_dataset(
+        clearml_task,
+        processed_dir,
+        list(bands),
+        list(version_ids),
+        list(snapshots),
+        num_files_per_view,
+    )
 
 
 @hydra.main(version_base=None, config_path="../../configs", config_name="config")

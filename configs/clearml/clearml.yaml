@@ -1,5 +1,4 @@
 enabled: false
 project_name: msd-flow
 task_name: train
-dataset_name: TNG50
 offline_dir: ${work_dir}/.clearml_offline

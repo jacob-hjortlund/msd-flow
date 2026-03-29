@@ -303,7 +303,7 @@ def test_download_tng_data_calls_register_when_task_provided(tmp_path):
 
 
 def test_download_tng_data_skips_register_when_task_is_none(tmp_path):
-    """register_or_get_dataset is NOT called when clearml_task=None."""
+    """register_or_get_dataset is called with task=None (no-op) when clearml_task=None."""
     raw_dir = str(tmp_path / "raw")
     processed_dir = str(tmp_path / "processed")
 
@@ -322,4 +322,12 @@ def test_download_tng_data_skips_register_when_task_is_none(tmp_path):
                 max_workers=1,
                 clearml_task=None,
             )
-    mock_register.assert_not_called()
+    # register_or_get_dataset is called unconditionally — it's a no-op when task=None
+    mock_register.assert_called_once_with(
+        None,
+        processed_dir,
+        ["SUBARU_HSC.I"],
+        [0],
+        [72],
+        1,
+    )
