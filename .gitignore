@@ -5,3 +5,7 @@ _tmp.py
 /data
 /outputs
 __pycache__/
+*.egg-info/
+dist/
+build/
+*.pyc
