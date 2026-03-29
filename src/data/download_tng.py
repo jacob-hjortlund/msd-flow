@@ -11,6 +11,7 @@ import logging
 import tempfile
 import requests
 import itertools
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -20,6 +21,7 @@ from astropy.io import fits
 from hydra.utils import call
 from omegaconf import DictConfig, OmegaConf
 from src.utils import register_all_resolvers
+from src.tracking import register_or_get_dataset
 from tqdm.contrib.logging import logging_redirect_tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -346,9 +348,10 @@ def download_tng_data(
     num_files_per_view: int,
     batch_size: int,
     max_workers: int,
+    clearml_task: Any = None,
 ) -> None:
-    """
-    Download TNG FITS files in batches, extract specified bands and metadata, and clean up raw files.
+    """Download TNG FITS files in batches, extract specified bands and metadata, and clean up raw files.
+
     Images are saved as .npy arrays and metadata is appended to metadata.csv. The function handles
     resumption by checking existing metadata entries and skips already-processed files.
 
@@ -362,6 +365,8 @@ def download_tng_data(
         num_files_per_view: Maximum number of FITS URLs to extract per version/snapshot combination (0 for all).
         batch_size: Number of FITS files to download and process in each batch.
         max_workers: Maximum number of threads for parallel downloading.
+        clearml_task: ClearML Task for dataset registration, or None to
+                      skip (default).
     """
 
     os.makedirs(raw_dir, exist_ok=True)
@@ -388,32 +393,41 @@ def download_tng_data(
 
     if n_to_process == 0:
         log.info("No new files to process.")
-        return None
+    else:
+        batch_size = batch_size
+        num_batches = (len(remaining_urls) + batch_size - 1) // batch_size
+        start_idx = len(existing_ids)
 
-    batch_size = batch_size
-    num_batches = (len(remaining_urls) + batch_size - 1) // batch_size
-    start_idx = len(existing_ids)
+        n_processed = 0
+        with logging_redirect_tqdm():
+            for batch_num in tqdm(
+                range(num_batches),
+                desc="Downloading/Processing FITSbatches",
+                total=num_batches,
+            ):
+                batch_start = batch_num * batch_size
+                batch_urls = remaining_urls[batch_start : batch_start + batch_size]
+                paths = download_batch(batch_urls, raw_dir, headers, max_workers)
+                records = extract_batch(paths, list(bands), processed_dir, start_idx)
+                if records:
+                    save_metadata(records, processed_dir)
 
-    n_processed = 0
-    with logging_redirect_tqdm():
-        for batch_num in tqdm(
-            range(num_batches),
-            desc="Downloading/Processing FITSbatches",
-            total=num_batches,
-        ):
-            batch_start = batch_num * batch_size
-            batch_urls = remaining_urls[batch_start : batch_start + batch_size]
-            paths = download_batch(batch_urls, raw_dir, headers, max_workers)
-            records = extract_batch(paths, list(bands), processed_dir, start_idx)
-            if records:
-                save_metadata(records, processed_dir)
+                cleanup_batch(paths)
+                n_processed += len(records)
+                start_idx += len(records)
 
-            cleanup_batch(paths)
-            n_processed += len(records)
-            start_idx += len(records)
+        frac_success = n_processed / n_to_process
+        log.info(f"Download and processing complete. Success rate: {frac_success:.2%}")
 
-    frac_success = n_processed / n_to_process
-    log.info(f"Download and processing complete. Success rate: {frac_success:.2%}")
+    if clearml_task is not None:
+        register_or_get_dataset(
+            clearml_task,
+            processed_dir,
+            list(bands),
+            list(version_ids),
+            list(snapshots),
+            num_files_per_view,
+        )
 
 
 @hydra.main(version_base=None, config_path="../../configs", config_name="config")
