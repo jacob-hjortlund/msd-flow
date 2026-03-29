@@ -33,3 +33,7 @@ checkpoint_every: 5
 log_every: 1
 val_every: 1
 ema_decay: 0.9999
+sample_fn: null
+sample_every: 0
+num_samples: 4
+samples_dir: ${work_dir}/samples

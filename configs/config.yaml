@@ -6,6 +6,7 @@ defaults:
   - model@model: ncsnpp
   - flow@flow.sample: sample
   - train@train: train
+  - clearml@clearml: clearml
   - _self_
 
 seed: 42
