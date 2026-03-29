@@ -234,7 +234,7 @@ def batch_metric_loop(
 
     Returns:
         ``dict[str, float]`` mapping metric name to its mean value over all
-        processed batches.
+        processed batches. Returns an empty dict if the dataloader yields no batches.
     """
     totals: dict = {}
     n_batches = 0
@@ -261,6 +261,8 @@ def batch_metric_loop(
             totals[k] = totals.get(k, 0.0) + float(v)
         n_batches += 1
 
+    if n_batches == 0:
+        return {}
     return {k: v / n_batches for k, v in totals.items()}
 
 
