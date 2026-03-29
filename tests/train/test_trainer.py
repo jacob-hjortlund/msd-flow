@@ -785,7 +785,7 @@ def _time_sampler(key, batch_size):
     return jax.random.uniform(key, (batch_size,))
 
 
-def test_train_runs_with_clearml_task_none():
+def test_train_runs_with_clearml_task_none(tmp_path):
     """train() completes without error when clearml_task=None (default)."""
     import jax
     key = jax.random.PRNGKey(0)
@@ -809,10 +809,44 @@ def test_train_runs_with_clearml_task_none():
         log_every=1,
         val_every=1,
         checkpoint_every=10,
-        checkpoint_dir="/tmp/test_ckpt",
+        checkpoint_dir=str(tmp_path),
         clearml_task=None,
     )
     assert result is not None
+
+
+def test_train_raises_if_sample_fn_set_but_no_samples_dir():
+    """train() raises ValueError when sample_fn is set but samples_dir is None."""
+    import jax
+    import pytest
+    key = jax.random.PRNGKey(5)
+    dl = _make_dataloader()
+
+    with pytest.raises(ValueError, match="samples_dir"):
+        train(
+            key=key,
+            model=SMALL_MODEL,
+            dataloader=dl,
+            val_dataloader=dl,
+            optimizer=OPTIMIZER,
+            loss_fn=lambda model, x_t, u_t, t, cond, cond_mask: jnp.mean(x_t),
+            batch_metrics=[],
+            epoch_metrics=[],
+            coupling=_COUPLING,
+            time_sampler=_time_sampler,
+            path_sampler=_PATH_SAMPLER,
+            num_epochs=1,
+            num_steps_per_epoch=1,
+            p_uncond=1.0,
+            ema_decay=0.999,
+            log_every=1,
+            val_every=1,
+            checkpoint_every=10,
+            checkpoint_dir="/tmp/test_ckpt2",
+            sample_fn=lambda model, key, n: np.zeros((n, 1, 8, 8)),
+            sample_every=1,
+            samples_dir=None,
+        )
 
 
 def test_train_calls_log_metrics_when_task_provided(tmp_path):

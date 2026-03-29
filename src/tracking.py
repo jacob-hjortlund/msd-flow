@@ -184,9 +184,11 @@ def log_samples(task: Any, images: np.ndarray, epoch: int) -> None:
         return
     cl_logger = task.get_logger()
     for img in images:
+        # ClearML expects (H, W, C); transpose from (C, H, W)
+        img_hwc = np.transpose(img, (1, 2, 0))
         cl_logger.report_image(
             title="samples",
             series=f"epoch_{epoch}",
             iteration=epoch,
-            image=img,
+            image=img_hwc,
         )

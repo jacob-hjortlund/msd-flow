@@ -346,6 +346,12 @@ def train(
         Trained EMA model.
     """
     state = make_train_state(model, optimizer)
+
+    if sample_fn is not None and sample_every > 0 and samples_dir is None:
+        raise ValueError(
+            "samples_dir must be provided when sample_fn and sample_every > 0 are set"
+        )
+
     train_step = make_train_step(optimizer, loss_fn)
     batch_metric_step = make_batch_metric_step(batch_metrics)
 

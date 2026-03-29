@@ -126,7 +126,7 @@ def test_log_samples_calls_report_image_per_sample():
         assert kw["title"] == "samples"
         assert kw["series"] == "epoch_3"
         assert kw["iteration"] == 3
-        assert np.array_equal(kw["image"], images[i])
+        assert np.array_equal(kw["image"], np.transpose(images[i], (1, 2, 0)))
 
 
 # ---------------------------------------------------------------------------
