@@ -185,6 +185,14 @@ def make_batch_metric_step(batch_metrics: list):
         keyed by ``fn.__name__`` for each metric.
     """
 
+    names = [fn.__name__ for fn in batch_metrics]
+    if len(names) != len(set(names)):
+        duplicates = [n for n in names if names.count(n) > 1]
+        raise ValueError(
+            f"make_batch_metric_step: duplicate metric names {duplicates}. "
+            "Each metric must have a unique __name__."
+        )
+
     @eqx.filter_jit
     def batch_metric_step(
         model,

@@ -280,6 +280,20 @@ def test_make_batch_metric_step_multiple_metrics_all_keys_present():
     assert "dummy_metric" in result
 
 
+def test_make_batch_metric_step_raises_on_duplicate_names():
+    """make_batch_metric_step must raise ValueError for duplicate metric names."""
+
+    def my_metric(model, x_t, u_t, t, cond, cond_mask):
+        return jnp.array(0.0)
+
+    def my_metric_copy(model, x_t, u_t, t, cond, cond_mask):  # same __name__ via rename
+        return jnp.array(1.0)
+    my_metric_copy.__name__ = "my_metric"
+
+    with pytest.raises(ValueError, match="duplicate metric names"):
+        make_batch_metric_step([my_metric, my_metric_copy])
+
+
 from functools import partial
 
 from src.train.trainer import train
