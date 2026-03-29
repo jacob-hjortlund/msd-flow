@@ -218,3 +218,175 @@ class TestResolveDatasetLocal:
             download_cfg=_cfg(),
         )
         assert os.path.basename(result) == _dl_hash()
+
+
+# ---------------------------------------------------------------------------
+# ClearML path
+# ---------------------------------------------------------------------------
+
+class TestResolveDatasetClearML:
+
+    def test_case_a_returns_clearml_local_copy(self, tmp_path):
+        """Case A: exact ClearML dataset found → return get_local_copy()."""
+        mock_task = MagicMock()
+        mock_dataset = MagicMock()
+        mock_dataset.get_local_copy.return_value = "/clearml_cache/exact"
+
+        with patch("src.data.pipeline.get_dataset_id", return_value="exact-id"), \
+             patch("clearml.Dataset") as MockDataset:
+            MockDataset.get.return_value = mock_dataset
+            from src.data.pipeline import resolve_dataset
+            result = resolve_dataset(
+                task=mock_task,
+                dataset_name="TNG50",
+                data_dir=str(tmp_path),
+                seed=42,
+                ratios=_RATIOS,
+                download_cfg=_cfg(),
+            )
+
+        assert result == "/clearml_cache/exact"
+
+    def test_case_a_does_not_call_download(self, tmp_path):
+        """Case A: no download is triggered."""
+        mock_task = MagicMock()
+        mock_dataset = MagicMock()
+        mock_dataset.get_local_copy.return_value = "/clearml_cache/exact"
+
+        with patch("src.data.pipeline.get_dataset_id", return_value="exact-id"), \
+             patch("clearml.Dataset") as MockDataset, \
+             patch("src.data.pipeline.call") as mock_call_fn:
+            MockDataset.get.return_value = mock_dataset
+            from src.data.pipeline import resolve_dataset
+            resolve_dataset(
+                task=mock_task,
+                dataset_name="TNG50",
+                data_dir=str(tmp_path),
+                seed=42,
+                ratios=_RATIOS,
+                download_cfg=_cfg(),
+            )
+
+        mock_call_fn.assert_not_called()
+
+    def test_case_b_creates_child_dataset(self, tmp_path):
+        """Case B: base ClearML dataset found → create child dataset version."""
+        mock_task = MagicMock()
+
+        base_cache = tmp_path / "base_cache"
+        base_cache.mkdir()
+        _make_metadata(base_cache)
+
+        mock_base = MagicMock()
+        mock_base.get_local_copy.return_value = str(base_cache)
+
+        mock_child = MagicMock()
+        mock_child.get_local_copy.return_value = "/clearml_cache/child"
+
+        def dataset_get(dataset_id=None, **kwargs):
+            return mock_child if dataset_id == "child-id" else mock_base
+
+        with patch("src.data.pipeline.get_dataset_id", return_value=None), \
+             patch("src.data.pipeline.get_base_dataset_id", return_value="base-id"), \
+             patch("src.data.pipeline.create_dataset_version", return_value="child-id") as mock_version, \
+             patch("clearml.Dataset") as MockDataset:
+            MockDataset.get.side_effect = dataset_get
+            from src.data.pipeline import resolve_dataset
+            result = resolve_dataset(
+                task=mock_task,
+                dataset_name="TNG50",
+                data_dir=str(tmp_path),
+                seed=42,
+                ratios=_RATIOS,
+                download_cfg=_cfg(),
+            )
+
+        mock_version.assert_called_once()
+        assert result == "/clearml_cache/child"
+
+    def test_case_b_passes_updated_metadata_to_create_version(self, tmp_path):
+        """Case B: the metadata.csv passed to create_dataset_version has split column."""
+        mock_task = MagicMock()
+
+        base_cache = tmp_path / "base_cache"
+        base_cache.mkdir()
+        _make_metadata(base_cache)
+
+        captured = {}
+
+        def fake_create_version(task, name, base_id, metadata_csv_path, dl_hash, full_hash):
+            # Read and capture the dataframe while inside the temp directory context
+            captured["df"] = pd.read_csv(metadata_csv_path)
+            return "child-id"
+
+        mock_base = MagicMock()
+        mock_base.get_local_copy.return_value = str(base_cache)
+        mock_child = MagicMock()
+        mock_child.get_local_copy.return_value = "/clearml_cache/child"
+
+        with patch("src.data.pipeline.get_dataset_id", return_value=None), \
+             patch("src.data.pipeline.get_base_dataset_id", return_value="base-id"), \
+             patch("src.data.pipeline.create_dataset_version", side_effect=fake_create_version), \
+             patch("clearml.Dataset") as MockDataset:
+            MockDataset.get.side_effect = lambda dataset_id=None, **kw: (
+                mock_base if dataset_id == "base-id" else mock_child
+            )
+            from src.data.pipeline import resolve_dataset
+            resolve_dataset(
+                task=mock_task,
+                dataset_name="TNG50",
+                data_dir=str(tmp_path),
+                seed=42,
+                ratios=_RATIOS,
+                download_cfg=_cfg(),
+            )
+
+        assert "split" in captured["df"].columns
+
+    def test_case_c_downloads_and_registers(self, tmp_path):
+        """Case C: no ClearML dataset found → download, split, register."""
+        mock_task = MagicMock()
+        mock_partial = MagicMock()
+        mock_new = MagicMock()
+        mock_new.get_local_copy.return_value = "/clearml_cache/new"
+
+        def fake_download(processed_dir):
+            os.makedirs(processed_dir, exist_ok=True)
+            _make_metadata(processed_dir)
+
+        mock_partial.side_effect = fake_download
+
+        with patch("src.data.pipeline.get_dataset_id", return_value=None), \
+             patch("src.data.pipeline.get_base_dataset_id", return_value=None), \
+             patch("src.data.pipeline.register_dataset", return_value="new-id"), \
+             patch("src.data.pipeline.call", return_value=mock_partial), \
+             patch("clearml.Dataset") as MockDataset:
+            MockDataset.get.return_value = mock_new
+            from src.data.pipeline import resolve_dataset
+            result = resolve_dataset(
+                task=mock_task,
+                dataset_name="TNG50",
+                data_dir=str(tmp_path),
+                seed=42,
+                ratios=_RATIOS,
+                download_cfg=_cfg(),
+            )
+
+        assert result == "/clearml_cache/new"
+
+    def test_case_c_raises_when_skip_download(self, tmp_path):
+        """Case C: skip_download=True → FileNotFoundError."""
+        mock_task = MagicMock()
+        with patch("src.data.pipeline.get_dataset_id", return_value=None), \
+             patch("src.data.pipeline.get_base_dataset_id", return_value=None):
+            from src.data.pipeline import resolve_dataset
+            with pytest.raises(FileNotFoundError):
+                resolve_dataset(
+                    task=mock_task,
+                    dataset_name="TNG50",
+                    data_dir=str(tmp_path),
+                    seed=42,
+                    ratios=_RATIOS,
+                    download_cfg=_cfg(),
+                    skip_download=True,
+                )
