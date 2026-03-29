@@ -18,7 +18,6 @@ import numpy as np
 
 from tqdm import tqdm
 from src.utils import register_all_resolvers
-from src.train.metrics import flow_matching_loss
 from tqdm.contrib.logging import logging_redirect_tqdm
 
 logger = logging.getLogger(__name__)
@@ -147,31 +146,6 @@ def prepare_batch(
     return t, x_t, u_t, cond, cond_mask
 
 
-def make_val_step():
-    """Return a JIT-compiled validation step.
-
-    Computes flow matching loss without gradient. Mirrors the structure of
-    ``make_train_step`` but does not update any state.
-
-    Returns:
-        A ``filter_jit``-compiled callable with signature
-        ``(model, x_t, u_t, t, cond, cond_mask) -> scalar_loss``.
-    """
-
-    @eqx.filter_jit
-    def val_step(
-        model,
-        x_t: jax.Array,
-        u_t: jax.Array,
-        t: jax.Array,
-        cond: jax.Array,
-        cond_mask: jax.Array,
-    ) -> jax.Array:
-        return flow_matching_loss(model, x_t, u_t, t, cond, cond_mask)
-
-    return val_step
-
-
 def make_batch_metric_step(batch_metrics: list):
     """Return a JIT-compiled step that evaluates a list of batch metrics.
 
@@ -266,50 +240,6 @@ def batch_metric_loop(
     return {k: v / n_batches for k, v in totals.items()}
 
 
-def validation_loop(
-    key: jax.Array,
-    ema_model,
-    dataloader,
-    step_fn: callable,
-    coupling: callable,
-    time_sampler: callable,
-    path_sampler: callable,
-    p_uncond: float,
-) -> float:
-    """Run a full pass over val_dataloader and return mean flow matching loss.
-
-    Args:
-        key:             JAX PRNG key (consumed internally via splitting).
-        ema_model:       EMA model used for inference.
-        dataloader:      Iterable of ``(images, meta)`` batches.
-        step_fn:         JIT-compiled step function from ``make_val_step()``.
-        coupling:        Callable for batch coupling.
-        time_sampler:    Callable for sampling time steps.
-        path_sampler:    Callable for constructing the interpolant.
-        p_uncond:        Probability of dropping the condition per sample.
-
-    Returns:
-        Mean validation loss over all batches.
-    """
-    total_loss = 0.0
-    n_batches = 0
-
-    for batch in dataloader:
-        batch_key, key = jax.random.split(key)
-        t, x_t, u_t, cond, cond_mask = prepare_batch(
-            batch=batch,
-            key=batch_key,
-            coupling=coupling,
-            time_sampler=time_sampler,
-            path_sampler=path_sampler,
-            p_uncond=p_uncond,
-        )
-        total_loss += float(step_fn(ema_model, x_t, u_t, t, cond, cond_mask))
-        n_batches += 1
-
-    return total_loss / n_batches
-
-
 def collect_batches(dataloader, num_batches: int) -> list:
     """Collect raw batches from a dataloader into a list.
 
@@ -335,6 +265,8 @@ def train(
     val_dataloader,
     optimizer: optax.GradientTransformation,
     loss_fn: callable,
+    batch_metrics: list,
+    epoch_metrics: list,
     coupling: callable,
     time_sampler: callable,
     path_sampler: callable,
@@ -346,45 +278,52 @@ def train(
     val_every: int,
     checkpoint_every: int,
     checkpoint_dir: str,
+    num_train_eval_batches: int = 0,
+    num_val_eval_batches: int = 0,
 ):
     """Main training loop with EMA and periodic validation.
 
     Args:
-        key:                JAX PRNG key.
-        model:              Velocity-field network to train.
-        dataloader:         PyTorch DataLoader yielding ``(images, meta)`` tuples
-                            where images is ``(B, C, H, W)`` and meta is
-                            ``(B, cond_dim)`` or ``(B, 0)`` if unconditional.
-        val_dataloader:     DataLoader for the validation split, same format as
-                            ``dataloader``. Used for periodic EMA model evaluation.
-        optimizer:          Optax GradientTransformation.
-        loss_fn:            Differentiable loss callable
-                            ``(model, x_t, u_t, t, cond, cond_mask) -> scalar``.
-                            Drives gradient computation.
-        coupling:           Callable ``(x0_np, x1_np) -> x0_paired`` for batch
-                            coupling (e.g. ``independent_coupling`` or
-                            ``ot_coupling``).
-        time_sampler:       Callable ``(key, batch_size) -> t`` for sampling
-                            per-sample times.
-        path_sampler:       Callable ``(x0, x1, t, *, key) -> (x_t, u_t)``
-                            for constructing the interpolant.
-        num_epochs:         Total number of training epochs.
-        num_steps_per_epoch: Steps per epoch. Use ``0`` to consume the full
-                            dataloader each epoch.
-        p_uncond:           Probability of dropping the condition per sample
-                            (classifier-free guidance training).
-        ema_decay:          EMA decay rate (typical: 0.9999).
-        log_every:          Log metrics every this many epochs.
-        val_every:          Run validation every this many epochs.
-        checkpoint_every:   Save checkpoints every this many epochs.
-        checkpoint_dir:     Directory for checkpoint files.
+        key:                    JAX PRNG key.
+        model:                  Velocity-field network to train.
+        dataloader:             PyTorch DataLoader yielding ``(images, meta)`` tuples
+                                where images is ``(B, C, H, W)`` and meta is
+                                ``(B, cond_dim)`` or ``(B, 0)`` if unconditional.
+        val_dataloader:         DataLoader for the validation split.
+        optimizer:              Optax GradientTransformation.
+        loss_fn:                Differentiable loss callable
+                                ``(model, x_t, u_t, t, cond, cond_mask) -> scalar``.
+                                Drives gradient computation.
+        batch_metrics:          List of callables with signature
+                                ``(model, x_t, u_t, t, cond, cond_mask) -> scalar``.
+                                Evaluated every ``val_every`` epochs over the full
+                                val loader and ``num_train_eval_batches`` train batches.
+        epoch_metrics:          List of callables with signature
+                                ``(model, val_batches, key) -> scalar``.
+                                Evaluated every ``val_every`` epochs on
+                                ``num_val_eval_batches`` collected val batches.
+                                Extra dependencies must be baked in via partial.
+        coupling:               Callable ``(x0_np, x1_np) -> x0_paired``.
+        time_sampler:           Callable ``(key, batch_size) -> t``.
+        path_sampler:           Callable ``(x0, x1, t, *, key) -> (x_t, u_t)``.
+        num_epochs:             Total number of training epochs.
+        num_steps_per_epoch:    Steps per epoch. ``0`` = full dataloader.
+        p_uncond:               Probability of dropping the condition per sample.
+        ema_decay:              EMA decay rate (typical: 0.9999).
+        log_every:              Log metrics every this many epochs.
+        val_every:              Run validation every this many epochs.
+        checkpoint_every:       Save checkpoints every this many epochs.
+        checkpoint_dir:         Directory for checkpoint files.
+        num_train_eval_batches: Batches from train loader for batch metrics.
+                                ``0`` = all.
+        num_val_eval_batches:   Batches collected for epoch metrics. ``0`` = all.
 
     Returns:
         Trained EMA model.
     """
     state = make_train_state(model, optimizer)
     train_step = make_train_step(optimizer, loss_fn)
-    val_step = make_val_step()
+    batch_metric_step = make_batch_metric_step(batch_metrics)
 
     steps_per_epoch = (
         len(dataloader) if num_steps_per_epoch == 0 else num_steps_per_epoch
@@ -401,9 +340,12 @@ def train(
 
     total_val_time = 0.0
     avg_val_time = np.nan
-    val_loss = np.nan
     val_time = np.nan
     val_runs = 0
+
+    val_metrics: dict = {}
+    train_metrics: dict = {}
+    epoch_metric_results: dict = {}
 
     for epoch in range(num_epochs):
         epoch_loss = 0.0
@@ -445,17 +387,40 @@ def train(
         if (epoch + 1) % val_every == 0:
             val_start_time = time.perf_counter()
 
-            key, key_val = jax.random.split(key)
-            val_loss = validation_loop(
+            key, key_val, key_train, key_epoch = jax.random.split(key, 4)
+
+            val_metrics = batch_metric_loop(
                 key=key_val,
                 ema_model=ema_model,
                 dataloader=val_dataloader,
-                step_fn=val_step,
+                step_fn=batch_metric_step,
                 coupling=coupling,
                 time_sampler=time_sampler,
                 path_sampler=path_sampler,
                 p_uncond=p_uncond,
+                num_batches=0,
             )
+
+            train_metrics = batch_metric_loop(
+                key=key_train,
+                ema_model=ema_model,
+                dataloader=dataloader,
+                step_fn=batch_metric_step,
+                coupling=coupling,
+                time_sampler=time_sampler,
+                path_sampler=path_sampler,
+                p_uncond=p_uncond,
+                num_batches=num_train_eval_batches,
+            )
+
+            epoch_metric_results = {}
+            if epoch_metrics:
+                val_batches = collect_batches(val_dataloader, num_val_eval_batches)
+                for fn in epoch_metrics:
+                    epoch_metric_results[fn.__name__] = fn(
+                        ema_model, val_batches, key_epoch
+                    )
+
             val_time = time.perf_counter() - val_start_time
             total_val_time += val_time
             val_runs += 1
@@ -474,10 +439,20 @@ def train(
         avg_epoch_time = total_epoch_time / (epoch + 1)
 
         if (epoch + 1) % log_every == 0:
+            all_metrics = {
+                **{f"val/{k}": v for k, v in val_metrics.items()},
+                **{f"train/{k}": v for k, v in train_metrics.items()},
+                **{f"epoch/{k}": v for k, v in epoch_metric_results.items()},
+            }
+            metric_str = (
+                " | ".join(f"{k}: {v:.4g}" for k, v in all_metrics.items())
+                if all_metrics
+                else "no metrics yet"
+            )
             log_string = (
                 f"Epoch {epoch + 1}/{num_epochs} | "
                 + f"Train Loss: {epoch_loss / steps_per_epoch:.4g} | "
-                + f"Val Loss: {val_loss:.4g} | "
+                + metric_str + " | "
                 + f"Epoch Time: {epoch_time:.2g}s (avg {avg_epoch_time:.2g}s) | "
                 + f"Train Time: {train_time:.2g}s (avg {avg_train_time:.2g}s) | "
                 + f"Val Time: {val_time:.2f}s (avg {avg_val_time:.2f}s)"

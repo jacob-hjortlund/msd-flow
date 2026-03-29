@@ -180,47 +180,6 @@ def test_ema_update_blends_arrays_correctly():
     assert jnp.allclose(result.bias, expected_bias, atol=1e-6)
 
 
-from src.train.trainer import make_val_step
-
-
-def test_val_step_returns_scalar_loss():
-    """val_step must return a scalar JAX array."""
-    val_step = make_val_step()
-
-    B = 2
-    k1, k2 = jax.random.split(KEY)
-    x0 = jax.random.normal(k1, (B, 1, 8, 8))
-    x1 = jax.random.normal(k2, (B, 1, 8, 8))
-    t = jnp.array([0.3, 0.7])
-    cond = jnp.empty((B, 0))
-    cond_mask = jnp.zeros(B, dtype=bool)
-
-    from src.flow.interpolate import sample_path as _sp
-    x_t, u_t = _sp(x0, x1, t)
-
-    loss = val_step(SMALL_MODEL, x_t, u_t, t, cond, cond_mask)
-    assert loss.shape == ()
-
-
-def test_val_step_loss_is_finite():
-    """val_step loss must be finite."""
-    val_step = make_val_step()
-
-    B = 2
-    k1, k2 = jax.random.split(KEY)
-    x0 = jax.random.normal(k1, (B, 1, 8, 8))
-    x1 = jax.random.normal(k2, (B, 1, 8, 8))
-    t = jnp.array([0.3, 0.7])
-    cond = jnp.empty((B, 0))
-    cond_mask = jnp.zeros(B, dtype=bool)
-
-    from src.flow.interpolate import sample_path as _sp
-    x_t, u_t = _sp(x0, x1, t)
-
-    loss = val_step(SMALL_MODEL, x_t, u_t, t, cond, cond_mask)
-    assert jnp.isfinite(loss)
-
-
 from src.train.trainer import make_batch_metric_step
 
 
@@ -325,6 +284,10 @@ def _make_train_kwargs(num_epochs=1, num_steps_per_epoch=3, p_uncond=0.0):
         key=jax.random.PRNGKey(0),
         optimizer=optax.adam(1e-3),
         loss_fn=_fml,
+        batch_metrics=[_fml],
+        epoch_metrics=[],
+        num_train_eval_batches=0,
+        num_val_eval_batches=0,
         coupling=independent_coupling,
         time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
         path_sampler=partial(sample_path),
@@ -612,10 +575,7 @@ def test_prepare_batch_different_keys_give_different_results():
     assert not jnp.allclose(x_t_a, x_t_b)
 
 
-# --- validation_loop ---
-
-from src.train.trainer import validation_loop, make_val_step as _make_val_step
-
+# --- batch_metric_loop ---
 
 def _make_val_dataloader(B=2, num_batches=2):
     """Return a re-iterable list of fake (images, meta) batches."""
@@ -626,54 +586,6 @@ def _make_val_dataloader(B=2, num_batches=2):
         )
         for _ in range(num_batches)
     ]
-
-
-def test_validation_loop_returns_float():
-    """validation_loop must return a Python float."""
-    val_loader = _make_val_dataloader()
-    result = validation_loop(
-        key=jax.random.PRNGKey(0),
-        ema_model=SMALL_MODEL,
-        dataloader=val_loader,
-        step_fn=_make_val_step(),
-        coupling=independent_coupling,
-        time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
-        path_sampler=partial(sample_path),
-        p_uncond=0.0,
-    )
-    assert isinstance(result, float)
-
-
-def test_validation_loop_loss_is_finite():
-    """validation_loop must return a finite loss."""
-    val_loader = _make_val_dataloader()
-    result = validation_loop(
-        key=jax.random.PRNGKey(0),
-        ema_model=SMALL_MODEL,
-        dataloader=val_loader,
-        step_fn=_make_val_step(),
-        coupling=independent_coupling,
-        time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
-        path_sampler=partial(sample_path),
-        p_uncond=0.0,
-    )
-    assert np.isfinite(result)
-
-
-def test_validation_loop_loss_is_nonnegative():
-    """validation_loop loss must be non-negative (MSE)."""
-    val_loader = _make_val_dataloader()
-    result = validation_loop(
-        key=jax.random.PRNGKey(42),
-        ema_model=SMALL_MODEL,
-        dataloader=val_loader,
-        step_fn=_make_val_step(),
-        coupling=independent_coupling,
-        time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
-        path_sampler=partial(sample_path),
-        p_uncond=0.0,
-    )
-    assert result >= 0.0
 
 
 from src.train.trainer import batch_metric_loop
@@ -815,3 +727,33 @@ def test_collect_batches_each_tuple_is_images_meta():
         images, meta = batch
         assert images.shape[0] == 2
         assert images.shape[1:] == (1, 8, 8)
+
+
+def test_train_epoch_metric_receives_nonempty_val_batches():
+    """A no-op epoch metric must receive a non-empty val_batches list."""
+    received = {}
+
+    def capture_epoch_metric(model, val_batches, key):
+        received["val_batches"] = val_batches
+        return jnp.array(0.0)
+
+    capture_epoch_metric.__name__ = "capture_epoch_metric"
+
+    dataloader = list(_make_fake_dataloader(B=2, num_batches=3))
+    val_dataloader = _fake_val_dataloader()
+
+    kwargs = _make_train_kwargs()
+    kwargs["batch_metrics"] = [_fml]
+    kwargs["epoch_metrics"] = [capture_epoch_metric]
+    kwargs["num_train_eval_batches"] = 0
+    kwargs["num_val_eval_batches"] = 0
+
+    train(
+        model=SMALL_MODEL,
+        dataloader=dataloader,
+        val_dataloader=val_dataloader,
+        **kwargs,
+    )
+
+    assert "val_batches" in received
+    assert len(received["val_batches"]) > 0
