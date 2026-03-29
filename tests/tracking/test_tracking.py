@@ -130,87 +130,163 @@ def test_log_samples_calls_report_image_per_sample():
 
 
 # ---------------------------------------------------------------------------
-# register_or_get_dataset
+# get_dataset_id
 # ---------------------------------------------------------------------------
 
-def test_register_or_get_dataset_returns_none_when_task_is_none():
-    from src.tracking import register_or_get_dataset
-    result = register_or_get_dataset(
-        task=None,
-        processed_dir="/data",
-        bands=["SUBARU_HSC.I"],
-        version_ids=[0],
-        snapshots=[72],
-        num_files_per_view=50,
+def test_get_dataset_id_returns_none_when_task_is_none():
+    from src.tracking import get_dataset_id
+    assert get_dataset_id(None, "TNG50", "abc123") is None
+
+
+def test_get_dataset_id_queries_with_splits_tag():
+    mock_task = MagicMock()
+    mock_task.get_project_name.return_value = "msd-flow"
+    mock_dataset = MagicMock()
+    mock_dataset.id = "found-id"
+    with patch("src.tracking.Dataset") as MockDataset:
+        MockDataset.get.return_value = mock_dataset
+        from src.tracking import get_dataset_id
+        result = get_dataset_id(mock_task, "TNG50", "abc123")
+    assert result == "found-id"
+    MockDataset.get.assert_called_once_with(
+        dataset_name="TNG50",
+        dataset_project="msd-flow",
+        dataset_tags=["splits:abc123"],
     )
+
+
+def test_get_dataset_id_returns_none_when_not_found():
+    mock_task = MagicMock()
+    mock_task.get_project_name.return_value = "msd-flow"
+    with patch("src.tracking.Dataset") as MockDataset:
+        MockDataset.get.side_effect = ValueError("not found")
+        from src.tracking import get_dataset_id
+        result = get_dataset_id(mock_task, "TNG50", "abc123")
     assert result is None
 
 
-def test_register_or_get_dataset_returns_existing_dataset_id():
+# ---------------------------------------------------------------------------
+# get_base_dataset_id
+# ---------------------------------------------------------------------------
+
+def test_get_base_dataset_id_returns_none_when_task_is_none():
+    from src.tracking import get_base_dataset_id
+    assert get_base_dataset_id(None, "TNG50", "dl_hash") is None
+
+
+def test_get_base_dataset_id_returns_latest_by_created():
+    mock_task = MagicMock()
+    mock_task.get_project_name.return_value = "msd-flow"
+    with patch("src.tracking.Dataset") as MockDataset:
+        MockDataset.list_datasets.return_value = [
+            {"id": "old-id", "created": "2026-01-01T00:00:00"},
+            {"id": "new-id", "created": "2026-03-01T00:00:00"},
+        ]
+        from src.tracking import get_base_dataset_id
+        result = get_base_dataset_id(mock_task, "TNG50", "dl_hash")
+    assert result == "new-id"
+    MockDataset.list_datasets.assert_called_once_with(
+        dataset_name="TNG50",
+        dataset_project="msd-flow",
+        tags=["download:dl_hash"],
+    )
+
+
+def test_get_base_dataset_id_returns_none_when_empty():
+    mock_task = MagicMock()
+    mock_task.get_project_name.return_value = "msd-flow"
+    with patch("src.tracking.Dataset") as MockDataset:
+        MockDataset.list_datasets.return_value = []
+        from src.tracking import get_base_dataset_id
+        result = get_base_dataset_id(mock_task, "TNG50", "dl_hash")
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# register_dataset
+# ---------------------------------------------------------------------------
+
+def test_register_dataset_returns_none_when_task_is_none():
+    from src.tracking import register_dataset
+    assert register_dataset(None, "TNG50", "/data", "dl_hash", "full_hash") is None
+
+
+def test_register_dataset_creates_with_both_tags(tmp_path):
     mock_task = MagicMock()
     mock_task.get_project_name.return_value = "msd-flow"
     mock_dataset = MagicMock()
-    mock_dataset.id = "existing-id-123"
-
+    mock_dataset.id = "new-id"
     with patch("src.tracking.Dataset") as MockDataset:
-        MockDataset.get.return_value = mock_dataset
-        from src.tracking import register_or_get_dataset
-        result = register_or_get_dataset(
-            task=mock_task,
-            processed_dir="/data",
-            bands=["SUBARU_HSC.I"],
-            version_ids=[0],
-            snapshots=[72],
-            num_files_per_view=50,
-        )
-
-    assert result == "existing-id-123"
-    MockDataset.create.assert_not_called()
-
-
-def test_register_or_get_dataset_creates_new_when_not_found():
-    mock_task = MagicMock()
-    mock_task.get_project_name.return_value = "msd-flow"
-    mock_dataset = MagicMock()
-    mock_dataset.id = "new-id-456"
-
-    with patch("src.tracking.Dataset") as MockDataset:
-        MockDataset.get.side_effect = ValueError("not found")
         MockDataset.create.return_value = mock_dataset
-        from src.tracking import register_or_get_dataset
-        result = register_or_get_dataset(
-            task=mock_task,
-            processed_dir="/data/processed",
-            bands=["SUBARU_HSC.I"],
-            version_ids=[0],
-            snapshots=[72],
-            num_files_per_view=50,
-        )
-
-    assert result == "new-id-456"
-    MockDataset.create.assert_called_once()
-    mock_dataset.add_files.assert_called_once_with("/data/processed")
+        from src.tracking import register_dataset
+        result = register_dataset(mock_task, "TNG50", str(tmp_path), "dl_hash", "full_hash")
+    assert result == "new-id"
+    MockDataset.create.assert_called_once_with(
+        dataset_name="TNG50",
+        dataset_project="msd-flow",
+        dataset_tags=["download:dl_hash", "splits:full_hash"],
+    )
+    mock_dataset.add_files.assert_called_once_with(str(tmp_path))
     mock_dataset.finalize.assert_called_once()
 
 
-def test_register_or_get_dataset_hash_is_deterministic():
-    """Same inputs always produce the same ClearML dataset tag."""
-    from src.tracking import _compute_dataset_hash
-    h1 = _compute_dataset_hash(["SUBARU_HSC.I"], [0, 1], [72, 73], 50)
-    h2 = _compute_dataset_hash(["SUBARU_HSC.I"], [0, 1], [72, 73], 50)
-    assert h1 == h2
+def test_register_dataset_returns_none_on_exception():
+    mock_task = MagicMock()
+    mock_task.get_project_name.return_value = "msd-flow"
+    with patch("src.tracking.Dataset") as MockDataset:
+        MockDataset.create.side_effect = RuntimeError("server error")
+        from src.tracking import register_dataset
+        result = register_dataset(mock_task, "TNG50", "/data", "dl_hash", "full_hash")
+    assert result is None
 
 
-def test_register_or_get_dataset_hash_differs_for_different_inputs():
-    from src.tracking import _compute_dataset_hash
-    h1 = _compute_dataset_hash(["SUBARU_HSC.I"], [0, 1], [72, 73], 50)
-    h2 = _compute_dataset_hash(["SUBARU_HSC.R"], [0, 1], [72, 73], 50)
-    assert h1 != h2
+# ---------------------------------------------------------------------------
+# create_dataset_version
+# ---------------------------------------------------------------------------
+
+def test_create_dataset_version_returns_none_when_task_is_none():
+    from src.tracking import create_dataset_version
+    assert create_dataset_version(None, "TNG50", "base-id", "/tmp/meta.csv", "dl", "full") is None
 
 
-def test_register_or_get_dataset_hash_order_independent():
-    """Hash is the same regardless of input list order."""
-    from src.tracking import _compute_dataset_hash
-    h1 = _compute_dataset_hash(["B", "A"], [1, 0], [73, 72], 50)
-    h2 = _compute_dataset_hash(["A", "B"], [0, 1], [72, 73], 50)
-    assert h1 == h2
+def test_create_dataset_version_creates_child_with_parent_and_tags(tmp_path):
+    import pandas as pd
+    mock_task = MagicMock()
+    mock_task.get_project_name.return_value = "msd-flow"
+    mock_dataset = MagicMock()
+    mock_dataset.id = "child-id"
+
+    metadata_path = str(tmp_path / "metadata.csv")
+    pd.DataFrame([{"filename": "galaxy_00000.npy", "split": "train"}]).to_csv(
+        metadata_path, index=False
+    )
+
+    with patch("src.tracking.Dataset") as MockDataset:
+        MockDataset.create.return_value = mock_dataset
+        from src.tracking import create_dataset_version
+        result = create_dataset_version(
+            mock_task, "TNG50", "base-id", metadata_path, "dl_hash", "full_hash"
+        )
+    assert result == "child-id"
+    MockDataset.create.assert_called_once_with(
+        dataset_name="TNG50",
+        dataset_project="msd-flow",
+        parent_datasets=["base-id"],
+        dataset_tags=["download:dl_hash", "splits:full_hash"],
+    )
+    mock_dataset.add_files.assert_called_once_with(
+        metadata_path, local_base_folder=str(tmp_path)
+    )
+    mock_dataset.finalize.assert_called_once()
+
+
+def test_create_dataset_version_returns_none_on_exception():
+    mock_task = MagicMock()
+    mock_task.get_project_name.return_value = "msd-flow"
+    with patch("src.tracking.Dataset") as MockDataset:
+        MockDataset.create.side_effect = RuntimeError("server error")
+        from src.tracking import create_dataset_version
+        result = create_dataset_version(
+            mock_task, "TNG50", "base-id", "/tmp/meta.csv", "dl", "full"
+        )
+    assert result is None

@@ -55,93 +55,197 @@ def setup_task(clearml_cfg) -> Any:
                 task_name=clearml_cfg.task_name,
             )
         except Exception as exc2:
-            logger.warning("ClearML offline init also failed (%s). Disabling tracking.", exc2)
+            logger.warning(
+                "ClearML offline init also failed (%s). Disabling tracking.", exc2
+            )
             return None
 
 
-def _compute_dataset_hash(
-    bands: list,
-    version_ids: list,
-    snapshots: list,
-    num_files_per_view: int,
-) -> str:
-    """Compute a deterministic SHA-256 hash tag for a dataset configuration.
-
-    Args:
-        bands: List of band name strings.
-        version_ids: List of version integers.
-        snapshots: List of snapshot integers.
-        num_files_per_view: Max files per view combination.
-
-    Returns:
-        16-character hex string.
-    """
-    config_data = {
-        "bands": sorted(bands),
-        "version_ids": sorted(version_ids),
-        "snapshots": sorted(snapshots),
-        "num_files_per_view": num_files_per_view,
-    }
-    config_str = json.dumps(config_data, sort_keys=True)
-    return hashlib.sha256(config_str.encode()).hexdigest()[:16]
-
-
-def register_or_get_dataset(
+def get_dataset_id(
     task: Any,
-    processed_dir: str,
-    bands: list,
-    version_ids: list,
-    snapshots: list,
-    num_files_per_view: int,
+    dataset_name: str,
+    full_hash: str,
 ) -> str | None:
-    """Register a new ClearML Dataset or retrieve an existing one.
-
-    Builds a deterministic config hash to identify the dataset version.
-    If a dataset with that hash already exists, returns its ID without
-    re-uploading. Otherwise creates, populates, and finalizes a new one.
+    """Find a ClearML dataset tagged with ``splits:<full_hash>``.
 
     Args:
         task: Active ClearML Task, or None (no-op).
-        processed_dir: Local directory containing the processed .npy files.
-        bands: Band names used for this dataset.
-        version_ids: TNG version integers.
-        snapshots: TNG snapshot integers.
-        num_files_per_view: Files-per-view limit used during download.
+        dataset_name: Name of the ClearML dataset.
+        full_hash: Output of :func:`src.data.utils.compute_full_hash`.
 
     Returns:
-        ClearML dataset ID string, or None if task is None.
+        ClearML dataset ID string, or None if not found.
     """
     if task is None:
         return None
-
     try:
-        config_hash = _compute_dataset_hash(bands, version_ids, snapshots, num_files_per_view)
-        dataset_name = "TNG50"
         dataset_project = task.get_project_name()
+        dataset = Dataset.get(
+            dataset_name=dataset_name,
+            dataset_project=dataset_project,
+            dataset_tags=[f"splits:{full_hash}"],
+        )
+        logger.info("Found existing ClearML dataset: %s", dataset.id)
+        return dataset.id
+    except ValueError:
+        logger.info("No ClearML dataset found with splits tag %s", full_hash)
+        return None
+    except Exception as exc:
+        logger.warning("ClearML dataset retrieval failed (%s). Skipping.", exc)
+        return None
 
-        try:
-            dataset = Dataset.get(
-                dataset_name=dataset_name,
-                dataset_project=dataset_project,
-                dataset_tags=[config_hash],
-            )
-            logger.info("Found existing ClearML dataset: %s", dataset.id)
-            return dataset.id
-        except ValueError:
-            logger.info("Creating new ClearML dataset with tag %s", config_hash)
-            dataset = Dataset.create(
-                dataset_name=dataset_name,
-                dataset_project=dataset_project,
-                dataset_tags=[config_hash],
-            )
-            dataset.add_files(processed_dir)
-            dataset.finalize()
-            task.get_logger().report_text(f"Registered new dataset: {dataset.id}")
-            logger.info("Registered new dataset: %s", dataset.id)
-            return dataset.id
+
+def get_base_dataset_id(
+    task: Any,
+    dataset_name: str,
+    download_hash: str,
+) -> str | None:
+    """Find the most recent ClearML dataset tagged with ``download:<download_hash>``.
+
+    Used to locate a base dataset when only split config (seed/ratios) has changed.
+
+    Args:
+        task: Active ClearML Task, or None (no-op).
+        dataset_name: Name of the ClearML dataset.
+        download_hash: Output of :func:`src.data.utils.compute_download_hash`.
+
+    Returns:
+        ClearML dataset ID string of the latest matching dataset, or None.
+    """
+    if task is None:
+        return None
+    try:
+        dataset_project = task.get_project_name()
+        datasets = Dataset.list_datasets(
+            dataset_name=dataset_name,
+            dataset_project=dataset_project,
+            tags=[f"download:{download_hash}"],
+        )
+        if not datasets:
+            logger.info("No ClearML base dataset found with download tag %s", download_hash)
+            return None
+        latest = max(datasets, key=lambda d: d.get("created", ""))
+        logger.info("Found base ClearML dataset: %s", latest["id"])
+        return latest["id"]
+    except Exception as exc:
+        logger.warning("ClearML base dataset retrieval failed (%s). Skipping.", exc)
+        return None
+
+
+def register_dataset(
+    task: Any,
+    dataset_name: str,
+    processed_dir: str,
+    download_hash: str,
+    full_hash: str,
+) -> str | None:
+    """Register a new ClearML dataset from a local processed directory.
+
+    Tags the dataset with both ``download:<download_hash>`` and
+    ``splits:<full_hash>`` so it can be found by either hash later.
+
+    Args:
+        task: Active ClearML Task, or None (no-op).
+        dataset_name: Name for the new ClearML dataset.
+        processed_dir: Local directory containing ``.npy`` files and ``metadata.csv``.
+        download_hash: Output of :func:`src.data.utils.compute_download_hash`.
+        full_hash: Output of :func:`src.data.utils.compute_full_hash`.
+
+    Returns:
+        ClearML dataset ID string, or None if registration failed.
+    """
+    if task is None:
+        return None
+    try:
+        dataset_project = task.get_project_name()
+        dataset = Dataset.create(
+            dataset_name=dataset_name,
+            dataset_project=dataset_project,
+            dataset_tags=[f"download:{download_hash}", f"splits:{full_hash}"],
+        )
+        dataset.add_files(processed_dir)
+        dataset.finalize()
+        logger.info("Registered new dataset: %s", dataset.id)
+        return dataset.id
     except Exception as exc:
         logger.warning("ClearML dataset registration failed (%s). Skipping.", exc)
         return None
+
+
+def create_dataset_version(
+    task: Any,
+    dataset_name: str,
+    base_id: str,
+    metadata_csv_path: str,
+    download_hash: str,
+    full_hash: str,
+) -> str | None:
+    """Create a child ClearML dataset that overrides only ``metadata.csv``.
+
+    All ``.npy`` files are inherited from ``base_id`` (no re-upload).
+    Only the updated ``metadata.csv`` is added to the child.
+
+    Args:
+        task: Active ClearML Task, or None (no-op).
+        dataset_name: Name for the new ClearML dataset.
+        base_id: ClearML dataset ID of the parent dataset.
+        metadata_csv_path: Absolute path to the updated ``metadata.csv`` file.
+            The file must be in a temporary directory that serves as the
+            ``local_base_folder`` so the path inside the dataset is ``metadata.csv``.
+        download_hash: Output of :func:`src.data.utils.compute_download_hash`.
+        full_hash: Output of :func:`src.data.utils.compute_full_hash`.
+
+    Returns:
+        ClearML dataset ID string of the new version, or None if creation failed.
+    """
+    if task is None:
+        return None
+    try:
+        dataset_project = task.get_project_name()
+        dataset = Dataset.create(
+            dataset_name=dataset_name,
+            dataset_project=dataset_project,
+            parent_datasets=[base_id],
+            dataset_tags=[f"download:{download_hash}", f"splits:{full_hash}"],
+        )
+        dataset.add_files(
+            metadata_csv_path,
+            local_base_folder=os.path.dirname(metadata_csv_path),
+        )
+        dataset.finalize()
+        logger.info("Created dataset version: %s (parent: %s)", dataset.id, base_id)
+        return dataset.id
+    except Exception as exc:
+        logger.warning("ClearML dataset version creation failed (%s). Skipping.", exc)
+        return None
+
+
+def get_dataset_path(task: Any, dataset_id: str, *args, **kwargs) -> str:
+    """Get the local path to a ClearML Dataset, or return a fallback path if tracking is disabled.
+
+    Args:
+        task: Active ClearML Task, or None (no-op).
+        dataset_id: ClearML dataset ID string.
+        *args, **kwargs: Additional config fields to determine fallback path if task is None.
+    """
+    if task is None:
+        flattened_kwargs = {**kwargs}
+        path = (
+            flattened_kwargs["processed_dir"]
+            if "processed_dir" in flattened_kwargs
+            else None
+        )
+        if path is not None:
+            logger.info(
+                "ClearML tracking disabled. Using local dataset path from config: %s",
+                path,
+            )
+            return path
+        else:
+            raise ValueError(
+                "ClearML tracking disabled and no local dataset path provided in config."
+            )
+    return Dataset.get(dataset_id=dataset_id).get_local_copy()
 
 
 def log_metrics(task: Any, scalars: dict, epoch: int) -> None:
