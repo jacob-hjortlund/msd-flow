@@ -12,12 +12,12 @@ import jax
 import jax.numpy as jnp
 import equinox as eqx
 
-from src.model.blocks import (
+from msdflow.model.blocks import (
     AttnBlockNCSN,
     GaussianFourierProjection,
     ResBlockBigGAN,
 )
-from src.utils import register_all_resolvers
+from msdflow.utils import register_all_resolvers
 
 register_all_resolvers()
 

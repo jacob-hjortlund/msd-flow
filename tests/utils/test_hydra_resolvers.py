@@ -1,9 +1,9 @@
-"""Tests for src.utils.hydra_resolvers."""
+"""Tests for msdflow.utils.hydra_resolvers."""
 
 import pytest
 from omegaconf import OmegaConf
 
-from src.utils.hydra_resolvers import register_all_resolvers
+from msdflow.utils.hydra_resolvers import register_all_resolvers
 
 
 @pytest.fixture(autouse=True)

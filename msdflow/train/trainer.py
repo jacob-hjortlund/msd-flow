@@ -18,9 +18,9 @@ import logging
 import numpy as np
 
 from tqdm import tqdm
-from src.utils import register_all_resolvers
+from msdflow.utils import register_all_resolvers
 from tqdm.contrib.logging import logging_redirect_tqdm
-from src.tracking import log_metrics, log_checkpoint, log_samples
+from msdflow.tracking import log_metrics, log_checkpoint, log_samples
 
 logger = logging.getLogger(__name__)
 

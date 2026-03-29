@@ -1,8 +1,8 @@
-"""Tests for src.flow.coupling."""
+"""Tests for msdflow.flow.coupling."""
 
 import numpy as np
 import pytest
-from src.flow.coupling import independent_coupling, ot_coupling
+from msdflow.flow.coupling import independent_coupling, ot_coupling
 
 
 def test_independent_coupling_returns_x0_unchanged():

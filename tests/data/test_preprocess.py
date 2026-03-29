@@ -1,11 +1,11 @@
-"""Tests for src.data.preprocess."""
+"""Tests for msdflow.data.preprocess."""
 
 import numpy as np
 import pytest
 
 from torchvision.transforms import Compose
 
-from src.data.preprocess import (
+from msdflow.data.preprocess import (
     ArcsinhStretch,
     ClipAndPad,
     GlobalNorm,

@@ -9,7 +9,7 @@ import jax.numpy as jnp
 
 import equinox as eqx
 
-from src.model.blocks import (
+from msdflow.model.blocks import (
     AttentionBlock,
     Downsample,
     ResBlock,

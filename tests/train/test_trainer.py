@@ -1,4 +1,4 @@
-"""Tests for src.train.trainer."""
+"""Tests for msdflow.train.trainer."""
 
 import jax
 import jax.numpy as jnp
@@ -7,10 +7,10 @@ import optax
 import pytest
 import numpy as np
 import diffrax
-from src.model.unet import UNet
-from src.train.trainer import TrainState, make_train_state, train
-from src.flow.sample import sample
-from src.flow.interpolate import sample_path
+from msdflow.model.unet import UNet
+from msdflow.train.trainer import TrainState, make_train_state, train
+from msdflow.flow.sample import sample
+from msdflow.flow.interpolate import sample_path
 
 KEY = jax.random.PRNGKey(0)
 
@@ -48,8 +48,8 @@ def test_make_train_state_opt_state_matches_model_params():
     assert state.opt_state is not None
 
 
-from src.train.trainer import make_train_step
-from src.train.metrics import flow_matching_loss as _fml
+from msdflow.train.trainer import make_train_step
+from msdflow.train.metrics import flow_matching_loss as _fml
 
 
 def test_make_train_step_dispatches_to_injected_loss_fn():
@@ -138,7 +138,7 @@ def test_train_step_updates_model_params():
     assert any(not jnp.allclose(o, n) for o, n in zip(orig_leaves, new_leaves))
 
 
-from src.train.trainer import ema_update
+from msdflow.train.trainer import ema_update
 
 
 def test_ema_update_decay_one_leaves_ema_unchanged():
@@ -180,7 +180,7 @@ def test_ema_update_blends_arrays_correctly():
     assert jnp.allclose(result.bias, expected_bias, atol=1e-6)
 
 
-from src.train.trainer import make_batch_metric_step
+from msdflow.train.trainer import make_batch_metric_step
 
 
 def test_make_batch_metric_step_returns_dict_keyed_by_fn_name():
@@ -255,9 +255,9 @@ def test_make_batch_metric_step_raises_on_duplicate_names():
 
 from functools import partial
 
-from src.train.trainer import train
-from src.flow.coupling import independent_coupling
-from src.flow.interpolate import sample_time_uniform
+from msdflow.train.trainer import train
+from msdflow.flow.coupling import independent_coupling
+from msdflow.flow.interpolate import sample_time_uniform
 import torch
 
 
@@ -469,7 +469,7 @@ def test_end_to_end_conditional_training_and_sampling():
 
 # --- prepare_batch ---
 
-from src.train.trainer import prepare_batch
+from msdflow.train.trainer import prepare_batch
 
 
 def test_prepare_batch_output_shapes():
@@ -588,7 +588,7 @@ def _make_val_dataloader(B=2, num_batches=2):
     ]
 
 
-from src.train.trainer import batch_metric_loop
+from msdflow.train.trainer import batch_metric_loop
 
 
 def test_batch_metric_loop_returns_dict_of_floats():
@@ -702,7 +702,7 @@ def test_batch_metric_loop_returns_mean_not_sum():
     assert abs(result["simple_metric"] - 3.0) < 1e-5
 
 
-from src.train.trainer import collect_batches
+from msdflow.train.trainer import collect_batches
 
 
 def test_collect_batches_returns_correct_count():
@@ -766,7 +766,7 @@ def test_train_epoch_metric_receives_nonempty_val_batches():
 import functools
 from unittest.mock import MagicMock, patch
 
-from src.flow.interpolate import sample_path
+from msdflow.flow.interpolate import sample_path
 
 _PATH_SAMPLER = functools.partial(sample_path, sigma_0=0.0, sigma_1=0.0)
 _COUPLING = lambda x0, x1: x0  # identity coupling for tests
@@ -856,7 +856,7 @@ def test_train_calls_log_metrics_when_task_provided(tmp_path):
     dl = _make_dataloader()
     mock_task = MagicMock()
 
-    with patch("src.train.trainer.log_metrics") as mock_log_metrics:
+    with patch("msdflow.train.trainer.log_metrics") as mock_log_metrics:
         train(
             key=key,
             model=SMALL_MODEL,
@@ -891,7 +891,7 @@ def test_train_calls_log_checkpoint_when_task_provided(tmp_path):
     dl = _make_dataloader()
     mock_task = MagicMock()
 
-    with patch("src.train.trainer.log_checkpoint") as mock_log_ckpt:
+    with patch("msdflow.train.trainer.log_checkpoint") as mock_log_ckpt:
         train(
             key=key,
             model=SMALL_MODEL,

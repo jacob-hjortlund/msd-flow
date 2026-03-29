@@ -1,4 +1,4 @@
-"""Tests for src.data.dataset."""
+"""Tests for msdflow.data.dataset."""
 
 import numpy as np
 import pandas as pd
@@ -6,7 +6,7 @@ import pytest
 import torch
 from torch.utils.data import DataLoader
 
-from src.data.dataset import TNG50Dataset
+from msdflow.data.dataset import TNG50Dataset
 
 
 @pytest.fixture

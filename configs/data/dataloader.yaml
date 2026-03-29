@@ -3,16 +3,16 @@ data_dir: null
 pre_arcsinh_image_transforms:
   _target_: torchvision.transforms.Compose
   transforms:
-    - _target_: src.data.preprocess.SurfaceBrightnessToNanomaggies
+    - _target_: msdflow.data.preprocess.SurfaceBrightnessToNanomaggies
       mag_threshold: 99.0
-    - _target_: src.data.preprocess.ClipAndPad
+    - _target_: msdflow.data.preprocess.ClipAndPad
       n: ${image_size}
-    - _target_: src.data.preprocess.PDFNorm
+    - _target_: msdflow.data.preprocess.PDFNorm
 
 arcsinh_transform:
   _target_: torchvision.transforms.Compose
   transforms:
-    - _target_: src.data.preprocess.ArcsinhStretch
+    - _target_: msdflow.data.preprocess.ArcsinhStretch
       scale: null
       transforms: ${data.dataloader.pre_arcsinh_image_transforms}
       percentile: 10
@@ -22,7 +22,7 @@ arcsinh_transform:
 post_arcsinh_image_transforms:
   _target_: torchvision.transforms.Compose
   transforms:
-    - _target_: src.data.preprocess.GlobalNorm
+    - _target_: msdflow.data.preprocess.GlobalNorm
       global_min: 0.0
       global_max: null
       norm_min: -1.0
@@ -39,13 +39,13 @@ post_arcsinh_image_transforms:
 augmentations:
   _target_: torchvision.transforms.Compose
   transforms:
-    - _target_: src.data.preprocess.RandomHorizontalFlip
+    - _target_: msdflow.data.preprocess.RandomHorizontalFlip
       p: 0.5
       seed: ${seed}
-    - _target_: src.data.preprocess.RandomVerticalFlip
+    - _target_: msdflow.data.preprocess.RandomVerticalFlip
       p: 0.5
       seed: ${seed}
-    - _target_: src.data.preprocess.RandomRotation90
+    - _target_: msdflow.data.preprocess.RandomRotation90
       seed: ${seed}
 
 deterministic_transforms:
@@ -57,7 +57,7 @@ deterministic_transforms:
 
 metadata_columns: ${metadata_columns}
 metadata_transform: null
-dataset_class: src.data.dataset.TNG50Dataset
+dataset_class: msdflow.data.dataset.TNG50Dataset
 
 train_dataset:
   _target_: ${data.dataloader.dataset_class}

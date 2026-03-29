@@ -1,5 +1,5 @@
 # tests/data/test_pipeline.py
-"""Tests for src.data.pipeline.resolve_dataset."""
+"""Tests for msdflow.data.pipeline.resolve_dataset."""
 
 import os
 import pandas as pd
@@ -7,7 +7,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 from omegaconf import OmegaConf
 
-from src.data.utils import compute_download_hash, compute_full_hash
+from msdflow.data.utils import compute_download_hash, compute_full_hash
 
 
 # ---------------------------------------------------------------------------
@@ -19,7 +19,7 @@ _DOWNLOAD_KWARGS = dict(
     snapshots=[72],
     bands=["SUBARU_HSC.I"],
     num_files_per_view=50,
-    _target_="src.data.download_tng.download_tng_data",
+    _target_="msdflow.data.download_tng.download_tng_data",
     _partial_=True,
     max_workers=5,
     batch_size=100,
@@ -63,8 +63,8 @@ class TestResolveDatasetLocal:
         _make_metadata(processed_dir)
         (processed_dir / ".splits_hash").write_text(_full_hash())
 
-        with patch("src.data.pipeline.assign_splits") as mock_split:
-            from src.data.pipeline import resolve_dataset
+        with patch("msdflow.data.pipeline.assign_splits") as mock_split:
+            from msdflow.data.pipeline import resolve_dataset
             result = resolve_dataset(
                 task=None,
                 dataset_name="TNG50",
@@ -84,7 +84,7 @@ class TestResolveDatasetLocal:
         _make_metadata(processed_dir)
         (processed_dir / ".splits_hash").write_text("stale_hash")
 
-        from src.data.pipeline import resolve_dataset
+        from msdflow.data.pipeline import resolve_dataset
         result = resolve_dataset(
             task=None,
             dataset_name="TNG50",
@@ -104,7 +104,7 @@ class TestResolveDatasetLocal:
         processed_dir.mkdir()
         _make_metadata(processed_dir)
 
-        from src.data.pipeline import resolve_dataset
+        from msdflow.data.pipeline import resolve_dataset
         result = resolve_dataset(
             task=None,
             dataset_name="TNG50",
@@ -124,7 +124,7 @@ class TestResolveDatasetLocal:
         _make_metadata(processed_dir)
         (processed_dir / ".splits_hash").write_text("stale_hash")
 
-        from src.data.pipeline import resolve_dataset
+        from msdflow.data.pipeline import resolve_dataset
         resolve_dataset(
             task=None,
             dataset_name="TNG50",
@@ -147,8 +147,8 @@ class TestResolveDatasetLocal:
 
         mock_partial.side_effect = fake_download
 
-        with patch("src.data.pipeline.call", return_value=mock_partial) as mock_call_fn:
-            from src.data.pipeline import resolve_dataset
+        with patch("msdflow.data.pipeline.call", return_value=mock_partial) as mock_call_fn:
+            from msdflow.data.pipeline import resolve_dataset
             resolve_dataset(
                 task=None,
                 dataset_name="TNG50",
@@ -173,8 +173,8 @@ class TestResolveDatasetLocal:
 
         mock_partial.side_effect = fake_download
 
-        with patch("src.data.pipeline.call", return_value=mock_partial):
-            from src.data.pipeline import resolve_dataset
+        with patch("msdflow.data.pipeline.call", return_value=mock_partial):
+            from msdflow.data.pipeline import resolve_dataset
             result = resolve_dataset(
                 task=None,
                 dataset_name="TNG50",
@@ -189,7 +189,7 @@ class TestResolveDatasetLocal:
 
     def test_case_c_raises_when_skip_download(self, tmp_path):
         """Case C: skip_download=True with no data → FileNotFoundError."""
-        from src.data.pipeline import resolve_dataset
+        from msdflow.data.pipeline import resolve_dataset
         with pytest.raises(FileNotFoundError, match="skip_download"):
             resolve_dataset(
                 task=None,
@@ -208,7 +208,7 @@ class TestResolveDatasetLocal:
         _make_metadata(processed_dir)
         (processed_dir / ".splits_hash").write_text(_full_hash())
 
-        from src.data.pipeline import resolve_dataset
+        from msdflow.data.pipeline import resolve_dataset
         result = resolve_dataset(
             task=None,
             dataset_name="TNG50",
@@ -232,10 +232,10 @@ class TestResolveDatasetClearML:
         mock_dataset = MagicMock()
         mock_dataset.get_local_copy.return_value = "/clearml_cache/exact"
 
-        with patch("src.data.pipeline.get_dataset_id", return_value="exact-id"), \
-             patch("src.data.pipeline.Dataset") as MockDataset:
+        with patch("msdflow.data.pipeline.get_dataset_id", return_value="exact-id"), \
+             patch("msdflow.data.pipeline.Dataset") as MockDataset:
             MockDataset.get.return_value = mock_dataset
-            from src.data.pipeline import resolve_dataset
+            from msdflow.data.pipeline import resolve_dataset
             result = resolve_dataset(
                 task=mock_task,
                 dataset_name="TNG50",
@@ -253,11 +253,11 @@ class TestResolveDatasetClearML:
         mock_dataset = MagicMock()
         mock_dataset.get_local_copy.return_value = "/clearml_cache/exact"
 
-        with patch("src.data.pipeline.get_dataset_id", return_value="exact-id"), \
-             patch("src.data.pipeline.Dataset") as MockDataset, \
-             patch("src.data.pipeline.call") as mock_call_fn:
+        with patch("msdflow.data.pipeline.get_dataset_id", return_value="exact-id"), \
+             patch("msdflow.data.pipeline.Dataset") as MockDataset, \
+             patch("msdflow.data.pipeline.call") as mock_call_fn:
             MockDataset.get.return_value = mock_dataset
-            from src.data.pipeline import resolve_dataset
+            from msdflow.data.pipeline import resolve_dataset
             resolve_dataset(
                 task=mock_task,
                 dataset_name="TNG50",
@@ -286,12 +286,12 @@ class TestResolveDatasetClearML:
         def dataset_get(dataset_id=None, **kwargs):
             return mock_child if dataset_id == "child-id" else mock_base
 
-        with patch("src.data.pipeline.get_dataset_id", return_value=None), \
-             patch("src.data.pipeline.get_base_dataset_id", return_value="base-id"), \
-             patch("src.data.pipeline.create_dataset_version", return_value="child-id") as mock_version, \
-             patch("src.data.pipeline.Dataset") as MockDataset:
+        with patch("msdflow.data.pipeline.get_dataset_id", return_value=None), \
+             patch("msdflow.data.pipeline.get_base_dataset_id", return_value="base-id"), \
+             patch("msdflow.data.pipeline.create_dataset_version", return_value="child-id") as mock_version, \
+             patch("msdflow.data.pipeline.Dataset") as MockDataset:
             MockDataset.get.side_effect = dataset_get
-            from src.data.pipeline import resolve_dataset
+            from msdflow.data.pipeline import resolve_dataset
             result = resolve_dataset(
                 task=mock_task,
                 dataset_name="TNG50",
@@ -324,14 +324,14 @@ class TestResolveDatasetClearML:
         mock_child = MagicMock()
         mock_child.get_local_copy.return_value = "/clearml_cache/child"
 
-        with patch("src.data.pipeline.get_dataset_id", return_value=None), \
-             patch("src.data.pipeline.get_base_dataset_id", return_value="base-id"), \
-             patch("src.data.pipeline.create_dataset_version", side_effect=fake_create_version), \
-             patch("src.data.pipeline.Dataset") as MockDataset:
+        with patch("msdflow.data.pipeline.get_dataset_id", return_value=None), \
+             patch("msdflow.data.pipeline.get_base_dataset_id", return_value="base-id"), \
+             patch("msdflow.data.pipeline.create_dataset_version", side_effect=fake_create_version), \
+             patch("msdflow.data.pipeline.Dataset") as MockDataset:
             MockDataset.get.side_effect = lambda dataset_id=None, **kw: (
                 mock_base if dataset_id == "base-id" else mock_child
             )
-            from src.data.pipeline import resolve_dataset
+            from msdflow.data.pipeline import resolve_dataset
             resolve_dataset(
                 task=mock_task,
                 dataset_name="TNG50",
@@ -356,13 +356,13 @@ class TestResolveDatasetClearML:
 
         mock_partial.side_effect = fake_download
 
-        with patch("src.data.pipeline.get_dataset_id", return_value=None), \
-             patch("src.data.pipeline.get_base_dataset_id", return_value=None), \
-             patch("src.data.pipeline.register_dataset", return_value="new-id"), \
-             patch("src.data.pipeline.call", return_value=mock_partial), \
-             patch("src.data.pipeline.Dataset") as MockDataset:
+        with patch("msdflow.data.pipeline.get_dataset_id", return_value=None), \
+             patch("msdflow.data.pipeline.get_base_dataset_id", return_value=None), \
+             patch("msdflow.data.pipeline.register_dataset", return_value="new-id"), \
+             patch("msdflow.data.pipeline.call", return_value=mock_partial), \
+             patch("msdflow.data.pipeline.Dataset") as MockDataset:
             MockDataset.get.return_value = mock_new
-            from src.data.pipeline import resolve_dataset
+            from msdflow.data.pipeline import resolve_dataset
             result = resolve_dataset(
                 task=mock_task,
                 dataset_name="TNG50",
@@ -377,9 +377,9 @@ class TestResolveDatasetClearML:
     def test_case_c_raises_when_skip_download(self, tmp_path):
         """Case C: skip_download=True → FileNotFoundError."""
         mock_task = MagicMock()
-        with patch("src.data.pipeline.get_dataset_id", return_value=None), \
-             patch("src.data.pipeline.get_base_dataset_id", return_value=None):
-            from src.data.pipeline import resolve_dataset
+        with patch("msdflow.data.pipeline.get_dataset_id", return_value=None), \
+             patch("msdflow.data.pipeline.get_base_dataset_id", return_value=None):
+            from msdflow.data.pipeline import resolve_dataset
             with pytest.raises(FileNotFoundError, match="skip_download"):
                 resolve_dataset(
                     task=mock_task,

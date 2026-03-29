@@ -1,14 +1,14 @@
-"""Tests for src.model.blocks."""
+"""Tests for msdflow.model.blocks."""
 
 import jax
 import pytest
 
 import jax.numpy as jnp
 
-from src.model.blocks import ResBlock
-from src.model.blocks import AttentionBlock
-from src.model.blocks import SinusoidalEmbedding
-from src.model.blocks import Downsample, Upsample
+from msdflow.model.blocks import ResBlock
+from msdflow.model.blocks import AttentionBlock
+from msdflow.model.blocks import SinusoidalEmbedding
+from msdflow.model.blocks import Downsample, Upsample
 
 
 KEY = jax.random.PRNGKey(0)
@@ -136,7 +136,7 @@ def test_attention_block_output_finite():
     assert jnp.all(jnp.isfinite(out))
 
 
-from src.model.blocks import GaussianFourierProjection
+from msdflow.model.blocks import GaussianFourierProjection
 
 
 def test_gaussian_fourier_projection_output_shape():
@@ -175,7 +175,7 @@ def test_gaussian_fourier_projection_W_frozen():
     assert jnp.all(grads.W == 0.0), "W should have zero gradients"
 
 
-from src.model.blocks import ResBlockBigGAN
+from msdflow.model.blocks import ResBlockBigGAN
 
 
 def test_resblock_biggan_same_channels():
@@ -286,7 +286,7 @@ def test_resblock_biggan_up_and_down_raises():
         )
 
 
-from src.model.blocks import AttnBlockNCSN
+from msdflow.model.blocks import AttnBlockNCSN
 
 
 def test_attn_block_ncsn_preserves_shape():

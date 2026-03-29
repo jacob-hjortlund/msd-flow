@@ -1,4 +1,4 @@
-"""Tests for src.flow.interpolate."""
+"""Tests for msdflow.flow.interpolate."""
 
 import jax
 import pytest
@@ -7,8 +7,8 @@ import numpy as np
 import equinox as eqx
 import jax.numpy as jnp
 
-from src.model.unet import UNet
-from src.flow.interpolate import (
+from msdflow.model.unet import UNet
+from msdflow.flow.interpolate import (
     sample_path,
     sample_time_uniform,
     sample_time_logit_normal,

@@ -1,12 +1,12 @@
-"""Tests for src.flow.sample."""
+"""Tests for msdflow.flow.sample."""
 
 import jax
 import jax.numpy as jnp
 import equinox as eqx
 import diffrax
 import pytest
-from src.model.unet import UNet
-from src.flow.sample import sample
+from msdflow.model.unet import UNet
+from msdflow.flow.sample import sample
 
 KEY = jax.random.PRNGKey(0)
 
