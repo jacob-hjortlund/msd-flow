@@ -40,8 +40,9 @@ requires-python = ">=3.10"
 
 ### Core Dependencies
 
-Extracted from `env.yml`, pinned loosely (no JAX — that is an optional dep):
+Extracted from `env.yml`, pinned loosely. JAX GPU (`jax[cuda12]`) is the default install:
 
+- `jax[cuda12]`
 - `equinox`
 - `optax`
 - `diffrax`
@@ -57,19 +58,19 @@ Extracted from `env.yml`, pinned loosely (no JAX — that is an optional dep):
 - `clearml`
 - `tqdm`
 - `fastdigest`
-- `caustics`
 - `requests`
+
+`caustics` is excluded for now due to unresolved dependency conflicts.
 
 ### Optional Dependency Groups
 
 | Group | Contents | Install command |
 |-------|----------|-----------------|
-| `cpu` | `jax[cpu]` | `pip install msd-flow[cpu]` |
-| `gpu` | `jax[cuda12]` | `pip install msd-flow[gpu]` |
+| `cpu` | `jax[cpu]` (overrides core `jax[cuda12]`) | `pip install msd-flow[cpu]` |
 | `docs` | `mkdocs-material`, `mkdocs-autorefs` | `pip install msd-flow[docs]` |
 | `dev` | `pytest`, `pytest-cov` | `pip install msd-flow[dev]` |
 
-JAX is kept out of core deps because the CPU and GPU variants are mutually exclusive pip extras. Users must install one of `[cpu]` or `[gpu]`.
+GPU JAX is bundled in core deps by default. Users on CPU-only machines should install with `[cpu]` to override.
 
 ### Entry Point
 
@@ -129,8 +130,8 @@ nav:
 
 **`docs/installation.md` — Installation**
 - Prerequisites (Python ≥ 3.10, conda optional)
-- Install with CPU JAX: `pip install msd-flow[cpu]`
-- Install with GPU JAX: `pip install msd-flow[gpu]`
+- Default install (GPU JAX): `pip install msd-flow`
+- CPU-only install: `pip install msd-flow[cpu]`
 - Install docs dependencies: `pip install msd-flow[docs]`
 - How to build and serve docs locally: `mkdocs serve`
 - Environment variable setup (`TNG_API_KEY`)
