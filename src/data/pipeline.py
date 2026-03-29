@@ -146,13 +146,13 @@ def _resolve_clearml(
                 os.path.join(tmp_dir, "metadata.csv"),
                 download_hash, full_hash,
             )
-        if new_id:
-            return Dataset.get(dataset_id=new_id).get_local_copy()
-        logger.warning(
-            "Dataset versioning failed; using base path with local splits applied"
-        )
-        assign_splits(base_path, seed=seed, ratios=ratios)
-        return base_path
+            if not new_id:
+                logger.warning(
+                    "Dataset versioning failed; applying splits to base path directly"
+                )
+                shutil.copy(os.path.join(tmp_dir, "metadata.csv"), base_path)
+                return base_path
+        return Dataset.get(dataset_id=new_id).get_local_copy()
 
     # Case C: full download
     if skip_download:

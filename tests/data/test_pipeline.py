@@ -4,7 +4,7 @@
 import os
 import pandas as pd
 import pytest
-from unittest.mock import MagicMock, patch, call as mock_call
+from unittest.mock import MagicMock, patch
 from omegaconf import OmegaConf
 
 from src.data.utils import compute_download_hash, compute_full_hash
