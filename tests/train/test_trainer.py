@@ -757,3 +757,208 @@ def test_train_epoch_metric_receives_nonempty_val_batches():
 
     assert "val_batches" in received
     assert len(received["val_batches"]) > 0
+
+
+# ---------------------------------------------------------------------------
+# ClearML + sample integration tests
+# ---------------------------------------------------------------------------
+
+import functools
+from unittest.mock import MagicMock, patch
+
+from src.flow.interpolate import sample_path
+
+_PATH_SAMPLER = functools.partial(sample_path, sigma_0=0.0, sigma_1=0.0)
+_COUPLING = lambda x0, x1: x0  # identity coupling for tests
+
+
+def _make_dataloader(batch_size=2, img_size=8, steps=2):
+    """Return a tiny list-backed dataloader for trainer tests."""
+    import torch
+    images = torch.zeros(batch_size, 1, img_size, img_size)
+    meta = torch.zeros(batch_size, 0)
+    return [(images, meta)] * steps
+
+
+def _time_sampler(key, batch_size):
+    import jax
+    return jax.random.uniform(key, (batch_size,))
+
+
+def test_train_runs_with_clearml_task_none():
+    """train() completes without error when clearml_task=None (default)."""
+    import jax
+    key = jax.random.PRNGKey(0)
+    dl = _make_dataloader()
+    result = train(
+        key=key,
+        model=SMALL_MODEL,
+        dataloader=dl,
+        val_dataloader=dl,
+        optimizer=OPTIMIZER,
+        loss_fn=lambda model, x_t, u_t, t, cond, cond_mask: jnp.mean(x_t),
+        batch_metrics=[],
+        epoch_metrics=[],
+        coupling=_COUPLING,
+        time_sampler=_time_sampler,
+        path_sampler=_PATH_SAMPLER,
+        num_epochs=1,
+        num_steps_per_epoch=2,
+        p_uncond=1.0,
+        ema_decay=0.999,
+        log_every=1,
+        val_every=1,
+        checkpoint_every=10,
+        checkpoint_dir="/tmp/test_ckpt",
+        clearml_task=None,
+    )
+    assert result is not None
+
+
+def test_train_calls_log_metrics_when_task_provided(tmp_path):
+    """log_metrics is called once per log_every epoch when clearml_task is set."""
+    import jax
+    key = jax.random.PRNGKey(1)
+    dl = _make_dataloader()
+    mock_task = MagicMock()
+
+    with patch("src.train.trainer.log_metrics") as mock_log_metrics:
+        train(
+            key=key,
+            model=SMALL_MODEL,
+            dataloader=dl,
+            val_dataloader=dl,
+            optimizer=OPTIMIZER,
+            loss_fn=lambda model, x_t, u_t, t, cond, cond_mask: jnp.mean(x_t),
+            batch_metrics=[],
+            epoch_metrics=[],
+            coupling=_COUPLING,
+            time_sampler=_time_sampler,
+            path_sampler=_PATH_SAMPLER,
+            num_epochs=2,
+            num_steps_per_epoch=1,
+            p_uncond=1.0,
+            ema_decay=0.999,
+            log_every=1,
+            val_every=1,
+            checkpoint_every=10,
+            checkpoint_dir=str(tmp_path),
+            clearml_task=mock_task,
+        )
+    assert mock_log_metrics.call_count == 2  # once per epoch (log_every=1)
+    first_call_scalars = mock_log_metrics.call_args_list[0][0][1]
+    assert "train/loss" in first_call_scalars
+
+
+def test_train_calls_log_checkpoint_when_task_provided(tmp_path):
+    """log_checkpoint is called at checkpoint_every epochs when clearml_task is set."""
+    import jax
+    key = jax.random.PRNGKey(2)
+    dl = _make_dataloader()
+    mock_task = MagicMock()
+
+    with patch("src.train.trainer.log_checkpoint") as mock_log_ckpt:
+        train(
+            key=key,
+            model=SMALL_MODEL,
+            dataloader=dl,
+            val_dataloader=dl,
+            optimizer=OPTIMIZER,
+            loss_fn=lambda model, x_t, u_t, t, cond, cond_mask: jnp.mean(x_t),
+            batch_metrics=[],
+            epoch_metrics=[],
+            coupling=_COUPLING,
+            time_sampler=_time_sampler,
+            path_sampler=_PATH_SAMPLER,
+            num_epochs=1,
+            num_steps_per_epoch=1,
+            p_uncond=1.0,
+            ema_decay=0.999,
+            log_every=1,
+            val_every=1,
+            checkpoint_every=1,
+            checkpoint_dir=str(tmp_path),
+            clearml_task=mock_task,
+        )
+    assert mock_log_ckpt.call_count == 1
+    called_path = mock_log_ckpt.call_args[0][1]
+    assert "ema" in called_path
+
+
+def test_train_generates_samples_to_disk(tmp_path):
+    """sample_fn is called at sample_every epochs and files are saved."""
+    import jax
+    key = jax.random.PRNGKey(3)
+    dl = _make_dataloader()
+
+    def fake_sample_fn(model, key, num_samples):
+        return np.zeros((num_samples, 1, 8, 8), dtype=np.float32)
+
+    train(
+        key=key,
+        model=SMALL_MODEL,
+        dataloader=dl,
+        val_dataloader=dl,
+        optimizer=OPTIMIZER,
+        loss_fn=lambda model, x_t, u_t, t, cond, cond_mask: jnp.mean(x_t),
+        batch_metrics=[],
+        epoch_metrics=[],
+        coupling=_COUPLING,
+        time_sampler=_time_sampler,
+        path_sampler=_PATH_SAMPLER,
+        num_epochs=2,
+        num_steps_per_epoch=1,
+        p_uncond=1.0,
+        ema_decay=0.999,
+        log_every=1,
+        val_every=1,
+        checkpoint_every=10,
+        checkpoint_dir=str(tmp_path / "ckpt"),
+        clearml_task=None,
+        sample_fn=fake_sample_fn,
+        sample_every=1,
+        num_samples=2,
+        samples_dir=str(tmp_path / "samples"),
+    )
+    import glob
+    npy_files = glob.glob(str(tmp_path / "samples" / "**" / "*.npy"), recursive=True)
+    assert len(npy_files) == 4  # 2 epochs × 2 samples
+
+
+def test_train_skips_sampling_when_sample_every_is_zero(tmp_path):
+    """No samples are generated when sample_every=0."""
+    import jax
+    key = jax.random.PRNGKey(4)
+    dl = _make_dataloader()
+    call_count = {"n": 0}
+
+    def counting_sample_fn(model, key, num_samples):
+        call_count["n"] += 1
+        return np.zeros((num_samples, 1, 8, 8), dtype=np.float32)
+
+    train(
+        key=key,
+        model=SMALL_MODEL,
+        dataloader=dl,
+        val_dataloader=dl,
+        optimizer=OPTIMIZER,
+        loss_fn=lambda model, x_t, u_t, t, cond, cond_mask: jnp.mean(x_t),
+        batch_metrics=[],
+        epoch_metrics=[],
+        coupling=_COUPLING,
+        time_sampler=_time_sampler,
+        path_sampler=_PATH_SAMPLER,
+        num_epochs=2,
+        num_steps_per_epoch=1,
+        p_uncond=1.0,
+        ema_decay=0.999,
+        log_every=1,
+        val_every=1,
+        checkpoint_every=10,
+        checkpoint_dir=str(tmp_path),
+        sample_fn=counting_sample_fn,
+        sample_every=0,
+        num_samples=2,
+        samples_dir=str(tmp_path / "samples"),
+    )
+    assert call_count["n"] == 0

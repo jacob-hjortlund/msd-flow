@@ -20,6 +20,7 @@ import numpy as np
 from tqdm import tqdm
 from src.utils import register_all_resolvers
 from tqdm.contrib.logging import logging_redirect_tqdm
+from src.tracking import log_metrics, log_checkpoint, log_samples
 
 logger = logging.getLogger(__name__)
 
@@ -289,6 +290,11 @@ def train(
     checkpoint_dir: str,
     num_train_eval_batches: int = 0,
     num_val_eval_batches: int = 0,
+    clearml_task: Any = None,
+    sample_fn=None,
+    sample_every: int = 0,
+    num_samples: int = 4,
+    samples_dir: str | None = None,
 ):
     """Main training loop with EMA and periodic validation.
 
@@ -326,6 +332,15 @@ def train(
         num_train_eval_batches: Batches from train loader for batch metrics.
                                 ``0`` = all.
         num_val_eval_batches:   Batches collected for epoch metrics. ``0`` = all.
+        clearml_task:           ClearML Task for experiment tracking, or None
+                                to disable all tracking (default).
+        sample_fn:              Callable ``(model, key, num_samples) ->
+                                np.ndarray (N, C, H, W)``, or None to skip
+                                sample generation.
+        sample_every:           Generate samples every this many epochs.
+                                0 disables sample generation.
+        num_samples:            Number of images per sampling event.
+        samples_dir:            Root directory for saving sample .npy files.
 
     Returns:
         Trained EMA model.
@@ -450,12 +465,29 @@ def train(
             eqx.tree_serialise_leaves(raw_path, state.model)
             eqx.tree_serialise_leaves(ema_path, ema_model)
             logger.info(f"Saved checkpoint: {ema_path}")
+            log_checkpoint(clearml_task, ema_path, epoch + 1)
+
+        if sample_fn is not None and sample_every > 0 and (epoch + 1) % sample_every == 0:
+            sample_key, key = jax.random.split(key)
+            images = sample_fn(ema_model, sample_key, num_samples)
+            epoch_samples_dir = os.path.join(samples_dir, f"epoch_{epoch + 1}")
+            os.makedirs(epoch_samples_dir, exist_ok=True)
+            for i, img in enumerate(images):
+                np.save(os.path.join(epoch_samples_dir, f"sample_{i:03d}.npy"), img)
+            log_samples(clearml_task, images, epoch + 1)
 
         epoch_time = time.perf_counter() - epoch_start_time
         total_epoch_time += epoch_time
         avg_epoch_time = total_epoch_time / (epoch + 1)
 
         if (epoch + 1) % log_every == 0:
+            scalars = {
+                "train/loss": epoch_loss / steps_per_epoch,
+                **{f"val/{k}": v for k, v in val_metrics.items()},
+                **{f"train/{k}": v for k, v in train_metrics.items()},
+                **{f"epoch/{k}": v for k, v in epoch_metric_results.items()},
+            }
+            log_metrics(clearml_task, scalars, epoch + 1)
             all_metrics = {
                 **{f"val/{k}": v for k, v in val_metrics.items()},
                 **{f"train/{k}": v for k, v in train_metrics.items()},
