@@ -44,11 +44,16 @@ def make_train_state(model, optimizer: optax.GradientTransformation) -> TrainSta
     return TrainState(model=model, opt_state=opt_state)
 
 
-def make_train_step(optimizer: optax.GradientTransformation):
-    """Return a JIT-compiled train step closed over the optimizer.
+def make_train_step(optimizer: optax.GradientTransformation, loss_fn: callable):
+    """Return a JIT-compiled train step closed over the optimizer and loss function.
 
-    The optimizer is a static Python object — closing over it avoids
-    passing it as a traced argument to filter_jit.
+    The optimizer and loss_fn are static Python objects — closing over them
+    avoids passing them as traced arguments to filter_jit.
+
+    Args:
+        optimizer: Optax GradientTransformation.
+        loss_fn:   Differentiable loss callable with signature
+                   ``(model, x_t, u_t, t, cond, cond_mask) -> scalar``.
     """
 
     @eqx.filter_jit
@@ -60,7 +65,7 @@ def make_train_step(optimizer: optax.GradientTransformation):
         cond: jax.Array,
         cond_mask: jax.Array,
     ) -> tuple[TrainState, jax.Array]:
-        loss, grads = eqx.filter_value_and_grad(flow_matching_loss)(
+        loss, grads = eqx.filter_value_and_grad(loss_fn)(
             state.model, x_t, u_t, t, cond, cond_mask
         )
         updates, new_opt_state = optimizer.update(
@@ -217,6 +222,7 @@ def train(
     dataloader,
     val_dataloader,
     optimizer: optax.GradientTransformation,
+    loss_fn: callable,
     coupling: callable,
     time_sampler: callable,
     path_sampler: callable,
@@ -240,6 +246,9 @@ def train(
         val_dataloader:     DataLoader for the validation split, same format as
                             ``dataloader``. Used for periodic EMA model evaluation.
         optimizer:          Optax GradientTransformation.
+        loss_fn:            Differentiable loss callable
+                            ``(model, x_t, u_t, t, cond, cond_mask) -> scalar``.
+                            Drives gradient computation.
         coupling:           Callable ``(x0_np, x1_np) -> x0_paired`` for batch
                             coupling (e.g. ``independent_coupling`` or
                             ``ot_coupling``).
@@ -262,7 +271,7 @@ def train(
         Trained EMA model.
     """
     state = make_train_state(model, optimizer)
-    train_step = make_train_step(optimizer)
+    train_step = make_train_step(optimizer, loss_fn)
     val_step = make_val_step()
 
     steps_per_epoch = (

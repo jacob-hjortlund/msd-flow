@@ -49,13 +49,37 @@ def test_make_train_state_opt_state_matches_model_params():
 
 
 from src.train.trainer import make_train_step
+from src.train.metrics import flow_matching_loss as _fml
+
+
+def test_make_train_step_dispatches_to_injected_loss_fn():
+    """make_train_step must use the injected loss_fn, not a hardcoded one."""
+    optimizer = optax.adam(1e-3)
+    state = make_train_state(SMALL_MODEL, optimizer)
+
+    def constant_loss(model, x_t, u_t, t, cond, cond_mask):
+        return jnp.array(42.0)
+
+    train_step = make_train_step(optimizer, constant_loss)
+
+    B = 2
+    k1, k2 = jax.random.split(KEY)
+    x0 = jax.random.normal(k1, (B, 1, 8, 8))
+    x1 = jax.random.normal(k2, (B, 1, 8, 8))
+    t = jnp.array([0.3, 0.7])
+    cond = jnp.empty((B, 0))
+    cond_mask = jnp.zeros(B, dtype=bool)
+    x_t, u_t = sample_path(x0, x1, t)
+
+    _, loss = train_step(state, x_t, u_t, t, cond, cond_mask)
+    assert jnp.allclose(loss, jnp.array(42.0))
 
 
 def test_train_step_returns_updated_state_and_loss():
     """Verify train step returns a TrainState and a scalar loss."""
     optimizer = optax.adam(1e-3)
     state = make_train_state(SMALL_MODEL, optimizer)
-    train_step = make_train_step(optimizer)
+    train_step = make_train_step(optimizer, _fml)
 
     B = 2
     k1, k2 = jax.random.split(KEY)
@@ -76,7 +100,7 @@ def test_train_step_loss_is_finite():
     """Verify train step produces a finite loss value."""
     optimizer = optax.adam(1e-3)
     state = make_train_state(SMALL_MODEL, optimizer)
-    train_step = make_train_step(optimizer)
+    train_step = make_train_step(optimizer, _fml)
 
     B = 2
     k1, k2 = jax.random.split(KEY)
@@ -95,7 +119,7 @@ def test_train_step_updates_model_params():
     """Verify at least one model parameter changes after a train step."""
     optimizer = optax.adam(1e-3)
     state = make_train_state(SMALL_MODEL, optimizer)
-    train_step = make_train_step(optimizer)
+    train_step = make_train_step(optimizer, _fml)
 
     B = 2
     k1, k2 = jax.random.split(KEY)
@@ -227,6 +251,7 @@ def _make_train_kwargs(num_epochs=1, num_steps_per_epoch=3, p_uncond=0.0):
     return dict(
         key=jax.random.PRNGKey(0),
         optimizer=optax.adam(1e-3),
+        loss_fn=_fml,
         coupling=independent_coupling,
         time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
         path_sampler=partial(sample_path),
@@ -298,7 +323,7 @@ def test_train_step_with_cond():
     """Verify train step works with conditioning."""
     optimizer = optax.adam(1e-3)
     state = make_train_state(SMALL_MODEL_COND, optimizer)
-    train_step = make_train_step(optimizer)
+    train_step = make_train_step(optimizer, _fml)
 
     B = 2
     k1, k2 = jax.random.split(KEY)
@@ -319,7 +344,7 @@ def test_train_step_with_cond_dropped():
     """Verify train step works when some conditions are dropped (CFG path)."""
     optimizer = optax.adam(1e-3)
     state = make_train_state(SMALL_MODEL_COND, optimizer)
-    train_step = make_train_step(optimizer)
+    train_step = make_train_step(optimizer, _fml)
 
     B = 2
     k1, k2 = jax.random.split(KEY)
