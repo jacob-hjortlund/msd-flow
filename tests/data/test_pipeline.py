@@ -233,7 +233,7 @@ class TestResolveDatasetClearML:
         mock_dataset.get_local_copy.return_value = "/clearml_cache/exact"
 
         with patch("src.data.pipeline.get_dataset_id", return_value="exact-id"), \
-             patch("clearml.Dataset") as MockDataset:
+             patch("src.data.pipeline.Dataset") as MockDataset:
             MockDataset.get.return_value = mock_dataset
             from src.data.pipeline import resolve_dataset
             result = resolve_dataset(
@@ -254,7 +254,7 @@ class TestResolveDatasetClearML:
         mock_dataset.get_local_copy.return_value = "/clearml_cache/exact"
 
         with patch("src.data.pipeline.get_dataset_id", return_value="exact-id"), \
-             patch("clearml.Dataset") as MockDataset, \
+             patch("src.data.pipeline.Dataset") as MockDataset, \
              patch("src.data.pipeline.call") as mock_call_fn:
             MockDataset.get.return_value = mock_dataset
             from src.data.pipeline import resolve_dataset
@@ -289,7 +289,7 @@ class TestResolveDatasetClearML:
         with patch("src.data.pipeline.get_dataset_id", return_value=None), \
              patch("src.data.pipeline.get_base_dataset_id", return_value="base-id"), \
              patch("src.data.pipeline.create_dataset_version", return_value="child-id") as mock_version, \
-             patch("clearml.Dataset") as MockDataset:
+             patch("src.data.pipeline.Dataset") as MockDataset:
             MockDataset.get.side_effect = dataset_get
             from src.data.pipeline import resolve_dataset
             result = resolve_dataset(
@@ -327,7 +327,7 @@ class TestResolveDatasetClearML:
         with patch("src.data.pipeline.get_dataset_id", return_value=None), \
              patch("src.data.pipeline.get_base_dataset_id", return_value="base-id"), \
              patch("src.data.pipeline.create_dataset_version", side_effect=fake_create_version), \
-             patch("clearml.Dataset") as MockDataset:
+             patch("src.data.pipeline.Dataset") as MockDataset:
             MockDataset.get.side_effect = lambda dataset_id=None, **kw: (
                 mock_base if dataset_id == "base-id" else mock_child
             )
@@ -360,7 +360,7 @@ class TestResolveDatasetClearML:
              patch("src.data.pipeline.get_base_dataset_id", return_value=None), \
              patch("src.data.pipeline.register_dataset", return_value="new-id"), \
              patch("src.data.pipeline.call", return_value=mock_partial), \
-             patch("clearml.Dataset") as MockDataset:
+             patch("src.data.pipeline.Dataset") as MockDataset:
             MockDataset.get.return_value = mock_new
             from src.data.pipeline import resolve_dataset
             result = resolve_dataset(
@@ -380,7 +380,7 @@ class TestResolveDatasetClearML:
         with patch("src.data.pipeline.get_dataset_id", return_value=None), \
              patch("src.data.pipeline.get_base_dataset_id", return_value=None):
             from src.data.pipeline import resolve_dataset
-            with pytest.raises(FileNotFoundError):
+            with pytest.raises(FileNotFoundError, match="skip_download"):
                 resolve_dataset(
                     task=mock_task,
                     dataset_name="TNG50",

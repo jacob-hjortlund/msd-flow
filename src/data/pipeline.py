@@ -21,6 +21,11 @@ from src.tracking import (
     create_dataset_version,
 )
 
+try:
+    from clearml import Dataset
+except ImportError:
+    Dataset = None  # type: ignore
+
 logger = logging.getLogger(__name__)
 
 _SPLITS_HASH_FILE = ".splits_hash"
@@ -125,8 +130,6 @@ def _resolve_clearml(
     download_cfg,
     skip_download: bool,
 ) -> str:
-    from clearml import Dataset
-
     # Case A: exact match
     exact_id = get_dataset_id(task, dataset_name, full_hash)
     if exact_id:
