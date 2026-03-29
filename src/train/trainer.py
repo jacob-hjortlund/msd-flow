@@ -172,6 +172,33 @@ def make_val_step():
     return val_step
 
 
+def make_batch_metric_step(batch_metrics: list):
+    """Return a JIT-compiled step that evaluates a list of batch metrics.
+
+    Args:
+        batch_metrics: List of callables, each with signature
+                       ``(model, x_t, u_t, t, cond, cond_mask) -> scalar``.
+
+    Returns:
+        A ``filter_jit``-compiled callable with signature
+        ``(model, x_t, u_t, t, cond, cond_mask) -> dict[str, jax.Array]``,
+        keyed by ``fn.__name__`` for each metric.
+    """
+
+    @eqx.filter_jit
+    def batch_metric_step(
+        model,
+        x_t: jax.Array,
+        u_t: jax.Array,
+        t: jax.Array,
+        cond: jax.Array,
+        cond_mask: jax.Array,
+    ) -> dict:
+        return {fn.__name__: fn(model, x_t, u_t, t, cond, cond_mask) for fn in batch_metrics}
+
+    return batch_metric_step
+
+
 def validation_loop(
     key: jax.Array,
     ema_model,

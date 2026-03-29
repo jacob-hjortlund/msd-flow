@@ -221,6 +221,65 @@ def test_val_step_loss_is_finite():
     assert jnp.isfinite(loss)
 
 
+from src.train.trainer import make_batch_metric_step
+
+
+def test_make_batch_metric_step_returns_dict_keyed_by_fn_name():
+    """make_batch_metric_step must return a dict keyed by fn.__name__."""
+    step = make_batch_metric_step([_fml])
+    B = 2
+    k1, k2 = jax.random.split(KEY)
+    x0 = jax.random.normal(k1, (B, 1, 8, 8))
+    x1 = jax.random.normal(k2, (B, 1, 8, 8))
+    t = jnp.array([0.3, 0.7])
+    cond = jnp.empty((B, 0))
+    cond_mask = jnp.zeros(B, dtype=bool)
+    x_t, u_t = sample_path(x0, x1, t)
+
+    result = step(SMALL_MODEL, x_t, u_t, t, cond, cond_mask)
+    assert isinstance(result, dict)
+    assert "flow_matching_loss" in result
+
+
+def test_make_batch_metric_step_values_are_scalar_jax_arrays():
+    """All values returned by make_batch_metric_step must be scalar JAX arrays."""
+    step = make_batch_metric_step([_fml])
+    B = 2
+    k1, k2 = jax.random.split(KEY)
+    x0 = jax.random.normal(k1, (B, 1, 8, 8))
+    x1 = jax.random.normal(k2, (B, 1, 8, 8))
+    t = jnp.array([0.3, 0.7])
+    cond = jnp.empty((B, 0))
+    cond_mask = jnp.zeros(B, dtype=bool)
+    x_t, u_t = sample_path(x0, x1, t)
+
+    result = step(SMALL_MODEL, x_t, u_t, t, cond, cond_mask)
+    for v in result.values():
+        assert isinstance(v, jax.Array)
+        assert v.shape == ()
+
+
+def test_make_batch_metric_step_multiple_metrics_all_keys_present():
+    """make_batch_metric_step with two distinct metrics returns both keys."""
+
+    def dummy_metric(model, x_t, u_t, t, cond, cond_mask):
+        return jnp.array(0.0)
+
+    step = make_batch_metric_step([_fml, dummy_metric])
+    B = 2
+    k1, k2 = jax.random.split(KEY)
+    x0 = jax.random.normal(k1, (B, 1, 8, 8))
+    x1 = jax.random.normal(k2, (B, 1, 8, 8))
+    t = jnp.array([0.3, 0.7])
+    cond = jnp.empty((B, 0))
+    cond_mask = jnp.zeros(B, dtype=bool)
+    x_t, u_t = sample_path(x0, x1, t)
+
+    result = step(SMALL_MODEL, x_t, u_t, t, cond, cond_mask)
+    assert "flow_matching_loss" in result
+    assert "dummy_metric" in result
+
+
 from functools import partial
 
 from src.train.trainer import train
