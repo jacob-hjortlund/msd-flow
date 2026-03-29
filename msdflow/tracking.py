@@ -70,7 +70,7 @@ def get_dataset_id(
     Args:
         task: Active ClearML Task, or None (no-op).
         dataset_name: Name of the ClearML dataset.
-        full_hash: Output of :func:`src.data.utils.compute_full_hash`.
+        full_hash: Output of :func:`msdflow.data.utils.compute_full_hash`.
 
     Returns:
         ClearML dataset ID string, or None if not found.
@@ -107,7 +107,7 @@ def get_base_dataset_id(
     Args:
         task: Active ClearML Task, or None (no-op).
         dataset_name: Name of the ClearML dataset.
-        download_hash: Output of :func:`src.data.utils.compute_download_hash`.
+        download_hash: Output of :func:`msdflow.data.utils.compute_download_hash`.
 
     Returns:
         ClearML dataset ID string of the latest matching dataset, or None.
@@ -150,8 +150,8 @@ def register_dataset(
         task: Active ClearML Task, or None (no-op).
         dataset_name: Name for the new ClearML dataset.
         processed_dir: Local directory containing ``.npy`` files and ``metadata.csv``.
-        download_hash: Output of :func:`src.data.utils.compute_download_hash`.
-        full_hash: Output of :func:`src.data.utils.compute_full_hash`.
+        download_hash: Output of :func:`msdflow.data.utils.compute_download_hash`.
+        full_hash: Output of :func:`msdflow.data.utils.compute_full_hash`.
 
     Returns:
         ClearML dataset ID string, or None if registration failed.
@@ -196,8 +196,8 @@ def create_dataset_version(
         metadata_csv_path: Absolute path to the updated ``metadata.csv`` file.
             The file must be in a temporary directory that serves as the
             ``local_base_folder`` so the path inside the dataset is ``metadata.csv``.
-        download_hash: Output of :func:`src.data.utils.compute_download_hash`.
-        full_hash: Output of :func:`src.data.utils.compute_full_hash`.
+        download_hash: Output of :func:`msdflow.data.utils.compute_download_hash`.
+        full_hash: Output of :func:`msdflow.data.utils.compute_full_hash`.
 
     Returns:
         ClearML dataset ID string of the new version, or None if creation failed.
