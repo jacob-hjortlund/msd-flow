@@ -1,6 +1,0 @@
-processed_dir: ${hydra:runtime.cwd}/data/processed/hsc_i_band
-seed: ${seed}
-ratios:
-  train: 0.9
-  val: 0.05
-  test: 0.05

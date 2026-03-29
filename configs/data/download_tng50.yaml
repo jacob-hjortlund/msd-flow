@@ -1,10 +1,10 @@
 _target_: src.data.download_tng.download_tng_data
-api_key: ${oc.env:TNG_API_KEY}
+_partial_: true
+api_key: ${oc.env:TNG_API_KEY,null}
 version_ids: [0,1,2,3]
 snapshots: ${generate_snapshot_ids:72,20}
 num_files_per_view: 50
 max_workers: 5
-raw_dir: "${hydra:runtime.cwd}/data/raw"
+raw_dir: "${data.dataset.data_dir}/raw"
 bands: ["SUBARU_HSC.I"]
 batch_size: 100
-processed_dir: "${hydra:runtime.cwd}/data/processed/hsc_i_band"

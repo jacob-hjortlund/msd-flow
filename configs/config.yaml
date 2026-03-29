@@ -1,11 +1,11 @@
 defaults:
-  - data@data.download: download
+  - data@data.download: download_tng50
   - data@data.dataset: dataset
   - data@data.dataloader: dataloader
-  - data@data.split: split
   - model@model: ncsnpp
   - flow@flow.sample: sample
   - train@train: train
+  - clearml@clearml: clearml
   - _self_
 
 seed: 42

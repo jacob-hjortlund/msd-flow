@@ -11,6 +11,7 @@ import logging
 import tempfile
 import requests
 import itertools
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -347,8 +348,8 @@ def download_tng_data(
     batch_size: int,
     max_workers: int,
 ) -> None:
-    """
-    Download TNG FITS files in batches, extract specified bands and metadata, and clean up raw files.
+    """Download TNG FITS files in batches, extract specified bands and metadata, and clean up raw files.
+
     Images are saved as .npy arrays and metadata is appended to metadata.csv. The function handles
     resumption by checking existing metadata entries and skips already-processed files.
 
@@ -388,39 +389,28 @@ def download_tng_data(
 
     if n_to_process == 0:
         log.info("No new files to process.")
-        return None
+    else:
+        batch_size = batch_size
+        num_batches = (len(remaining_urls) + batch_size - 1) // batch_size
+        start_idx = len(existing_ids)
 
-    batch_size = batch_size
-    num_batches = (len(remaining_urls) + batch_size - 1) // batch_size
-    start_idx = len(existing_ids)
+        n_processed = 0
+        with logging_redirect_tqdm():
+            for batch_num in tqdm(
+                range(num_batches),
+                desc="Downloading/Processing FITSbatches",
+                total=num_batches,
+            ):
+                batch_start = batch_num * batch_size
+                batch_urls = remaining_urls[batch_start : batch_start + batch_size]
+                paths = download_batch(batch_urls, raw_dir, headers, max_workers)
+                records = extract_batch(paths, list(bands), processed_dir, start_idx)
+                if records:
+                    save_metadata(records, processed_dir)
 
-    n_processed = 0
-    with logging_redirect_tqdm():
-        for batch_num in tqdm(
-            range(num_batches),
-            desc="Downloading/Processing FITSbatches",
-            total=num_batches,
-        ):
-            batch_start = batch_num * batch_size
-            batch_urls = remaining_urls[batch_start : batch_start + batch_size]
-            paths = download_batch(batch_urls, raw_dir, headers, max_workers)
-            records = extract_batch(paths, list(bands), processed_dir, start_idx)
-            if records:
-                save_metadata(records, processed_dir)
+                cleanup_batch(paths)
+                n_processed += len(records)
+                start_idx += len(records)
 
-            cleanup_batch(paths)
-            n_processed += len(records)
-            start_idx += len(records)
-
-    frac_success = n_processed / n_to_process
-    log.info(f"Download and processing complete. Success rate: {frac_success:.2%}")
-
-
-@hydra.main(version_base=None, config_path="../../configs", config_name="config")
-def main(cfg: DictConfig):
-    """Entry point: download TNG FITS in batches, extract bands, and clean up."""
-    call(cfg.data.download)
-
-
-if __name__ == "__main__":
-    main()
+        frac_success = n_processed / n_to_process
+        log.info(f"Download and processing complete. Success rate: {frac_success:.2%}")
