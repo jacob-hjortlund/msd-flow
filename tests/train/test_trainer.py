@@ -333,7 +333,7 @@ def test_train_returns_ema_model_not_live_model():
     assert any(not jnp.allclose(i, t) for i, t in zip(init_leaves, trained_leaves))
 
 
-def test_train_reduces_loss():
+def test_train_loop_completes_without_error():
     """Verify the training loop runs without error on repeated fixed batches."""
     fixed_images = torch.from_numpy(
         np.random.randn(4, 1, 8, 8).astype(np.float32)

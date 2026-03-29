@@ -208,7 +208,8 @@ def batch_metric_loop(
 
     Returns:
         ``dict[str, float]`` mapping metric name to its mean value over all
-        processed batches. Returns an empty dict if the dataloader yields no batches.
+        processed batches. Batches are weighted equally regardless of size;
+        use uniform batch sizes for unbiased estimates. Returns an empty dict if the dataloader yields no batches.
     """
     totals: dict = {}
     n_batches = 0
@@ -449,13 +450,18 @@ def train(
                 if all_metrics
                 else "no metrics yet"
             )
+            val_time_str = (
+                f"Val Time: {val_time:.2f}s (avg {avg_val_time:.2f}s)"
+                if val_runs > 0
+                else "Val Time: pending"
+            )
             log_string = (
                 f"Epoch {epoch + 1}/{num_epochs} | "
                 + f"Train Loss: {epoch_loss / steps_per_epoch:.4g} | "
                 + metric_str + " | "
                 + f"Epoch Time: {epoch_time:.2g}s (avg {avg_epoch_time:.2g}s) | "
                 + f"Train Time: {train_time:.2g}s (avg {avg_train_time:.2g}s) | "
-                + f"Val Time: {val_time:.2f}s (avg {avg_val_time:.2f}s)"
+                + val_time_str
             )
             logger.info(log_string)
 
