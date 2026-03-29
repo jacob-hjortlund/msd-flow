@@ -1,17 +1,109 @@
+data_dir: null
+
+pre_arcsinh_image_transforms:
+  _target_: torchvision.transforms.Compose
+  transforms:
+    - _target_: src.data.preprocess.SurfaceBrightnessToNanomaggies
+      mag_threshold: 99.0
+    - _target_: src.data.preprocess.ClipAndPad
+      n: ${image_size}
+    - _target_: src.data.preprocess.PDFNorm
+
+arcsinh_transform:
+  _target_: torchvision.transforms.Compose
+  transforms:
+    - _target_: src.data.preprocess.ArcsinhStretch
+      scale: null
+      transforms: ${data.dataloader.pre_arcsinh_image_transforms}
+      percentile: 10
+      data_dir: ${data.dataloader.data_dir}
+      split: train
+
+post_arcsinh_image_transforms:
+  _target_: torchvision.transforms.Compose
+  transforms:
+    - _target_: src.data.preprocess.GlobalNorm
+      global_min: 0.0
+      global_max: null
+      norm_min: -1.0
+      norm_max: 1.0
+      data_dir: ${data.dataloader.data_dir}
+      percentile: ${data.dataloader.arcsinh_transform.transforms.0.percentile}
+      split: train
+      transforms:
+        _target_ : torchvision.transforms.Compose
+        transforms:
+          - ${data.dataloader.pre_arcsinh_image_transforms}
+          - ${data.dataloader.arcsinh_transform}
+
+augmentations:
+  _target_: torchvision.transforms.Compose
+  transforms:
+    - _target_: src.data.preprocess.RandomHorizontalFlip
+      p: 0.5
+      seed: ${seed}
+    - _target_: src.data.preprocess.RandomVerticalFlip
+      p: 0.5
+      seed: ${seed}
+    - _target_: src.data.preprocess.RandomRotation90
+      seed: ${seed}
+
+deterministic_transforms:
+  _target_: torchvision.transforms.Compose
+  transforms:
+    - ${data.dataloader.pre_arcsinh_image_transforms}
+    - ${data.dataloader.arcsinh_transform}
+    - ${data.dataloader.post_arcsinh_image_transforms}
+
+metadata_columns: ${metadata_columns}
+metadata_transform: null
+dataset_class: src.data.dataset.TNG50Dataset
+
+train_dataset:
+  _target_: ${data.dataloader.dataset_class}
+  processed_dir: ${data.dataloader.data_dir}
+  split: train
+  image_transform:
+    _target_: torchvision.transforms.Compose
+    transforms:
+      - ${data.dataloader.pre_arcsinh_image_transforms}
+      - ${data.dataloader.arcsinh_transform}
+      - ${data.dataloader.post_arcsinh_image_transforms}
+      - ${data.dataloader.augmentations}
+  metadata_columns: ${data.dataloader.metadata_columns}
+  metadata_transform: ${data.dataloader.metadata_transform}
+
+val_dataset:
+  _target_: ${data.dataloader.dataset_class}
+  processed_dir: ${data.dataloader.data_dir}
+  split: val
+  image_transform: ${data.dataloader.deterministic_transforms}
+  metadata_columns: ${data.dataloader.metadata_columns}
+  metadata_transform: ${data.dataloader.metadata_transform}
+
+test_dataset:
+  _target_: ${data.dataloader.dataset_class}
+  processed_dir: ${data.dataloader.data_dir}
+  split: test
+  image_transform: ${data.dataloader.deterministic_transforms}
+  metadata_columns: ${data.dataloader.metadata_columns}
+  metadata_transform: ${data.dataloader.metadata_transform}
+
+
 train:
   _target_: torch.utils.data.DataLoader
-  dataset: ${data.dataset.train}
+  dataset: ${data.dataloader.train_dataset}
   batch_size: 32
   shuffle: true
 
 val:
   _target_: torch.utils.data.DataLoader
-  dataset: ${data.dataset.val}
+  dataset: ${data.dataloader.val_dataset}
   batch_size: 64
   shuffle: false
 
 test:
   _target_: torch.utils.data.DataLoader
-  dataset: ${data.dataset.test}
+  dataset: ${data.dataloader.test_dataset}
   batch_size: 64
   shuffle: false
