@@ -1,10 +1,13 @@
 """PyTorch Dataset for processed TNG50 galaxy images."""
 
 import os
+import json
+import torch
 
 import numpy as np
 import pandas as pd
-import torch
+
+from typing import Any
 from torch.utils.data import Dataset
 
 
@@ -43,7 +46,9 @@ class TNG50Dataset(Dataset):
         csv_path = os.path.join(processed_dir, "metadata.csv")
         self.metadata = pd.read_csv(csv_path)
         if split is not None:
-            self.metadata = self.metadata[self.metadata["split"] == split].reset_index(drop=True)
+            self.metadata = self.metadata[self.metadata["split"] == split].reset_index(
+                drop=True
+            )
         self.filenames = self.metadata["filename"].tolist()
 
     def __len__(self) -> int:

@@ -21,6 +21,8 @@ def assign_splits(
     processed_dir: str,
     seed: int = 42,
     ratios: dict[str, float] | None = None,
+    *args,
+    **kwargs,
 ) -> None:
     """Assign train/val/test splits to metadata rows.
 
@@ -70,18 +72,3 @@ def assign_splits(
     df["split"] = splits
     df.to_csv(csv_path, index=False)
     log.info("Split assignment complete.")
-
-
-@hydra.main(version_base=None, config_path="../../configs", config_name="config")
-def main(cfg: DictConfig):
-    """Entry point: assign train/val/test splits to metadata."""
-    split_cfg = cfg.data.split
-    assign_splits(
-        processed_dir=split_cfg.processed_dir,
-        seed=split_cfg.seed,
-        ratios=dict(split_cfg.ratios),
-    )
-
-
-if __name__ == "__main__":
-    main()

@@ -21,7 +21,6 @@ from astropy.io import fits
 from hydra.utils import call
 from omegaconf import DictConfig, OmegaConf
 from src.utils import register_all_resolvers
-from src.tracking import register_or_get_dataset
 from tqdm.contrib.logging import logging_redirect_tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -348,7 +347,6 @@ def download_tng_data(
     num_files_per_view: int,
     batch_size: int,
     max_workers: int,
-    clearml_task: Any = None,
 ) -> None:
     """Download TNG FITS files in batches, extract specified bands and metadata, and clean up raw files.
 
@@ -365,8 +363,6 @@ def download_tng_data(
         num_files_per_view: Maximum number of FITS URLs to extract per version/snapshot combination (0 for all).
         batch_size: Number of FITS files to download and process in each batch.
         max_workers: Maximum number of threads for parallel downloading.
-        clearml_task: ClearML Task for dataset registration, or None to
-                      skip (default).
     """
 
     os.makedirs(raw_dir, exist_ok=True)
@@ -418,22 +414,3 @@ def download_tng_data(
 
         frac_success = n_processed / n_to_process
         log.info(f"Download and processing complete. Success rate: {frac_success:.2%}")
-
-    register_or_get_dataset(
-        clearml_task,
-        processed_dir,
-        list(bands),
-        list(version_ids),
-        list(snapshots),
-        num_files_per_view,
-    )
-
-
-@hydra.main(version_base=None, config_path="../../configs", config_name="config")
-def main(cfg: DictConfig):
-    """Entry point: download TNG FITS in batches, extract bands, and clean up."""
-    call(cfg.data.download)
-
-
-if __name__ == "__main__":
-    main()
