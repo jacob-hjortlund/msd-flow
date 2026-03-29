@@ -11,6 +11,7 @@ import jax
 import jax.numpy as jnp
 import equinox as eqx
 import optax
+import functools
 
 import os
 import logging
@@ -156,12 +157,16 @@ def make_batch_metric_step(batch_metrics: list):
     Returns:
         A ``filter_jit``-compiled callable with signature
         ``(model, x_t, u_t, t, cond, cond_mask) -> dict[str, jax.Array]``,
-        keyed by ``fn.__name__`` for each metric.
+        keyed by the underlying function name for each metric.
     """
 
-    names = [fn.__name__ for fn in batch_metrics]
+    names = [
+        fn.func.__name__ if isinstance(fn, functools.partial) else fn.__name__
+        for fn in batch_metrics
+    ]
+
     if len(names) != len(set(names)):
-        duplicates = [n for n in names if names.count(n) > 1]
+        duplicates = list(set([n for n in names if names.count(n) > 1]))
         raise ValueError(
             f"make_batch_metric_step: duplicate metric names {duplicates}. "
             "Each metric must have a unique __name__."
@@ -176,7 +181,10 @@ def make_batch_metric_step(batch_metrics: list):
         cond: jax.Array,
         cond_mask: jax.Array,
     ) -> dict:
-        return {fn.__name__: fn(model, x_t, u_t, t, cond, cond_mask) for fn in batch_metrics}
+        return {
+            name: fn(model, x_t, u_t, t, cond, cond_mask)
+            for name, fn in zip(names, batch_metrics)
+        }
 
     return batch_metric_step
 
@@ -417,8 +425,16 @@ def train(
             epoch_metric_results = {}
             if epoch_metrics:
                 val_batches = collect_batches(val_dataloader, num_val_eval_batches)
-                for fn in epoch_metrics:
-                    epoch_metric_results[fn.__name__] = fn(
+                fn_names = [
+                    (
+                        fn.func.__name__
+                        if isinstance(fn, functools.partial)
+                        else fn.__name__
+                    )
+                    for fn in epoch_metrics
+                ]
+                for fn, fn_name in zip(epoch_metrics, fn_names):
+                    epoch_metric_results[fn_name] = fn(
                         ema_model, val_batches, key_epoch
                     )
 
@@ -458,7 +474,8 @@ def train(
             log_string = (
                 f"Epoch {epoch + 1}/{num_epochs} | "
                 + f"Train Loss: {epoch_loss / steps_per_epoch:.4g} | "
-                + metric_str + " | "
+                + metric_str
+                + " | "
                 + f"Epoch Time: {epoch_time:.2g}s (avg {avg_epoch_time:.2g}s) | "
                 + f"Train Time: {train_time:.2g}s (avg {avg_train_time:.2g}s) | "
                 + val_time_str
