@@ -1,5 +1,12 @@
 _target_: src.train.trainer.train
 _partial_: true
+loss_fn:
+  _target_: src.train.metrics.flow_matching_loss
+batch_metrics:
+  - _target_: src.train.metrics.flow_matching_loss
+epoch_metrics: []
+num_train_eval_batches: 0
+num_val_eval_batches: 0
 optimizer:
   _target_: optax.adamw
   learning_rate: 1.0e-4
