@@ -10,5 +10,5 @@ num_groups: 8
 activation: 
   _target_: jax.nn.silu
   _partial_: true
-cond_dim: "${if_cond: ${data.dataset.metadata_columns}, 1, 0}"
+cond_dim: "${if_cond: ${metadata_columns}, 1, 0}"
 prediction_type: "velocity"

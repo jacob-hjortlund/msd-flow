@@ -66,10 +66,10 @@ def main(cfg: DictConfig):
         dataloader=train_loader,
         val_dataloader=val_loader,
         clearml_task=task,
-        sample_fn=instantiate(cfg.train.sample_fn) if cfg.train.sample_fn else None,
-        sample_every=cfg.train.sample_every,
-        num_samples=cfg.train.num_samples,
-        samples_dir=cfg.train.samples_dir,
+        # sample_fn=instantiate(cfg.train.sample_fn) if cfg.train.sample_fn else None,
+        # sample_every=cfg.train.sample_every,
+        # num_samples=cfg.train.num_samples,
+        # samples_dir=cfg.train.samples_dir,
     )
 
 

@@ -7,6 +7,7 @@ rest of the pipeline to call them unconditionally.
 import os
 import logging
 from typing import Any
+from tqdm.contrib.logging import logging_redirect_tqdm
 
 import numpy as np
 
@@ -82,6 +83,7 @@ def get_dataset_id(
             dataset_name=dataset_name,
             dataset_project=dataset_project,
             dataset_tags=[f"splits:{full_hash}"],
+            alias="raw_data",
         )
         logger.info("Found existing ClearML dataset: %s", dataset.id)
         return dataset.id
@@ -115,12 +117,14 @@ def get_base_dataset_id(
     try:
         dataset_project = task.get_project_name()
         datasets = Dataset.list_datasets(
-            dataset_name=dataset_name,
+            partial_name=dataset_name,
             dataset_project=dataset_project,
             tags=[f"download:{download_hash}"],
         )
         if not datasets:
-            logger.info("No ClearML base dataset found with download tag %s", download_hash)
+            logger.info(
+                "No ClearML base dataset found with download tag %s", download_hash
+            )
             return None
         latest = max(datasets, key=lambda d: d.get("created", ""))
         logger.info("Found base ClearML dataset: %s", latest["id"])
@@ -162,6 +166,8 @@ def register_dataset(
             dataset_tags=[f"download:{download_hash}", f"splits:{full_hash}"],
         )
         dataset.add_files(processed_dir)
+        with logging_redirect_tqdm():
+            dataset.upload()
         dataset.finalize()
         logger.info("Registered new dataset: %s", dataset.id)
         return dataset.id
@@ -210,6 +216,8 @@ def create_dataset_version(
             metadata_csv_path,
             local_base_folder=os.path.dirname(metadata_csv_path),
         )
+        with logging_redirect_tqdm():
+            dataset.upload()
         dataset.finalize()
         logger.info("Created dataset version: %s (parent: %s)", dataset.id, base_id)
         return dataset.id
@@ -243,7 +251,7 @@ def get_dataset_path(task: Any, dataset_id: str, *args, **kwargs) -> str:
             raise ValueError(
                 "ClearML tracking disabled and no local dataset path provided in config."
             )
-    return Dataset.get(dataset_id=dataset_id).get_local_copy()
+    return Dataset.get(dataset_id=dataset_id, alias="raw_data").get_local_copy()
 
 
 def log_metrics(task: Any, scalars: dict, epoch: int) -> None:
