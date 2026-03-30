@@ -50,9 +50,6 @@ python train_model.py clearml.enabled=true
 # Override the learning rate
 python train_model.py train.optimizer.learning_rate=5e-5
 
-# Skip data download (use existing processed data)
-python train_model.py data.dataset.skip_download=true
-
 # Train at 256×256
 python train_model.py image_size=256
 ```
@@ -106,7 +103,6 @@ ratios:
   train: 0.90                                      # Fraction of data assigned to the training split
   val:   0.05                                      # Fraction assigned to the validation split
   test:  0.05                                      # Fraction assigned to the test split
-skip_download: false    # Set to true to skip download and reuse existing data
 ```
 
 ### `configs/data/dataloader.yaml` — Image Preprocessing Pipeline

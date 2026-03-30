@@ -126,9 +126,6 @@ python train_model.py train.optimizer.learning_rate=5e-5
 # Switch to UNet model
 python train_model.py model=unet
 
-# Skip data download (reuse existing processed data)
-python train_model.py data.dataset.skip_download=true
-
 # Validate and checkpoint less frequently (saves time)
 python train_model.py train.val_every=5
 
