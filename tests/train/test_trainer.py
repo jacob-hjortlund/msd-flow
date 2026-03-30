@@ -996,3 +996,19 @@ def test_train_skips_sampling_when_sample_every_is_zero(tmp_path):
         samples_dir=str(tmp_path / "samples"),
     )
     assert call_count["n"] == 0
+
+
+def test_train_invalid_monitor_mode_raises(tmp_path):
+    """train() raises ValueError immediately if monitor_mode is not 'min' or 'max'."""
+    dataloader = list(_make_fake_dataloader())
+    val_dataloader = _fake_val_dataloader()
+    kwargs = _make_train_kwargs(num_epochs=1)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+    kwargs["monitor_mode"] = "diagonal"
+    with pytest.raises(ValueError, match="monitor_mode"):
+        train(
+            model=SMALL_MODEL,
+            dataloader=dataloader,
+            val_dataloader=val_dataloader,
+            **kwargs,
+        )

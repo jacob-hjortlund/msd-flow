@@ -298,6 +298,9 @@ def train(
     sample_every: int = 0,
     num_samples: int = 4,
     samples_dir: str | None = None,
+    monitor: str = "flow_matching_loss",
+    monitor_mode: str = "min",
+    early_stopping_patience: int | None = None,
 ):
     """Main training loop with EMA and periodic validation.
 
@@ -344,6 +347,14 @@ def train(
                                 0 disables sample generation.
         num_samples:            Number of images per sampling event.
         samples_dir:            Root directory for saving sample .npy files.
+        monitor (str): Name of the metric to monitor for best-model checkpointing
+            and early stopping. Looked up in val_metrics first, then
+            epoch_metric_results. Defaults to "flow_matching_loss".
+        monitor_mode (str): "min" if lower metric values are better, "max" if
+            higher values are better. Defaults to "min".
+        early_stopping_patience (int | None): Number of consecutive validation
+            cycles without improvement before training is halted. None disables
+            early stopping. Defaults to None.
 
     Returns:
         Trained EMA model.
@@ -353,6 +364,11 @@ def train(
     if sample_fn is not None and sample_every > 0 and samples_dir is None:
         raise ValueError(
             "samples_dir must be provided when sample_fn and sample_every > 0 are set"
+        )
+
+    if monitor_mode not in ("min", "max"):
+        raise ValueError(
+            f"monitor_mode must be 'min' or 'max', got {monitor_mode!r}"
         )
 
     train_step = make_train_step(optimizer, loss_fn)
