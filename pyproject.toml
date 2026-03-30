@@ -8,11 +8,12 @@ version = "0.1.0"
 description = "Flow matching framework for galaxy image generation"
 requires-python = ">=3.10"
 dependencies = [
-    "jax[cuda12]",
+    "jax",
     "equinox",
     "optax",
     "diffrax",
     "hydra-core",
+    "hydra-submitit-launcher",
     "omegaconf",
     "torch",
     "torchvision",
@@ -27,9 +28,12 @@ dependencies = [
     "requests",
     "mkdocs-material",
     "mkdocs-autorefs",
+    "matplotlib",
+    "seaborn",
 ]
 
 [project.optional-dependencies]
+gpu = ["jax[cuda12]"]
 cpu = ["jax[cpu]"]
 docs = ["mkdocs-material", "mkdocs-autorefs"]
 dev = ["pytest", "pytest-cov"]
