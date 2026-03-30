@@ -6,8 +6,8 @@ import jax.random as jr
 from hydra.utils import instantiate, call
 from omegaconf import DictConfig, OmegaConf, open_dict
 
-from msdflow.utils import register_all_resolvers
 from msdflow.tracking import setup_task
+from msdflow.utils import register_all_resolvers
 from msdflow.data.pipeline import resolve_dataset
 
 

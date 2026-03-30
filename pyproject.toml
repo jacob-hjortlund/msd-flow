@@ -26,8 +26,6 @@ dependencies = [
     "tqdm",
     "fastdigest",
     "requests",
-    "mkdocs-material",
-    "mkdocs-autorefs",
     "matplotlib",
     "seaborn",
 ]
