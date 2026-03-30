@@ -17,7 +17,7 @@ containing the fully resolved config and the run log.
 
 The script executes six sequential steps, each logged to the console:
 
-### Step 0: ClearML Setup
+### Pre-step: ClearML Setup
 
 Initialises a ClearML experiment task when `clearml.enabled=true`. If the ClearML
 server is unreachable the task falls back to offline mode, writing artefacts to
@@ -107,6 +107,11 @@ checkpoints/
 | `train/<metric>` | Each batch metric evaluated on the train split |
 | `epoch/<metric>` | Each epoch metric |
 
+!!! note
+    Sample generation during training is not yet enabled. The `sample_fn`, `sample_every`,
+    `num_samples`, and `samples_dir` config keys are defined but not currently wired up
+    in `train_model.py`. See [TODO](todo.md).
+
 ---
 
 ## Common CLI Overrides
@@ -165,6 +170,7 @@ model = NCSNpp(
     dropout=0.1,
     num_groups=32,
     num_heads=1,
+    activation=jax.nn.swish,
     fourier_scale=16.0,
     skip_rescale=True,
     image_size=512,

@@ -99,11 +99,13 @@ Override `max_workers` for faster downloads: `python train_model.py data.downloa
 ### `configs/data/dataset.yaml` — Dataset Split Config
 
 ```yaml
-dataset_name: "TNG50"
+dataset_name: "TNG50"                              # Name tag used for directory organisation
+data_dir: "${hydra:runtime.cwd}/data"              # Root directory for processed dataset files
+seed: ${seed}                                      # Inherited from top-level seed for reproducibility
 ratios:
-  train: 0.90
-  val:   0.05
-  test:  0.05
+  train: 0.90                                      # Fraction of data assigned to the training split
+  val:   0.05                                      # Fraction assigned to the validation split
+  test:  0.05                                      # Fraction assigned to the test split
 skip_download: false    # Set to true to skip download and reuse existing data
 ```
 
@@ -155,6 +157,9 @@ attn_resolutions: [16]                         # Apply self-attention at this sp
 dropout: 0.1
 num_groups: 32                                 # GroupNorm group count
 num_heads: 1                                   # Attention heads
+activation:
+  _target_: jax.nn.swish                       # Activation function (swish by default)
+  _partial_: true
 fourier_scale: 16.0                            # Random Fourier time embedding scale
 skip_rescale: true                             # Rescale skip connections
 image_size: ${image_size}                      # Inherited from top-level config
@@ -176,6 +181,9 @@ channel_multipliers: [1, 2, 4, 8]
 num_res_blocks: 2
 num_heads: 8
 num_groups: 8
+activation:
+  _target_: jax.nn.silu                        # Activation function (silu by default)
+  _partial_: true
 cond_dim: "${if_cond: ${metadata_columns}, 1, 0}"
 prediction_type: "velocity"
 ```

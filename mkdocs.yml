@@ -8,6 +8,9 @@ theme:
     - navigation.top
     - content.code.copy
 
+markdown_extensions:
+  - admonition
+
 nav:
   - Home: index.md
   - Installation: installation.md
