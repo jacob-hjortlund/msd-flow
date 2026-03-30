@@ -1119,3 +1119,86 @@ def test_best_checkpoint_log_shows_monitored_metric_first(tmp_path, caplog):
     best_logs = [r.message for r in caplog.records if "New best model" in r.message]
     assert len(best_logs) == 1
     assert best_logs[0].startswith("New best model at epoch 1: flow_matching_loss =")
+
+
+def test_early_stopping_triggers_at_correct_cycle(tmp_path):
+    """Training halts after patience consecutive val cycles without improvement."""
+    call_count = [0]
+
+    def constant_metric(model, val_batches, key):
+        call_count[0] += 1
+        return 1.0  # constant — never beats itself in max mode after first call
+
+    dataloader = list(_make_fake_dataloader())
+    val_dataloader = _fake_val_dataloader()
+    kwargs = _make_train_kwargs(num_epochs=10, num_steps_per_epoch=1)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+    kwargs["epoch_metrics"] = [constant_metric]
+    kwargs["monitor"] = "constant_metric"
+    kwargs["monitor_mode"] = "max"
+    kwargs["early_stopping_patience"] = 1
+    train(
+        model=SMALL_MODEL,
+        dataloader=dataloader,
+        val_dataloader=val_dataloader,
+        **kwargs,
+    )
+    # Epoch 1: 1.0 > −∞ → improved, patience_counter=0
+    # Epoch 2: 1.0 not > 1.0 → patience_counter=1 >= patience=1 → stop
+    assert call_count[0] == 2
+
+
+def test_early_stopping_not_triggered_when_disabled(tmp_path):
+    """When early_stopping_patience is None, all epochs run regardless of metric."""
+    call_count = [0]
+
+    def constant_metric(model, val_batches, key):
+        call_count[0] += 1
+        return 1.0
+
+    dataloader = list(_make_fake_dataloader())
+    val_dataloader = _fake_val_dataloader()
+    kwargs = _make_train_kwargs(num_epochs=3, num_steps_per_epoch=1)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+    kwargs["epoch_metrics"] = [constant_metric]
+    kwargs["monitor"] = "constant_metric"
+    kwargs["monitor_mode"] = "max"
+    kwargs["early_stopping_patience"] = None
+    train(
+        model=SMALL_MODEL,
+        dataloader=dataloader,
+        val_dataloader=val_dataloader,
+        **kwargs,
+    )
+    assert call_count[0] == 3
+
+
+def test_early_stopping_log_message(tmp_path, caplog):
+    """Early stopping emits a log message that names the metric and patience count."""
+    import logging
+
+    call_count = [0]
+
+    def constant_metric(model, val_batches, key):
+        call_count[0] += 1
+        return 1.0
+
+    dataloader = list(_make_fake_dataloader())
+    val_dataloader = _fake_val_dataloader()
+    kwargs = _make_train_kwargs(num_epochs=5, num_steps_per_epoch=1)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+    kwargs["epoch_metrics"] = [constant_metric]
+    kwargs["monitor"] = "constant_metric"
+    kwargs["monitor_mode"] = "max"
+    kwargs["early_stopping_patience"] = 1
+    with caplog.at_level(logging.INFO, logger="msdflow.train.trainer"):
+        train(
+            model=SMALL_MODEL,
+            dataloader=dataloader,
+            val_dataloader=val_dataloader,
+            **kwargs,
+        )
+    stop_logs = [r.message for r in caplog.records if "Early stopping" in r.message]
+    assert len(stop_logs) == 1
+    assert "constant_metric" in stop_logs[0]
+    assert "1" in stop_logs[0]  # patience count in message

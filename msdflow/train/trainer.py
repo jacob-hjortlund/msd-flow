@@ -535,6 +535,14 @@ def train(
                 else:
                     patience_counter += 1
 
+                if early_stopping_patience is not None and patience_counter >= early_stopping_patience:
+                    logger.info(
+                        f"Early stopping triggered at epoch {epoch + 1}: '{monitor}' "
+                        f"did not improve for {early_stopping_patience} consecutive "
+                        f"validation cycles."
+                    )
+                    break
+
         if (epoch + 1) % checkpoint_every == 0:
             os.makedirs(checkpoint_dir, exist_ok=True)
             raw_path = os.path.join(checkpoint_dir, f"model_epoch{epoch + 1}_raw.eqx")
