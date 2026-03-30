@@ -49,7 +49,7 @@ def test_flow_matching_loss_is_scalar():
     cond = jnp.empty((B, 0))
     cond_mask = jnp.zeros(B, dtype=bool)
     x_t, u_t = sample_path(x0, x1, t)
-    loss = flow_matching_loss(SMALL_MODEL, x_t, u_t, t, cond, cond_mask)
+    loss = flow_matching_loss(SMALL_MODEL, x_t, u_t, t, cond, cond_mask, jax.random.PRNGKey(0))
     assert loss.shape == ()
 
 
@@ -63,7 +63,7 @@ def test_flow_matching_loss_is_positive():
     cond = jnp.empty((B, 0))
     cond_mask = jnp.zeros(B, dtype=bool)
     x_t, u_t = sample_path(x0, x1, t)
-    loss = flow_matching_loss(SMALL_MODEL, x_t, u_t, t, cond, cond_mask)
+    loss = flow_matching_loss(SMALL_MODEL, x_t, u_t, t, cond, cond_mask, jax.random.PRNGKey(0))
     assert loss >= 0.0
 
 
@@ -78,7 +78,7 @@ def test_flow_matching_loss_has_gradient():
     cond_mask = jnp.zeros(B, dtype=bool)
     x_t, u_t = sample_path(x0, x1, t)
     loss, grads = eqx.filter_value_and_grad(flow_matching_loss)(
-        SMALL_MODEL, x_t, u_t, t, cond, cond_mask
+        SMALL_MODEL, x_t, u_t, t, cond, cond_mask, jax.random.PRNGKey(0)
     )
     grad_leaves = jax.tree_util.tree_leaves(eqx.filter(grads, eqx.is_array))
     assert any(jnp.any(g != 0.0) for g in grad_leaves)
@@ -94,7 +94,7 @@ def test_flow_matching_loss_with_cond():
     cond = jnp.array([[0.4], [0.8]])
     cond_mask = jnp.ones(B, dtype=bool)
     x_t, u_t = sample_path(x0, x1, t)
-    loss = flow_matching_loss(SMALL_MODEL_COND, x_t, u_t, t, cond, cond_mask)
+    loss = flow_matching_loss(SMALL_MODEL_COND, x_t, u_t, t, cond, cond_mask, jax.random.PRNGKey(0))
     assert loss.shape == ()
     assert jnp.isfinite(loss)
 
@@ -109,7 +109,7 @@ def test_flow_matching_loss_with_cond_mask_false():
     cond = jnp.array([[0.4], [0.8]])
     cond_mask = jnp.zeros(B, dtype=bool)
     x_t, u_t = sample_path(x0, x1, t)
-    loss = flow_matching_loss(SMALL_MODEL_COND, x_t, u_t, t, cond, cond_mask)
+    loss = flow_matching_loss(SMALL_MODEL_COND, x_t, u_t, t, cond, cond_mask, jax.random.PRNGKey(0))
     assert loss.shape == ()
     assert jnp.isfinite(loss)
 
@@ -125,7 +125,7 @@ def test_flow_matching_loss_gradient_with_cond():
     cond_mask = jnp.array([True, False])
     x_t, u_t = sample_path(x0, x1, t)
     loss, grads = eqx.filter_value_and_grad(flow_matching_loss)(
-        SMALL_MODEL_COND, x_t, u_t, t, cond, cond_mask
+        SMALL_MODEL_COND, x_t, u_t, t, cond, cond_mask, jax.random.PRNGKey(0)
     )
     grad_leaves = jax.tree_util.tree_leaves(eqx.filter(grads, eqx.is_array))
     assert any(jnp.any(g != 0.0) for g in grad_leaves)
@@ -223,7 +223,7 @@ def test_flow_matching_loss_image_mode_is_scalar():
     cond = jnp.empty((B, 0))
     cond_mask = jnp.zeros(B, dtype=bool)
     x_t, u_t = sample_path(x0, x1, t)
-    loss = flow_matching_loss(_SMALL_IMG_MODEL, x_t, u_t, t, cond, cond_mask)
+    loss = flow_matching_loss(_SMALL_IMG_MODEL, x_t, u_t, t, cond, cond_mask, jax.random.PRNGKey(0))
     assert loss.shape == ()
 
 
@@ -237,7 +237,7 @@ def test_flow_matching_loss_image_mode_is_finite():
     cond = jnp.empty((B, 0))
     cond_mask = jnp.zeros(B, dtype=bool)
     x_t, u_t = sample_path(x0, x1, t)
-    loss = flow_matching_loss(_SMALL_IMG_MODEL, x_t, u_t, t, cond, cond_mask)
+    loss = flow_matching_loss(_SMALL_IMG_MODEL, x_t, u_t, t, cond, cond_mask, jax.random.PRNGKey(0))
     assert jnp.isfinite(loss)
 
 
@@ -252,7 +252,7 @@ def test_flow_matching_loss_image_mode_has_gradient():
     cond_mask = jnp.zeros(B, dtype=bool)
     x_t, u_t = sample_path(x0, x1, t)
     _, grads = eqx.filter_value_and_grad(flow_matching_loss)(
-        _SMALL_IMG_MODEL, x_t, u_t, t, cond, cond_mask
+        _SMALL_IMG_MODEL, x_t, u_t, t, cond, cond_mask, jax.random.PRNGKey(0)
     )
     grad_leaves = jax.tree_util.tree_leaves(eqx.filter(grads, eqx.is_array))
     assert any(jnp.any(g != 0.0) for g in grad_leaves)

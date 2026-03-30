@@ -187,7 +187,7 @@ def test_resblock_biggan_same_channels():
     )
     x = jnp.ones((8, 16, 16))
     t_emb = jnp.ones(TIME_EMB_DIM)
-    out = block(x, t_emb)
+    out = block(x, t_emb, jax.random.PRNGKey(0))
     assert out.shape == (8, 16, 16)
 
 
@@ -200,7 +200,7 @@ def test_resblock_biggan_different_channels():
     )
     x = jnp.ones((4, 16, 16))
     t_emb = jnp.ones(TIME_EMB_DIM)
-    out = block(x, t_emb)
+    out = block(x, t_emb, jax.random.PRNGKey(0))
     assert out.shape == (8, 16, 16)
 
 
@@ -213,7 +213,7 @@ def test_resblock_biggan_downsample():
     )
     x = jnp.ones((8, 16, 16))
     t_emb = jnp.ones(TIME_EMB_DIM)
-    out = block(x, t_emb)
+    out = block(x, t_emb, jax.random.PRNGKey(0))
     assert out.shape == (8, 8, 8)
 
 
@@ -226,7 +226,7 @@ def test_resblock_biggan_upsample():
     )
     x = jnp.ones((8, 8, 8))
     t_emb = jnp.ones(TIME_EMB_DIM)
-    out = block(x, t_emb)
+    out = block(x, t_emb, jax.random.PRNGKey(0))
     assert out.shape == (8, 16, 16)
 
 
@@ -238,8 +238,8 @@ def test_resblock_biggan_time_conditioning():
         skip_rescale=True, key=KEY,
     )
     x = jnp.ones((4, 8, 8))
-    out0 = block(x, jnp.zeros(TIME_EMB_DIM))
-    out1 = block(x, jnp.ones(TIME_EMB_DIM))
+    out0 = block(x, jnp.zeros(TIME_EMB_DIM), jax.random.PRNGKey(0))
+    out1 = block(x, jnp.ones(TIME_EMB_DIM), jax.random.PRNGKey(0))
     assert not jnp.allclose(out0, out1)
 
 
@@ -257,8 +257,8 @@ def test_resblock_biggan_skip_rescale():
     )
     x = jnp.ones((4, 8, 8))
     t_emb = jnp.ones(TIME_EMB_DIM)
-    out_rescale = block_rescale(x, t_emb)
-    out_no_rescale = block_no_rescale(x, t_emb)
+    out_rescale = block_rescale(x, t_emb, jax.random.PRNGKey(0))
+    out_no_rescale = block_no_rescale(x, t_emb, jax.random.PRNGKey(0))
     assert jnp.allclose(out_rescale * jnp.sqrt(2.0), out_no_rescale, atol=1e-5)
 
 
@@ -272,7 +272,7 @@ def test_resblock_biggan_output_finite():
     k, _ = jax.random.split(KEY)
     x = jax.random.normal(k, (4, 8, 8))
     t_emb = jax.random.normal(k, (TIME_EMB_DIM,))
-    out = block(x, t_emb)
+    out = block(x, t_emb, jax.random.PRNGKey(0))
     assert jnp.all(jnp.isfinite(out))
 
 

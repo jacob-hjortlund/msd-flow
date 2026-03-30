@@ -40,7 +40,7 @@ def test_unet_output_shape_matches_input():
     model = UNet(**SMALL_CFG, key=KEY)
     x = jnp.ones((1, 8, 8))
     t = jnp.array(0.5)
-    out = model(t, x, jnp.empty(0), jnp.array(False))
+    out = model(t, x, jnp.empty(0), jnp.array(False), jax.random.PRNGKey(0))
     assert out.shape == x.shape, f"Expected {x.shape}, got {out.shape}"
 
 
@@ -48,8 +48,8 @@ def test_unet_different_t_gives_different_output():
     """Verify distinct timesteps produce distinct UNet outputs."""
     model = UNet(**SMALL_CFG, key=KEY)
     x = jnp.ones((1, 8, 8))
-    out0 = model(jnp.array(0.0), x, jnp.empty(0), jnp.array(False))
-    out1 = model(jnp.array(1.0), x, jnp.empty(0), jnp.array(False))
+    out0 = model(jnp.array(0.0), x, jnp.empty(0), jnp.array(False), jax.random.PRNGKey(0))
+    out1 = model(jnp.array(1.0), x, jnp.empty(0), jnp.array(False), jax.random.PRNGKey(0))
     assert not jnp.allclose(out0, out1)
 
 
@@ -58,7 +58,7 @@ def test_unet_output_finite():
     model = UNet(**SMALL_CFG, key=KEY)
     k, _ = jax.random.split(KEY)
     x = jax.random.normal(k, (1, 8, 8))
-    out = model(jnp.array(0.5), x, jnp.empty(0), jnp.array(False))
+    out = model(jnp.array(0.5), x, jnp.empty(0), jnp.array(False), jax.random.PRNGKey(0))
     assert jnp.all(jnp.isfinite(out))
 
 
@@ -71,7 +71,8 @@ def test_unet_filter_vmap_over_batch():
     ts = jnp.linspace(0.0, 1.0, B)
     conds = jnp.empty((B, 0))
     masks = jnp.zeros(B, dtype=bool)
-    outs = eqx.filter_vmap(model)(ts, xs, conds, masks)
+    keys = jax.random.split(jax.random.PRNGKey(0), B)
+    outs = eqx.filter_vmap(model)(ts, xs, conds, masks, keys)
     assert outs.shape == (B, 1, 8, 8)
 
 
@@ -82,7 +83,7 @@ def test_unet_cond_output_shape():
     t = jnp.array(0.5)
     cond = jnp.array([0.4])
     cond_mask = jnp.array(True)
-    out = model(t, x, cond, cond_mask)
+    out = model(t, x, cond, cond_mask, jax.random.PRNGKey(0))
     assert out.shape == x.shape
 
 
@@ -95,15 +96,15 @@ def test_unet_cond_vs_uncond_differ():
     cond_b = jnp.array([0.9])
 
     # With mask=False, cond value should be ignored (null embedding used)
-    out_uncond_a = model(t, x, cond_a, jnp.array(False))
-    out_uncond_b = model(t, x, cond_b, jnp.array(False))
+    out_uncond_a = model(t, x, cond_a, jnp.array(False), jax.random.PRNGKey(0))
+    out_uncond_b = model(t, x, cond_b, jnp.array(False), jax.random.PRNGKey(0))
     assert jnp.allclose(out_uncond_a, out_uncond_b), (
         "Unconditional outputs should be identical regardless of cond value"
     )
 
     # With mask=True, different cond values should give different outputs
-    out_cond_a = model(t, x, cond_a, jnp.array(True))
-    out_cond_b = model(t, x, cond_b, jnp.array(True))
+    out_cond_a = model(t, x, cond_a, jnp.array(True), jax.random.PRNGKey(0))
+    out_cond_b = model(t, x, cond_b, jnp.array(True), jax.random.PRNGKey(0))
     assert not jnp.allclose(out_cond_a, out_cond_b), (
         "Conditional outputs should differ for different cond values"
     )
@@ -114,8 +115,8 @@ def test_unet_cond_different_cond_gives_different_output():
     model = UNet(**SMALL_CFG_COND, key=KEY)
     x = jnp.ones((1, 8, 8))
     t = jnp.array(0.5)
-    out_a = model(t, x, jnp.array([0.1]), jnp.array(True))
-    out_b = model(t, x, jnp.array([0.9]), jnp.array(True))
+    out_a = model(t, x, jnp.array([0.1]), jnp.array(True), jax.random.PRNGKey(0))
+    out_b = model(t, x, jnp.array([0.9]), jnp.array(True), jax.random.PRNGKey(0))
     assert not jnp.allclose(out_a, out_b)
 
 
@@ -128,7 +129,8 @@ def test_unet_cond_vmap_over_batch():
     ts = jnp.linspace(0.0, 1.0, B)
     conds = jnp.array([[0.1], [0.5], [0.9]])
     masks = jnp.array([True, False, True])
-    outs = eqx.filter_vmap(model)(ts, xs, conds, masks)
+    keys = jax.random.split(jax.random.PRNGKey(0), B)
+    outs = eqx.filter_vmap(model)(ts, xs, conds, masks, keys)
     assert outs.shape == (B, 1, 8, 8)
 
 
@@ -139,7 +141,7 @@ def test_unet_cond_dim0_backward_compat():
     t = jnp.array(0.5)
     cond = jnp.empty(0)
     cond_mask = jnp.array(False)
-    out = model(t, x, cond, cond_mask)
+    out = model(t, x, cond, cond_mask, jax.random.PRNGKey(0))
     assert out.shape == x.shape
 
 
