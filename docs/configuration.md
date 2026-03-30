@@ -251,6 +251,11 @@ sample_fn: null                 # Set to a sampling callable to enable sample ge
 sample_every: 0                 # Generate samples every N epochs (0 = disabled)
 num_samples: 4                  # Number of samples to generate per event
 samples_dir: ${work_dir}/samples
+monitor: flow_matching_loss         # Bare metric name to monitor (looked up in val metrics first,
+                                    # then epoch metrics)
+monitor_mode: min                   # "min" (lower is better) or "max" (higher is better)
+early_stopping_patience: null       # null = disabled; set to a positive int to enable early stopping
+                                    # (counts validation cycles, not epochs)
 ```
 
 ### `configs/clearml/clearml.yaml` — Experiment Tracking
