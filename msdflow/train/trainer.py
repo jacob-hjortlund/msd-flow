@@ -396,6 +396,10 @@ def train(
     train_metrics: dict = {}
     epoch_metric_results: dict = {}
 
+    best_metric_value = float("inf") if monitor_mode == "min" else float("-inf")
+    patience_counter = 0
+    best_epoch = None
+
     for epoch in range(num_epochs):
         epoch_loss = 0.0
         epoch_start_time = time.perf_counter()
@@ -485,6 +489,51 @@ def train(
             total_val_time += val_time
             val_runs += 1
             avg_val_time = total_val_time / val_runs
+
+            # --- Best-model checkpointing and early stopping ---
+            current_monitor = val_metrics.get(monitor)
+            if current_monitor is None:
+                current_monitor = epoch_metric_results.get(monitor)
+            if current_monitor is None and (val_metrics or epoch_metric_results):
+                raise ValueError(
+                    f"monitor metric '{monitor}' not found in val_metrics "
+                    f"{list(val_metrics.keys())} or epoch_metric_results "
+                    f"{list(epoch_metric_results.keys())}"
+                )
+            if current_monitor is not None:
+                current_monitor = float(current_monitor)
+                is_improved = (
+                    current_monitor < best_metric_value
+                    if monitor_mode == "min"
+                    else current_monitor > best_metric_value
+                )
+                if is_improved:
+                    all_metrics = {monitor: current_monitor}
+                    all_metrics.update(
+                        {k: v for k, v in val_metrics.items() if k != monitor}
+                    )
+                    all_metrics.update(
+                        {k: v for k, v in epoch_metric_results.items() if k != monitor}
+                    )
+                    metric_str = " | ".join(
+                        f"{k} = {float(v):.4g}" for k, v in all_metrics.items()
+                    )
+                    logger.info(f"New best model at epoch {epoch + 1}: {metric_str}")
+                    os.makedirs(checkpoint_dir, exist_ok=True)
+                    best_raw_path = os.path.join(
+                        checkpoint_dir, f"model_epoch{epoch + 1}_best_raw.eqx"
+                    )
+                    best_ema_path = os.path.join(
+                        checkpoint_dir, f"model_epoch{epoch + 1}_best_ema.eqx"
+                    )
+                    eqx.tree_serialise_leaves(best_raw_path, state.model)
+                    eqx.tree_serialise_leaves(best_ema_path, ema_model)
+                    log_checkpoint(clearml_task, best_ema_path, epoch + 1)
+                    best_metric_value = current_monitor
+                    best_epoch = epoch + 1
+                    patience_counter = 0
+                else:
+                    patience_counter += 1
 
         if (epoch + 1) % checkpoint_every == 0:
             os.makedirs(checkpoint_dir, exist_ok=True)

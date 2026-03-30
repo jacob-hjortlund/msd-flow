@@ -1012,3 +1012,110 @@ def test_train_invalid_monitor_mode_raises(tmp_path):
             val_dataloader=val_dataloader,
             **kwargs,
         )
+
+
+def test_best_checkpoint_saved_on_first_val(tmp_path):
+    """Best-model checkpoint (raw + ema) is created after the first validation epoch."""
+    dataloader = list(_make_fake_dataloader())
+    val_dataloader = _fake_val_dataloader()
+    kwargs = _make_train_kwargs(num_epochs=1)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+    train(
+        model=SMALL_MODEL,
+        dataloader=dataloader,
+        val_dataloader=val_dataloader,
+        **kwargs,
+    )
+    best_ema = list(tmp_path.glob("*_best_ema.eqx"))
+    best_raw = list(tmp_path.glob("*_best_raw.eqx"))
+    assert len(best_ema) == 1
+    assert len(best_raw) == 1
+    assert "epoch1_best_ema" in best_ema[0].name
+
+
+def test_best_checkpoint_not_saved_when_no_improvement(tmp_path):
+    """No new best-model file is written when the metric does not improve."""
+    call_count = [0]
+
+    def plateau_metric(model, val_batches, key):
+        call_count[0] += 1
+        return 1.0  # constant — never beats itself in max mode after epoch 1
+
+    dataloader = list(_make_fake_dataloader())
+    val_dataloader = _fake_val_dataloader()
+    kwargs = _make_train_kwargs(num_epochs=3)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+    kwargs["epoch_metrics"] = [plateau_metric]
+    kwargs["monitor"] = "plateau_metric"
+    kwargs["monitor_mode"] = "max"
+    train(
+        model=SMALL_MODEL,
+        dataloader=dataloader,
+        val_dataloader=val_dataloader,
+        **kwargs,
+    )
+    best_ema = list(tmp_path.glob("*_best_ema.eqx"))
+    # Only epoch 1 improves (−∞ → 1.0); epochs 2 and 3 are tied
+    assert len(best_ema) == 1
+    assert "epoch1_best_ema" in best_ema[0].name
+
+
+def test_best_checkpoint_max_mode_saves_on_each_improvement(tmp_path):
+    """In max mode, a new best file is written every time the metric strictly improves."""
+    call_count = [0]
+
+    def rising_metric(model, val_batches, key):
+        call_count[0] += 1
+        return float(call_count[0])  # 1.0 → 2.0 → 3.0, always better
+
+    dataloader = list(_make_fake_dataloader())
+    val_dataloader = _fake_val_dataloader()
+    kwargs = _make_train_kwargs(num_epochs=3)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+    kwargs["epoch_metrics"] = [rising_metric]
+    kwargs["monitor"] = "rising_metric"
+    kwargs["monitor_mode"] = "max"
+    train(
+        model=SMALL_MODEL,
+        dataloader=dataloader,
+        val_dataloader=val_dataloader,
+        **kwargs,
+    )
+    best_ema = sorted(tmp_path.glob("*_best_ema.eqx"))
+    assert len(best_ema) == 3
+
+
+def test_train_unknown_monitor_raises_value_error(tmp_path):
+    """train() raises ValueError at the first val run when monitor is not a known metric."""
+    dataloader = list(_make_fake_dataloader())
+    val_dataloader = _fake_val_dataloader()
+    kwargs = _make_train_kwargs(num_epochs=1)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+    kwargs["monitor"] = "nonexistent_metric"
+    with pytest.raises(ValueError, match="nonexistent_metric"):
+        train(
+            model=SMALL_MODEL,
+            dataloader=dataloader,
+            val_dataloader=val_dataloader,
+            **kwargs,
+        )
+
+
+def test_best_checkpoint_log_shows_monitored_metric_first(tmp_path, caplog):
+    """Log line for a new best starts with the monitored metric, not another one."""
+    import logging
+
+    dataloader = list(_make_fake_dataloader())
+    val_dataloader = _fake_val_dataloader()
+    kwargs = _make_train_kwargs(num_epochs=1)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+    with caplog.at_level(logging.INFO, logger="msdflow.train.trainer"):
+        train(
+            model=SMALL_MODEL,
+            dataloader=dataloader,
+            val_dataloader=val_dataloader,
+            **kwargs,
+        )
+    best_logs = [r.message for r in caplog.records if "New best model" in r.message]
+    assert len(best_logs) == 1
+    assert best_logs[0].startswith("New best model at epoch 1: flow_matching_loss =")
