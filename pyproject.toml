@@ -25,6 +25,8 @@ dependencies = [
     "tqdm",
     "fastdigest",
     "requests",
+    "mkdocs-material",
+    "mkdocs-autorefs",
 ]
 
 [project.optional-dependencies]
