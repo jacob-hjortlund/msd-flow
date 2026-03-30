@@ -9,3 +9,10 @@ __pycache__/
 dist/
 build/
 *.pyc
+
+# wrangler files
+.wrangler
+.dev.vars*
+!.dev.vars.example
+.env*
+!.env.example
