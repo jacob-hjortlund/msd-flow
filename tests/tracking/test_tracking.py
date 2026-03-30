@@ -1,4 +1,4 @@
-"""Tests for src.tracking."""
+"""Tests for msdflow.tracking."""
 
 import os
 import numpy as np
@@ -28,7 +28,7 @@ def _cfg(
 
 
 def test_setup_task_returns_none_when_disabled():
-    from src.tracking import setup_task
+    from msdflow.tracking import setup_task
 
     result = setup_task(_cfg(enabled=False))
     assert result is None
@@ -36,9 +36,9 @@ def test_setup_task_returns_none_when_disabled():
 
 def test_setup_task_calls_task_init_when_enabled():
     mock_task = MagicMock()
-    with patch("src.tracking.Task") as MockTask:
+    with patch("msdflow.tracking.Task") as MockTask:
         MockTask.init.return_value = mock_task
-        from src.tracking import setup_task
+        from msdflow.tracking import setup_task
 
         result = setup_task(_cfg(enabled=True))
     MockTask.init.assert_called_once_with(project_name="msd-flow", task_name="train")
@@ -56,9 +56,9 @@ def test_setup_task_falls_back_to_offline_on_connection_error(tmp_path, monkeypa
             raise ConnectionError("server unreachable")
         return mock_task
 
-    with patch("src.tracking.Task") as MockTask:
+    with patch("msdflow.tracking.Task") as MockTask:
         MockTask.init.side_effect = fake_init
-        from src.tracking import setup_task
+        from msdflow.tracking import setup_task
 
         result = setup_task(_cfg(enabled=True, offline_dir=str(tmp_path / "offline")))
 
@@ -73,14 +73,14 @@ def test_setup_task_falls_back_to_offline_on_connection_error(tmp_path, monkeypa
 
 
 def test_log_metrics_noop_when_task_is_none():
-    from src.tracking import log_metrics
+    from msdflow.tracking import log_metrics
 
     # Should not raise
     log_metrics(None, {"train/loss": 0.5}, epoch=1)
 
 
 def test_log_metrics_calls_report_scalar_per_key():
-    from src.tracking import log_metrics
+    from msdflow.tracking import log_metrics
 
     mock_task = MagicMock()
     scalars = {"train/loss": 0.5, "val/loss": 0.3}
@@ -101,13 +101,13 @@ def test_log_metrics_calls_report_scalar_per_key():
 
 
 def test_log_checkpoint_noop_when_task_is_none():
-    from src.tracking import log_checkpoint
+    from msdflow.tracking import log_checkpoint
 
     log_checkpoint(None, "/tmp/checkpoint.eqx", epoch=1)
 
 
 def test_log_checkpoint_uploads_artifact():
-    from src.tracking import log_checkpoint
+    from msdflow.tracking import log_checkpoint
 
     mock_task = MagicMock()
     log_checkpoint(mock_task, "/tmp/model_epoch5_ema.eqx", epoch=5)
@@ -122,14 +122,14 @@ def test_log_checkpoint_uploads_artifact():
 
 
 def test_log_samples_noop_when_task_is_none():
-    from src.tracking import log_samples
+    from msdflow.tracking import log_samples
 
     images = np.zeros((4, 1, 8, 8), dtype=np.float32)
     log_samples(None, images, epoch=1)
 
 
 def test_log_samples_calls_report_image_per_sample():
-    from src.tracking import log_samples
+    from msdflow.tracking import log_samples
 
     mock_task = MagicMock()
     images = np.zeros((3, 1, 8, 8), dtype=np.float32)
@@ -151,7 +151,7 @@ def test_log_samples_calls_report_image_per_sample():
 
 
 def test_get_dataset_id_returns_none_when_task_is_none():
-    from src.tracking import get_dataset_id
+    from msdflow.tracking import get_dataset_id
 
     assert get_dataset_id(None, "TNG50", "abc123") is None
 
@@ -161,9 +161,9 @@ def test_get_dataset_id_queries_with_splits_tag():
     mock_task.get_project_name.return_value = "msd-flow"
     mock_dataset = MagicMock()
     mock_dataset.id = "found-id"
-    with patch("src.tracking.Dataset") as MockDataset:
+    with patch("msdflow.tracking.Dataset") as MockDataset:
         MockDataset.get.return_value = mock_dataset
-        from src.tracking import get_dataset_id
+        from msdflow.tracking import get_dataset_id
 
         result = get_dataset_id(mock_task, "TNG50", "abc123")
     assert result == "found-id"
@@ -177,9 +177,9 @@ def test_get_dataset_id_queries_with_splits_tag():
 def test_get_dataset_id_returns_none_when_not_found():
     mock_task = MagicMock()
     mock_task.get_project_name.return_value = "msd-flow"
-    with patch("src.tracking.Dataset") as MockDataset:
+    with patch("msdflow.tracking.Dataset") as MockDataset:
         MockDataset.get.side_effect = ValueError("not found")
-        from src.tracking import get_dataset_id
+        from msdflow.tracking import get_dataset_id
 
         result = get_dataset_id(mock_task, "TNG50", "abc123")
     assert result is None
@@ -191,7 +191,7 @@ def test_get_dataset_id_returns_none_when_not_found():
 
 
 def test_get_base_dataset_id_returns_none_when_task_is_none():
-    from src.tracking import get_base_dataset_id
+    from msdflow.tracking import get_base_dataset_id
 
     assert get_base_dataset_id(None, "TNG50", "dl_hash") is None
 
@@ -199,12 +199,12 @@ def test_get_base_dataset_id_returns_none_when_task_is_none():
 def test_get_base_dataset_id_returns_latest_by_created():
     mock_task = MagicMock()
     mock_task.get_project_name.return_value = "msd-flow"
-    with patch("src.tracking.Dataset") as MockDataset:
+    with patch("msdflow.tracking.Dataset") as MockDataset:
         MockDataset.list_datasets.return_value = [
             {"id": "old-id", "created": "2026-01-01T00:00:00"},
             {"id": "new-id", "created": "2026-03-01T00:00:00"},
         ]
-        from src.tracking import get_base_dataset_id
+        from msdflow.tracking import get_base_dataset_id
 
         result = get_base_dataset_id(mock_task, "TNG50", "dl_hash")
     assert result == "new-id"
@@ -218,9 +218,9 @@ def test_get_base_dataset_id_returns_latest_by_created():
 def test_get_base_dataset_id_returns_none_when_empty():
     mock_task = MagicMock()
     mock_task.get_project_name.return_value = "msd-flow"
-    with patch("src.tracking.Dataset") as MockDataset:
+    with patch("msdflow.tracking.Dataset") as MockDataset:
         MockDataset.list_datasets.return_value = []
-        from src.tracking import get_base_dataset_id
+        from msdflow.tracking import get_base_dataset_id
 
         result = get_base_dataset_id(mock_task, "TNG50", "dl_hash")
     assert result is None
@@ -232,7 +232,7 @@ def test_get_base_dataset_id_returns_none_when_empty():
 
 
 def test_register_dataset_returns_none_when_task_is_none():
-    from src.tracking import register_dataset
+    from msdflow.tracking import register_dataset
 
     assert register_dataset(None, "TNG50", "/data", "dl_hash", "full_hash") is None
 
@@ -242,9 +242,9 @@ def test_register_dataset_creates_with_both_tags(tmp_path):
     mock_task.get_project_name.return_value = "msd-flow"
     mock_dataset = MagicMock()
     mock_dataset.id = "new-id"
-    with patch("src.tracking.Dataset") as MockDataset:
+    with patch("msdflow.tracking.Dataset") as MockDataset:
         MockDataset.create.return_value = mock_dataset
-        from src.tracking import register_dataset
+        from msdflow.tracking import register_dataset
 
         result = register_dataset(
             mock_task, "TNG50", str(tmp_path), "dl_hash", "full_hash"
@@ -262,9 +262,9 @@ def test_register_dataset_creates_with_both_tags(tmp_path):
 def test_register_dataset_returns_none_on_exception():
     mock_task = MagicMock()
     mock_task.get_project_name.return_value = "msd-flow"
-    with patch("src.tracking.Dataset") as MockDataset:
+    with patch("msdflow.tracking.Dataset") as MockDataset:
         MockDataset.create.side_effect = RuntimeError("server error")
-        from src.tracking import register_dataset
+        from msdflow.tracking import register_dataset
 
         result = register_dataset(mock_task, "TNG50", "/data", "dl_hash", "full_hash")
     assert result is None
@@ -276,7 +276,7 @@ def test_register_dataset_returns_none_on_exception():
 
 
 def test_create_dataset_version_returns_none_when_task_is_none():
-    from src.tracking import create_dataset_version
+    from msdflow.tracking import create_dataset_version
 
     assert (
         create_dataset_version(None, "TNG50", "base-id", "/tmp/meta.csv", "dl", "full")
@@ -297,9 +297,9 @@ def test_create_dataset_version_creates_child_with_parent_and_tags(tmp_path):
         metadata_path, index=False
     )
 
-    with patch("src.tracking.Dataset") as MockDataset:
+    with patch("msdflow.tracking.Dataset") as MockDataset:
         MockDataset.create.return_value = mock_dataset
-        from src.tracking import create_dataset_version
+        from msdflow.tracking import create_dataset_version
 
         result = create_dataset_version(
             mock_task, "TNG50", "base-id", metadata_path, "dl_hash", "full_hash"
@@ -320,9 +320,9 @@ def test_create_dataset_version_creates_child_with_parent_and_tags(tmp_path):
 def test_create_dataset_version_returns_none_on_exception():
     mock_task = MagicMock()
     mock_task.get_project_name.return_value = "msd-flow"
-    with patch("src.tracking.Dataset") as MockDataset:
+    with patch("msdflow.tracking.Dataset") as MockDataset:
         MockDataset.create.side_effect = RuntimeError("server error")
-        from src.tracking import create_dataset_version
+        from msdflow.tracking import create_dataset_version
 
         result = create_dataset_version(
             mock_task, "TNG50", "base-id", "/tmp/meta.csv", "dl", "full"

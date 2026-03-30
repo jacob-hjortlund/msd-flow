@@ -67,8 +67,8 @@ class Downsample(eqx.Module):
 
     def __init__(self, channels: int, key: jax.Array):
         """Args:
-            channels: Number of input and output channels.
-            key: JAX PRNG key.
+        channels: Number of input and output channels.
+        key: JAX PRNG key.
         """
         self.conv = eqx.nn.Conv2d(
             channels, channels, kernel_size=3, stride=2, padding=1, key=key
@@ -94,9 +94,7 @@ class Upsample(eqx.Module):
     def __init__(self, channels: int, key: jax.Array):
         self.conv = eqx.nn.Conv2d(channels, channels, kernel_size=3, padding=1, key=key)
 
-    def __call__(
-        self, x: jax.Array, target_h: int, target_w: int
-    ) -> jax.Array:
+    def __call__(self, x: jax.Array, target_h: int, target_w: int) -> jax.Array:
         """Upsample spatial dimensions to a target size.
 
         Args:
@@ -132,12 +130,12 @@ class ResBlock(eqx.Module):
         key: jax.Array,
     ):
         """Args:
-            in_channels: Input channel count.
-            out_channels: Output channel count.
-            time_emb_dim: Dimensionality of the time embedding.
-            num_groups: Groups for ``GroupNorm``.
-            activation: Activation function.
-            key: JAX PRNG key.
+        in_channels: Input channel count.
+        out_channels: Output channel count.
+        time_emb_dim: Dimensionality of the time embedding.
+        num_groups: Groups for ``GroupNorm``.
+        activation: Activation function.
+        key: JAX PRNG key.
         """
         k1, k2, k3, k4 = jax.random.split(key, 4)
         self.conv1 = eqx.nn.Conv2d(in_channels, out_channels, 3, padding=1, key=k1)
@@ -178,9 +176,9 @@ class AttentionBlock(eqx.Module):
 
     def __init__(self, channels: int, num_heads: int, key: jax.Array):
         """Args:
-            channels: Channel dimension (used as query size).
-            num_heads: Number of attention heads.
-            key: JAX PRNG key.
+        channels: Channel dimension (used as query size).
+        num_heads: Number of attention heads.
+        key: JAX PRNG key.
         """
         self.attn = eqx.nn.MultiheadAttention(
             num_heads=num_heads, query_size=channels, key=key
@@ -267,8 +265,8 @@ class ResBlockBigGAN(eqx.Module):
     norm2: eqx.nn.GroupNorm
     conv2: eqx.nn.Conv2d
     skip_conv: Optional[eqx.nn.Conv2d]
+    dropout: float = eqx.nn.Dropout
     activation: Callable = eqx.field(static=True)
-    dropout: float = eqx.field(static=True)
     skip_rescale: bool = eqx.field(static=True)
     up: bool = eqx.field(static=True)
     down: bool = eqx.field(static=True)
@@ -287,24 +285,22 @@ class ResBlockBigGAN(eqx.Module):
         down: bool = False,
     ):
         """Args:
-            in_channels: Input channel count.
-            out_channels: Output channel count.
-            time_emb_dim: Dimensionality of the time embedding vector.
-            num_groups: Groups for GroupNorm.
-            activation: Activation function.
-            dropout: Dropout probability (stored for reference; not applied
-                in forward pass to keep the block deterministic).
-            skip_rescale: If True, divide residual sum by sqrt(2).
-            key: JAX PRNG key.
-            up: If True, upsample 2x within the block.
-            down: If True, downsample 2x within the block.
+        in_channels: Input channel count.
+        out_channels: Output channel count.
+        time_emb_dim: Dimensionality of the time embedding vector.
+        num_groups: Groups for GroupNorm.
+        activation: Activation function.
+        dropout: Dropout probability.
+        skip_rescale: If True, divide residual sum by sqrt(2).
+        key: JAX PRNG key.
+        up: If True, upsample 2x within the block.
+        down: If True, downsample 2x within the block.
         """
         if up and down:
             raise ValueError("Cannot set both up=True and down=True.")
 
         k1, k2, k3, k4 = jax.random.split(key, 4)
         self.activation = activation
-        self.dropout = dropout
         self.skip_rescale = skip_rescale
         self.up = up
         self.down = down
@@ -313,6 +309,7 @@ class ResBlockBigGAN(eqx.Module):
         self.conv1 = eqx.nn.Conv2d(in_channels, out_channels, 3, padding=1, key=k1)
         self.time_proj = eqx.nn.Linear(time_emb_dim, out_channels, key=k2)
         self.norm2 = eqx.nn.GroupNorm(num_groups, out_channels)
+        self.dropout = eqx.nn.Dropout(dropout)
         self.conv2 = eqx.nn.Conv2d(out_channels, out_channels, 3, padding=1, key=k3)
 
         self.skip_conv = (
@@ -328,18 +325,22 @@ class ResBlockBigGAN(eqx.Module):
             x = jax.image.resize(x, (c, h * 2, w * 2), method="nearest")
         elif self.down:
             x = x.reshape(1, *x.shape)
-            x = jax.lax.reduce_window(
-                x, 0.0, jax.lax.add, (1, 1, 2, 2), (1, 1, 2, 2), "SAME"
-            ) / 4.0
+            x = (
+                jax.lax.reduce_window(
+                    x, 0.0, jax.lax.add, (1, 1, 2, 2), (1, 1, 2, 2), "SAME"
+                )
+                / 4.0
+            )
             x = x.squeeze(0)
         return x
 
-    def __call__(self, x: jax.Array, time_emb: jax.Array) -> jax.Array:
+    def __call__(self, x: jax.Array, time_emb: jax.Array, key: jax.Array) -> jax.Array:
         """Apply the BigGAN residual block.
 
         Args:
             x: Input feature map of shape ``(C_in, H, W)``.
             time_emb: Time embedding vector of shape ``(time_emb_dim,)``.
+            key: JAX PRNG key.
 
         Returns:
             Output feature map of shape ``(C_out, H', W')`` where
@@ -352,6 +353,7 @@ class ResBlockBigGAN(eqx.Module):
         h = h + self.time_proj(time_emb).reshape(-1, 1, 1)
         h = self.norm2(h)
         h = self.activation(h)
+        h = self.dropout(h, key=key)
         h = self.conv2(h)
 
         skip = self._resample(x)
@@ -388,11 +390,11 @@ class AttnBlockNCSN(eqx.Module):
         key: jax.Array,
     ):
         """Args:
-            channels: Channel dimension.
-            num_heads: Number of attention heads.
-            num_groups: Groups for GroupNorm.
-            skip_rescale: If True, divide residual sum by sqrt(2).
-            key: JAX PRNG key.
+        channels: Channel dimension.
+        num_heads: Number of attention heads.
+        num_groups: Groups for GroupNorm.
+        skip_rescale: If True, divide residual sum by sqrt(2).
+        key: JAX PRNG key.
         """
         k1, k2 = jax.random.split(key)
         self.channels = channels

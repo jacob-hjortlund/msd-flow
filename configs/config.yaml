@@ -10,5 +10,5 @@ defaults:
 
 seed: 42
 image_size: 512
-metadata_columns: null
+metadata_columns: null # e.g. ["hdr_REDSHIFT"]
 work_dir: ${hydra:runtime.cwd}

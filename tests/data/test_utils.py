@@ -1,7 +1,7 @@
-"""Tests for src.data.utils hash functions."""
+"""Tests for msdflow.data.utils hash functions."""
 
 import pytest
-from src.data.utils import compute_download_hash, compute_full_hash
+from msdflow.data.utils import compute_download_hash, compute_full_hash
 
 
 BASE = dict(

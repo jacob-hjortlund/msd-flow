@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "msd-flow"
+version = "0.1.0"
+description = "Flow matching framework for galaxy image generation"
+requires-python = ">=3.10"
+dependencies = [
+    "jax",
+    "equinox",
+    "optax",
+    "diffrax",
+    "hydra-core",
+    "hydra-submitit-launcher",
+    "omegaconf",
+    "torch",
+    "torchvision",
+    "numpy<2.0.0",
+    "scipy",
+    "pandas",
+    "astropy",
+    "h5py",
+    "clearml",
+    "tqdm",
+    "fastdigest",
+    "requests",
+    "mkdocs-material",
+    "mkdocs-autorefs",
+    "matplotlib",
+    "seaborn",
+]
+
+[project.optional-dependencies]
+gpu = ["jax[cuda12]"]
+cpu = ["jax[cpu]"]
+docs = ["mkdocs-material", "mkdocs-autorefs"]
+dev = ["pytest", "pytest-cov"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["msdflow*"]

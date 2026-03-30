@@ -1,4 +1,4 @@
-"""Tests for src.model.ncsnpp."""
+"""Tests for msdflow.model.ncsnpp."""
 
 import jax
 import pytest
@@ -6,7 +6,7 @@ import pytest
 import equinox as eqx
 import jax.numpy as jnp
 
-from src.model.ncsnpp import NCSNpp
+from msdflow.model.ncsnpp import NCSNpp
 
 KEY = jax.random.PRNGKey(42)
 
@@ -186,8 +186,8 @@ def test_ncsnpp_cond_dim0_backward_compat():
     assert out.shape == (1, 8, 8)
 
 
-from src.flow.interpolate import sample_path
-from src.train.metrics import flow_matching_loss
+from msdflow.flow.interpolate import sample_path
+from msdflow.train.metrics import flow_matching_loss
 
 
 def test_ncsnpp_flow_matching_loss():

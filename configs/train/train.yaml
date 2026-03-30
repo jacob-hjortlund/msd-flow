@@ -1,10 +1,10 @@
-_target_: src.train.trainer.train
+_target_: msdflow.train.trainer.train
 _partial_: true
 loss_fn:
-  _target_: src.train.metrics.flow_matching_loss
+  _target_: msdflow.train.metrics.flow_matching_loss
   _partial_: true
 batch_metrics:
-  - _target_: src.train.metrics.flow_matching_loss
+  - _target_: msdflow.train.metrics.flow_matching_loss
     _partial_: true
 epoch_metrics: []
 num_train_eval_batches: 0
@@ -13,15 +13,15 @@ optimizer:
   _target_: optax.adamw
   learning_rate: 1.0e-4
 coupling:
-  _target_: src.flow.independent_coupling
+  _target_: msdflow.flow.independent_coupling
   _partial_: true
 time_sampler:
-  _target_: src.flow.sample_time_uniform
+  _target_: msdflow.flow.sample_time_uniform
   _partial_: true
   t_min: 0.0
   t_max: 1.0
 path_sampler:
-  _target_: src.flow.sample_path
+  _target_: msdflow.flow.sample_path
   _partial_: true
   sigma_0: 0.0
   sigma_1: 0.0

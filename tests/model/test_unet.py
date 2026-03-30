@@ -1,4 +1,4 @@
-"""Tests for src.model.unet."""
+"""Tests for msdflow.model.unet."""
 
 import jax
 import pytest
@@ -6,7 +6,7 @@ import pytest
 import equinox as eqx
 import jax.numpy as jnp
 
-from src.model.unet import UNet
+from msdflow.model.unet import UNet
 
 KEY = jax.random.PRNGKey(42)
 

@@ -20,7 +20,7 @@ from tqdm import tqdm
 from astropy.io import fits
 from hydra.utils import call
 from omegaconf import DictConfig, OmegaConf
-from src.utils import register_all_resolvers
+from msdflow.utils import register_all_resolvers
 from tqdm.contrib.logging import logging_redirect_tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 

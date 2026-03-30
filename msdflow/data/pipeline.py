@@ -12,9 +12,9 @@ from typing import Any
 from omegaconf import OmegaConf
 from hydra.utils import call
 
-from src.data.utils import compute_download_hash, compute_full_hash
-from src.data.split import assign_splits
-from src.tracking import (
+from msdflow.data.utils import compute_download_hash, compute_full_hash
+from msdflow.data.split import assign_splits
+from msdflow.tracking import (
     get_dataset_id,
     get_base_dataset_id,
     register_dataset,

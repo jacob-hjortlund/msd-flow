@@ -1,4 +1,4 @@
-_target_: src.data.download_tng.download_tng_data
+_target_: msdflow.data.download_tng.download_tng_data
 _partial_: true
 api_key: ${oc.env:TNG_API_KEY,null}
 version_ids: [0,1,2,3]

@@ -1,10 +1,10 @@
-"""Tests for src.data.split."""
+"""Tests for msdflow.data.split."""
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from src.data.split import assign_splits
+from msdflow.data.split import assign_splits
 
 
 @pytest.fixture

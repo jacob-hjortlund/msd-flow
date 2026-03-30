@@ -9,7 +9,7 @@ import jax.numpy as jnp
 
 import equinox as eqx
 
-from src.model.blocks import (
+from msdflow.model.blocks import (
     AttentionBlock,
     Downsample,
     ResBlock,
@@ -210,7 +210,12 @@ class UNet(eqx.Module):
         )
 
     def __call__(
-        self, t: jax.Array, x_t: jax.Array, cond: jax.Array, cond_mask: jax.Array
+        self,
+        t: jax.Array,
+        x_t: jax.Array,
+        cond: jax.Array,
+        cond_mask: jax.Array,
+        key: jax.Array,
     ) -> jax.Array:
         """Predict the velocity field or image at time *t*.
 
@@ -225,6 +230,8 @@ class UNet(eqx.Module):
                 embedding; ``False`` uses the learnable null embedding.
                 When ``cond_dim=0`` this argument is ignored; pass
                 ``jnp.array(False)`` by convention.
+            key: JAX PRNG key. Currently unused.
+
 
         Returns:
             Predicted velocity field (when ``prediction_type="velocity"``) or

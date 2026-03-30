@@ -1,4 +1,4 @@
-"""Tests for src.data.download_tng."""
+"""Tests for msdflow.data.download_tng."""
 
 import os
 
@@ -8,7 +8,7 @@ import pandas as pd
 from unittest.mock import patch, MagicMock
 from astropy.io import fits as astropy_fits
 
-from src.data.download_tng import (
+from msdflow.data.download_tng import (
     cleanup_batch,
     download_batch,
     download_tng_fits_file,
@@ -24,7 +24,7 @@ from src.data.download_tng import (
 # ------------------------------ extract_tng_urls ----------------------------- #
 
 
-@patch("src.data.download_tng.requests.get")
+@patch("msdflow.data.download_tng.requests.get")
 def test_extract_tng_urls_returns_list(mock_get):
     """Verify URL list is returned from a successful API response."""
     mock_response = MagicMock()
@@ -36,7 +36,7 @@ def test_extract_tng_urls_returns_list(mock_get):
     assert urls == ["url1", "url2", "url3"]
 
 
-@patch("src.data.download_tng.requests.get")
+@patch("msdflow.data.download_tng.requests.get")
 def test_extract_tng_urls_n_limits_results(mock_get):
     """Verify N parameter limits the number of URLs per combination."""
     mock_response = MagicMock()
@@ -48,7 +48,7 @@ def test_extract_tng_urls_n_limits_results(mock_get):
     assert urls == ["a", "b"]
 
 
-@patch("src.data.download_tng.requests.get")
+@patch("msdflow.data.download_tng.requests.get")
 def test_extract_tng_urls_http_error_skipped(mock_get):
     """Verify HTTP errors are logged and skipped without raising."""
     import requests as req
@@ -63,7 +63,7 @@ def test_extract_tng_urls_http_error_skipped(mock_get):
     assert urls == []
 
 
-@patch("src.data.download_tng.requests.get")
+@patch("msdflow.data.download_tng.requests.get")
 def test_extract_tng_urls_multiple_combos(mock_get):
     """Verify URLs are collected across all version-snapshot combinations."""
     mock_response = MagicMock()
@@ -105,7 +105,7 @@ def test_download_skips_existing_file(tmp_path):
     assert result == str(tmp_path / expected_name)
 
 
-@patch("src.data.download_tng.requests.get")
+@patch("msdflow.data.download_tng.requests.get")
 def test_download_success(mock_get, tmp_path):
     """Verify a successful download returns the file path."""
     url = "http://www.tng-project.org/api/TNG50-1/files/skirt_images_hsc_idealized_v0_72/subhalos/12345/image.fits"
@@ -203,7 +203,7 @@ def test_save_metadata_appends_to_existing(tmp_path):
 # ------------------------------ download_batch ------------------------------ #
 
 
-@patch("src.data.download_tng.download_tng_fits_file")
+@patch("msdflow.data.download_tng.download_tng_fits_file")
 def test_download_batch_filters_failures(mock_download, tmp_path):
     """Verify download_batch returns only successful paths."""
     mock_download.side_effect = [str(tmp_path / "a.fits"), None, str(tmp_path / "c.fits")]
