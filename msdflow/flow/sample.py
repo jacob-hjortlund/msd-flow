@@ -81,6 +81,10 @@ def sample(
     # Split off a key for model calls during integration (inference; key is
     # unused by UNet at present but required by the signature).
     key, model_key = jax.random.split(key)
+    # model_key is a single static key shared across all ODE solver steps.
+    # This is intentional: the UNet key is currently unused at inference
+    # (dropout is disabled via inference_mode). If a future model uses the
+    # key at inference, this will need to be re-split per step.
 
     def drift(t, y, args):
         # Python-level branch: evaluated at trace time, not a JAX conditional.

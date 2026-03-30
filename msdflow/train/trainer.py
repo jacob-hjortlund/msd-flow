@@ -54,7 +54,7 @@ def make_train_step(optimizer: optax.GradientTransformation, loss_fn: callable):
     Args:
         optimizer: Optax GradientTransformation.
         loss_fn:   Differentiable loss callable with signature
-                   ``(model, x_t, u_t, t, cond, cond_mask) -> scalar``.
+                   ``(model, x_t, u_t, t, cond, cond_mask, key) -> scalar``.
     """
 
     @eqx.filter_jit
@@ -155,7 +155,7 @@ def make_batch_metric_step(batch_metrics: list):
 
     Args:
         batch_metrics: List of callables, each with signature
-                       ``(model, x_t, u_t, t, cond, cond_mask) -> scalar``.
+                       ``(model, x_t, u_t, t, cond, cond_mask, key) -> scalar``.
 
     Returns:
         A ``filter_jit``-compiled callable with signature
@@ -310,10 +310,10 @@ def train(
         val_dataloader:         DataLoader for the validation split.
         optimizer:              Optax GradientTransformation.
         loss_fn:                Differentiable loss callable
-                                ``(model, x_t, u_t, t, cond, cond_mask) -> scalar``.
+                                ``(model, x_t, u_t, t, cond, cond_mask, key) -> scalar``.
                                 Drives gradient computation.
         batch_metrics:          List of callables with signature
-                                ``(model, x_t, u_t, t, cond, cond_mask) -> scalar``.
+                                ``(model, x_t, u_t, t, cond, cond_mask, key) -> scalar``.
                                 Evaluated every ``val_every`` epochs over the full
                                 val loader and ``num_train_eval_batches`` train batches.
         epoch_metrics:          List of callables with signature
