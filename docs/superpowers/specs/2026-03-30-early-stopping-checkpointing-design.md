@@ -46,8 +46,7 @@ Runs inside the existing `if (epoch + 1) % val_every == 0:` block, after all met
 1. **Lookup** — retrieve `current` value of `monitor` from `val_metrics` or `epoch_metric_results`. Raise `ValueError` if not found.
 2. **Improvement check** — `current < best_metric_value` (min mode) or `current > best_metric_value` (max mode).
 3. **If improved:**
-   - Capture `prev_value = best_metric_value` and `prev_epoch = best_epoch` (before updating state).
-   - Log: `New best model at epoch {epoch+1}: {monitor} = {current:.4g} (previous best: {prev_value:.4g} at epoch {prev_epoch})` — or `(first checkpoint)` if `prev_epoch is None`.
+   - Log a single line: `New best model at epoch {epoch+1}: {monitor} = {current:.4g} | {k1} = {v1:.4g} | ...` — the monitored metric appears first, followed by all other metrics from `val_metrics` and `epoch_metric_results` in their natural dict order.
    - Save `model_epoch{epoch+1}_best_raw.eqx` and `model_epoch{epoch+1}_best_ema.eqx` to `checkpoint_dir` using `eqx.tree_serialise_leaves`.
    - Call `log_checkpoint` for ClearML tracking.
    - Update `best_metric_value = current`, `best_epoch = epoch + 1`, reset `patience_counter = 0`.
@@ -102,7 +101,7 @@ New tests in `tests/train/test_trainer.py`:
 - `patience_counter` triggers early stopping at the correct validation cycle count.
 - `monitor_mode="max"` correctly identifies improvement.
 - Unknown `monitor` name raises `ValueError` at the first val run.
-- Log output contains the expected "new best" message with correct values.
+- Log output contains the "new best" message with the monitored metric first, followed by all other metrics.
 
 ---
 
