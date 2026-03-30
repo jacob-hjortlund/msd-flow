@@ -57,7 +57,7 @@ def test_make_train_step_dispatches_to_injected_loss_fn():
     optimizer = optax.adam(1e-3)
     state = make_train_state(SMALL_MODEL, optimizer)
 
-    def constant_loss(model, x_t, u_t, t, cond, cond_mask):
+    def constant_loss(model, x_t, u_t, t, cond, cond_mask, key):
         return jnp.array(42.0)
 
     train_step = make_train_step(optimizer, constant_loss)
@@ -71,7 +71,7 @@ def test_make_train_step_dispatches_to_injected_loss_fn():
     cond_mask = jnp.zeros(B, dtype=bool)
     x_t, u_t = sample_path(x0, x1, t)
 
-    _, loss = train_step(state, x_t, u_t, t, cond, cond_mask)
+    _, loss = train_step(state, x_t, u_t, t, cond, cond_mask, jax.random.PRNGKey(0))
     assert jnp.allclose(loss, jnp.array(42.0))
 
 
@@ -90,7 +90,7 @@ def test_train_step_returns_updated_state_and_loss():
     cond_mask = jnp.zeros(B, dtype=bool)
 
     x_t, u_t = sample_path(x0, x1, t)
-    new_state, loss = train_step(state, x_t, u_t, t, cond, cond_mask)
+    new_state, loss = train_step(state, x_t, u_t, t, cond, cond_mask, jax.random.PRNGKey(0))
 
     assert isinstance(new_state, TrainState)
     assert loss.shape == ()
@@ -111,7 +111,7 @@ def test_train_step_loss_is_finite():
     cond_mask = jnp.zeros(B, dtype=bool)
 
     x_t, u_t = sample_path(x0, x1, t)
-    _, loss = train_step(state, x_t, u_t, t, cond, cond_mask)
+    _, loss = train_step(state, x_t, u_t, t, cond, cond_mask, jax.random.PRNGKey(0))
     assert jnp.isfinite(loss)
 
 
@@ -130,7 +130,7 @@ def test_train_step_updates_model_params():
     cond_mask = jnp.zeros(B, dtype=bool)
 
     x_t, u_t = sample_path(x0, x1, t)
-    new_state, _ = train_step(state, x_t, u_t, t, cond, cond_mask)
+    new_state, _ = train_step(state, x_t, u_t, t, cond, cond_mask, jax.random.PRNGKey(0))
 
     # At least one parameter should have changed
     orig_leaves = jax.tree_util.tree_leaves(eqx.filter(state.model, eqx.is_array))
@@ -195,7 +195,7 @@ def test_make_batch_metric_step_returns_dict_keyed_by_fn_name():
     cond_mask = jnp.zeros(B, dtype=bool)
     x_t, u_t = sample_path(x0, x1, t)
 
-    result = step(SMALL_MODEL, x_t, u_t, t, cond, cond_mask)
+    result = step(SMALL_MODEL, x_t, u_t, t, cond, cond_mask, jax.random.PRNGKey(0))
     assert isinstance(result, dict)
     assert "flow_matching_loss" in result
 
@@ -212,7 +212,7 @@ def test_make_batch_metric_step_values_are_scalar_jax_arrays():
     cond_mask = jnp.zeros(B, dtype=bool)
     x_t, u_t = sample_path(x0, x1, t)
 
-    result = step(SMALL_MODEL, x_t, u_t, t, cond, cond_mask)
+    result = step(SMALL_MODEL, x_t, u_t, t, cond, cond_mask, jax.random.PRNGKey(0))
     for v in result.values():
         assert isinstance(v, jax.Array)
         assert v.shape == ()
@@ -221,7 +221,7 @@ def test_make_batch_metric_step_values_are_scalar_jax_arrays():
 def test_make_batch_metric_step_multiple_metrics_all_keys_present():
     """make_batch_metric_step with two distinct metrics returns both keys."""
 
-    def dummy_metric(model, x_t, u_t, t, cond, cond_mask):
+    def dummy_metric(model, x_t, u_t, t, cond, cond_mask, key):
         return jnp.array(0.0)
 
     step = make_batch_metric_step([_fml, dummy_metric])
@@ -234,7 +234,7 @@ def test_make_batch_metric_step_multiple_metrics_all_keys_present():
     cond_mask = jnp.zeros(B, dtype=bool)
     x_t, u_t = sample_path(x0, x1, t)
 
-    result = step(SMALL_MODEL, x_t, u_t, t, cond, cond_mask)
+    result = step(SMALL_MODEL, x_t, u_t, t, cond, cond_mask, jax.random.PRNGKey(0))
     assert "flow_matching_loss" in result
     assert "dummy_metric" in result
 
@@ -242,10 +242,10 @@ def test_make_batch_metric_step_multiple_metrics_all_keys_present():
 def test_make_batch_metric_step_raises_on_duplicate_names():
     """make_batch_metric_step must raise ValueError for duplicate metric names."""
 
-    def my_metric(model, x_t, u_t, t, cond, cond_mask):
+    def my_metric(model, x_t, u_t, t, cond, cond_mask, key):
         return jnp.array(0.0)
 
-    def my_metric_copy(model, x_t, u_t, t, cond, cond_mask):  # same __name__ via rename
+    def my_metric_copy(model, x_t, u_t, t, cond, cond_mask, key):  # same __name__ via rename
         return jnp.array(1.0)
     my_metric_copy.__name__ = "my_metric"
 
@@ -370,7 +370,7 @@ def test_train_step_with_cond():
     cond_mask = jnp.ones(B, dtype=bool)
 
     x_t, u_t = sample_path(x0, x1, t)
-    new_state, loss = train_step(state, x_t, u_t, t, cond, cond_mask)
+    new_state, loss = train_step(state, x_t, u_t, t, cond, cond_mask, jax.random.PRNGKey(0))
     assert isinstance(new_state, TrainState)
     assert loss.shape == ()
     assert jnp.isfinite(loss)
@@ -391,7 +391,7 @@ def test_train_step_with_cond_dropped():
     cond_mask = jnp.array([True, False])
 
     x_t, u_t = sample_path(x0, x1, t)
-    new_state, loss = train_step(state, x_t, u_t, t, cond, cond_mask)
+    new_state, loss = train_step(state, x_t, u_t, t, cond, cond_mask, jax.random.PRNGKey(0))
     assert isinstance(new_state, TrainState)
     assert loss.shape == ()
     assert jnp.isfinite(loss)
@@ -480,7 +480,7 @@ def test_prepare_batch_output_shapes():
     batch = (images, meta)
 
     key = jax.random.PRNGKey(0)
-    t, x_t, u_t, cond, cond_mask = prepare_batch(
+    t, x_t, u_t, cond, cond_mask, _ = prepare_batch(
         batch=batch,
         key=key,
         coupling=independent_coupling,
@@ -504,7 +504,7 @@ def test_prepare_batch_times_in_range():
     batch = (images, meta)
 
     key = jax.random.PRNGKey(1)
-    t, _, _, _, _ = prepare_batch(
+    t, _, _, _, _, _ = prepare_batch(
         batch=batch,
         key=key,
         coupling=independent_coupling,
@@ -524,7 +524,7 @@ def test_prepare_batch_p_uncond_one_masks_all():
     batch = (images, meta)
 
     key = jax.random.PRNGKey(2)
-    _, _, _, _, cond_mask = prepare_batch(
+    _, _, _, _, cond_mask, _ = prepare_batch(
         batch=batch,
         key=key,
         coupling=independent_coupling,
@@ -544,7 +544,7 @@ def test_prepare_batch_p_uncond_zero_keeps_all():
     batch = (images, meta)
 
     key = jax.random.PRNGKey(3)
-    _, _, _, _, cond_mask = prepare_batch(
+    _, _, _, _, cond_mask, _ = prepare_batch(
         batch=batch,
         key=key,
         coupling=independent_coupling,
@@ -570,8 +570,8 @@ def test_prepare_batch_different_keys_give_different_results():
         path_sampler=partial(sample_path),
         p_uncond=0.0,
     )
-    _, x_t_a, _, _, _ = prepare_batch(key=jax.random.PRNGKey(0), **kwargs)
-    _, x_t_b, _, _, _ = prepare_batch(key=jax.random.PRNGKey(1), **kwargs)
+    _, x_t_a, _, _, _, _ = prepare_batch(key=jax.random.PRNGKey(0), **kwargs)
+    _, x_t_b, _, _, _, _ = prepare_batch(key=jax.random.PRNGKey(1), **kwargs)
     assert not jnp.allclose(x_t_a, x_t_b)
 
 
@@ -658,7 +658,7 @@ def test_batch_metric_loop_num_batches_limit():
 def test_batch_metric_loop_returns_mean_not_sum():
     """batch_metric_loop must return the mean, not the sum, across batches."""
 
-    def simple_metric(model, x_t, u_t, t, cond, cond_mask):
+    def simple_metric(model, x_t, u_t, t, cond, cond_mask, key):
         """Metric that returns a simple value based on batch size."""
         # Return batch size as the metric value
         return jnp.array(float(x_t.shape[0]))
@@ -796,7 +796,7 @@ def test_train_runs_with_clearml_task_none(tmp_path):
         dataloader=dl,
         val_dataloader=dl,
         optimizer=OPTIMIZER,
-        loss_fn=lambda model, x_t, u_t, t, cond, cond_mask: jnp.mean(x_t),
+        loss_fn=lambda model, x_t, u_t, t, cond, cond_mask, key: jnp.mean(x_t),
         batch_metrics=[],
         epoch_metrics=[],
         coupling=_COUPLING,
@@ -829,7 +829,7 @@ def test_train_raises_if_sample_fn_set_but_no_samples_dir():
             dataloader=dl,
             val_dataloader=dl,
             optimizer=OPTIMIZER,
-            loss_fn=lambda model, x_t, u_t, t, cond, cond_mask: jnp.mean(x_t),
+            loss_fn=lambda model, x_t, u_t, t, cond, cond_mask, key: jnp.mean(x_t),
             batch_metrics=[],
             epoch_metrics=[],
             coupling=_COUPLING,
@@ -863,7 +863,7 @@ def test_train_calls_log_metrics_when_task_provided(tmp_path):
             dataloader=dl,
             val_dataloader=dl,
             optimizer=OPTIMIZER,
-            loss_fn=lambda model, x_t, u_t, t, cond, cond_mask: jnp.mean(x_t),
+            loss_fn=lambda model, x_t, u_t, t, cond, cond_mask, key: jnp.mean(x_t),
             batch_metrics=[],
             epoch_metrics=[],
             coupling=_COUPLING,
@@ -898,7 +898,7 @@ def test_train_calls_log_checkpoint_when_task_provided(tmp_path):
             dataloader=dl,
             val_dataloader=dl,
             optimizer=OPTIMIZER,
-            loss_fn=lambda model, x_t, u_t, t, cond, cond_mask: jnp.mean(x_t),
+            loss_fn=lambda model, x_t, u_t, t, cond, cond_mask, key: jnp.mean(x_t),
             batch_metrics=[],
             epoch_metrics=[],
             coupling=_COUPLING,
@@ -934,7 +934,7 @@ def test_train_generates_samples_to_disk(tmp_path):
         dataloader=dl,
         val_dataloader=dl,
         optimizer=OPTIMIZER,
-        loss_fn=lambda model, x_t, u_t, t, cond, cond_mask: jnp.mean(x_t),
+        loss_fn=lambda model, x_t, u_t, t, cond, cond_mask, key: jnp.mean(x_t),
         batch_metrics=[],
         epoch_metrics=[],
         coupling=_COUPLING,
@@ -976,7 +976,7 @@ def test_train_skips_sampling_when_sample_every_is_zero(tmp_path):
         dataloader=dl,
         val_dataloader=dl,
         optimizer=OPTIMIZER,
-        loss_fn=lambda model, x_t, u_t, t, cond, cond_mask: jnp.mean(x_t),
+        loss_fn=lambda model, x_t, u_t, t, cond, cond_mask, key: jnp.mean(x_t),
         batch_metrics=[],
         epoch_metrics=[],
         coupling=_COUPLING,
