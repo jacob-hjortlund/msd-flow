@@ -1,0 +1,19 @@
+site_name: msd-flow
+site_description: Flow matching framework for galaxy image generation
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+
+nav:
+  - Home: index.md
+  - Installation: installation.md
+  - Configuration: configuration.md
+  - Training: training.md
+  - Implementing Metrics: metrics.md
+  - TODO: todo.md
+
+docs_dir: docs
