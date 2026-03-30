@@ -8,7 +8,7 @@ import jax.numpy as jnp
 # All metrics are plain callables configured via Hydra ``_target_``. Two
 # signatures are expected, depending on when the metric is evaluated:
 #
-#   Batch metric:  (model, x_t, u_t, t, cond, cond_mask) -> scalar
+#   Batch metric:  (model, x_t, u_t, t, cond, cond_mask, key) -> scalar
 #     Evaluated per-batch during validation. Receives prepared interpolant
 #     tensors. Must return a scalar JAX array. Used for logging and
 #     overfitting detection (train vs. val comparison).
@@ -55,6 +55,7 @@ def flow_matching_loss(
     t: jnp.ndarray,
     cond: jnp.ndarray,
     cond_mask: jnp.ndarray,
+    key: jax.Array,
 ) -> jnp.ndarray:
     """Compute the flow matching MSE loss.
 
@@ -77,6 +78,6 @@ def flow_matching_loss(
     Returns:
         Scalar mean squared error between predicted and target velocities.
     """
-    pred = eqx.filter_vmap(model)(t, x_t, cond, cond_mask)
+    pred = eqx.filter_vmap(model)(t, x_t, cond, cond_mask, key)
     v_t = _to_velocity(pred, x_t, t, model.prediction_type)
     return jnp.mean((v_t - u_t) ** 2)

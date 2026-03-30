@@ -65,9 +65,10 @@ def make_train_step(optimizer: optax.GradientTransformation, loss_fn: callable):
         t: jax.Array,
         cond: jax.Array,
         cond_mask: jax.Array,
+        key: jax.Array,
     ) -> tuple[TrainState, jax.Array]:
         loss, grads = eqx.filter_value_and_grad(loss_fn)(
-            state.model, x_t, u_t, t, cond, cond_mask
+            state.model, x_t, u_t, t, cond, cond_mask, key
         )
         updates, new_opt_state = optimizer.update(
             grads, state.opt_state, eqx.filter(state.model, eqx.is_array)
@@ -121,15 +122,16 @@ def prepare_batch(
         p_uncond:       Probability of dropping the condition per sample.
 
     Returns:
-        Tuple of (t, x_t, u_t, cond, cond_mask) ready for training step.
+        Tuple of (t, x_t, u_t, cond, cond_mask, dropout_keys) ready for training step.
     """
 
-    key_cpu, key_time, key_path = jax.random.split(key, 3)
+    key_cpu, key_time, key_path, dropout_key = jax.random.split(key, 4)
 
     images, meta = batch
     x1_np = images.numpy()
     cond_np = meta.numpy()
     B = x1_np.shape[0]
+    droupout_keys = jax.random.split(dropout_key, B)
 
     cpu_seed = int(jax.random.randint(key_cpu, shape=(), minval=0, maxval=2**31 - 1))
     rng = np.random.default_rng(cpu_seed)
@@ -145,7 +147,7 @@ def prepare_batch(
     cond = jnp.array(cond_np)
     cond_mask = jnp.array(cond_mask_np)
 
-    return t, x_t, u_t, cond, cond_mask
+    return t, x_t, u_t, cond, cond_mask, droupout_keys
 
 
 def make_batch_metric_step(batch_metrics: list):
@@ -181,9 +183,10 @@ def make_batch_metric_step(batch_metrics: list):
         t: jax.Array,
         cond: jax.Array,
         cond_mask: jax.Array,
+        key: jax.Array,
     ) -> dict:
         return {
-            name: fn(model, x_t, u_t, t, cond, cond_mask)
+            name: fn(model, x_t, u_t, t, cond, cond_mask, key)
             for name, fn in zip(names, batch_metrics)
         }
 
@@ -231,8 +234,8 @@ def batch_metric_loop(
             batch = next(data_iter)
         except StopIteration:
             break
-        batch_key, key = jax.random.split(key)
-        t, x_t, u_t, cond, cond_mask = prepare_batch(
+        batch_key, key = jax.random.split(key, 2)
+        t, x_t, u_t, cond, cond_mask, dropout_keys = prepare_batch(
             batch=batch,
             key=batch_key,
             coupling=coupling,
@@ -240,7 +243,7 @@ def batch_metric_loop(
             path_sampler=path_sampler,
             p_uncond=p_uncond,
         )
-        results = step_fn(ema_model, x_t, u_t, t, cond, cond_mask)
+        results = step_fn(ema_model, x_t, u_t, t, cond, cond_mask, dropout_keys)
         for k, v in results.items():
             totals[k] = totals.get(k, 0.0) + float(v)
         n_batches += 1
@@ -395,9 +398,9 @@ def train(
                     data_iter = iter(dataloader)
                     batch = next(data_iter)
 
-                batch_key, key = jax.random.split(key)
+                batch_key, key = jax.random.split(key, 2)
 
-                t, x_t, u_t, cond, cond_mask = prepare_batch(
+                t, x_t, u_t, cond, cond_mask, dropout_keys = prepare_batch(
                     batch=batch,
                     key=batch_key,
                     coupling=coupling,
@@ -406,10 +409,13 @@ def train(
                     p_uncond=p_uncond,
                 )
 
-                state, loss = train_step(state, x_t, u_t, t, cond, cond_mask)
+                state, loss = train_step(
+                    state, x_t, u_t, t, cond, cond_mask, dropout_keys
+                )
                 ema_model = ema_update(ema_model, state.model, ema_decay)
                 epoch_loss += float(loss)
 
+        ema_model = eqx.nn.inference_mode(ema_model, value=True)
         train_time = time.perf_counter() - epoch_start_time
         total_train_time += train_time
         avg_train_time = total_train_time / (epoch + 1)
@@ -473,7 +479,11 @@ def train(
             logger.info(f"Saved checkpoint: {ema_path}")
             log_checkpoint(clearml_task, ema_path, epoch + 1)
 
-        if sample_fn is not None and sample_every > 0 and (epoch + 1) % sample_every == 0:
+        if (
+            sample_fn is not None
+            and sample_every > 0
+            and (epoch + 1) % sample_every == 0
+        ):
             sample_key, key = jax.random.split(key)
             images = sample_fn(ema_model, sample_key, num_samples)
             epoch_samples_dir = os.path.join(samples_dir, f"epoch_{epoch + 1}")

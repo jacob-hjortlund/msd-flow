@@ -352,7 +352,12 @@ class NCSNpp(eqx.Module):
         )
 
     def __call__(
-        self, t: jax.Array, x_t: jax.Array, cond: jax.Array, cond_mask: jax.Array
+        self,
+        t: jax.Array,
+        x_t: jax.Array,
+        cond: jax.Array,
+        cond_mask: jax.Array,
+        key: jax.Array,
     ) -> jax.Array:
         """Predict the velocity field at time *t*.
 
@@ -367,6 +372,7 @@ class NCSNpp(eqx.Module):
                 embedding; ``False`` uses the null embedding.
                 When ``cond_dim=0`` this argument is ignored; pass
                 ``jnp.array(False)`` by convention.
+            key: JAX PRNG key.
 
         Returns:
             Predicted velocity field of shape ``(C, H, W)`` when
@@ -390,7 +396,8 @@ class NCSNpp(eqx.Module):
 
         for level in range(L):
             for _ in range(self.num_res_blocks):
-                h = self.encoder_blocks[block_idx](h, combined_emb)
+                subkey, key = jax.random.split(key)
+                h = self.encoder_blocks[block_idx](h, combined_emb, subkey)
                 block_idx += 1
                 if (
                     block_idx < len(self.encoder_blocks)
@@ -401,21 +408,24 @@ class NCSNpp(eqx.Module):
                 skips.append(h)
 
             if level < L - 1:
-                h = self.downsample_blocks[level](h, combined_emb)
+                subkey, key = jax.random.split(key)
+                h = self.downsample_blocks[level](h, combined_emb, subkey)
                 skips.append(h)
 
         # -- Bottleneck --
-        h = self.mid_block1(h, combined_emb)
+        key1, key2, key = jax.random.split(key, 3)
+        h = self.mid_block1(h, combined_emb, key1)
         h = self.mid_attn(h)
-        h = self.mid_block2(h, combined_emb)
+        h = self.mid_block2(h, combined_emb, key2)
 
         # -- Decoder: consume skip connections in reverse --
         dec_idx = 0
         for level in reversed(range(L)):
             for _ in range(self.num_res_blocks + 1):
                 skip = skips.pop()
+                subkey, key = jax.random.split(key)
                 h = jnp.concatenate([h, skip], axis=0)
-                h = self.decoder_blocks[dec_idx](h, combined_emb)
+                h = self.decoder_blocks[dec_idx](h, combined_emb, subkey)
                 dec_idx += 1
                 if dec_idx < len(self.decoder_blocks) and self.decoder_is_attn[dec_idx]:
                     h = self.decoder_blocks[dec_idx](h)
@@ -423,7 +433,8 @@ class NCSNpp(eqx.Module):
 
             if level > 0:
                 up_idx = L - 1 - level
-                h = self.upsample_blocks[up_idx](h, combined_emb)
+                subkey, key = jax.random.split(key)
+                h = self.upsample_blocks[up_idx](h, combined_emb, subkey)
 
         # -- Output head --
         h = self.final_norm(h)
