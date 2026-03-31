@@ -97,7 +97,7 @@ Override `max_workers` for faster downloads: `python train_model.py data.downloa
 
 ```yaml
 dataset_name: "TNG50"                              # Name tag used for directory organisation
-data_dir: "${hydra:runtime.cwd}/data"              # Root directory for processed dataset files
+data_dir: "${work_dir}/data"              # Root directory for processed dataset files
 seed: ${seed}                                      # Inherited from top-level seed for reproducibility
 ratios:
   train: 0.90                                      # Fraction of data assigned to the training split

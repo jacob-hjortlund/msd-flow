@@ -1,5 +1,5 @@
 dataset_name: "TNG50"
-data_dir: "${hydra:runtime.cwd}/data"
+data_dir: "${work_dir}/data"
 seed: ${seed}
 ratios:
   train: 0.9

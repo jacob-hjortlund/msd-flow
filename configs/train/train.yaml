@@ -30,7 +30,7 @@ num_steps_per_epoch: 0
 p_uncond: "${if_cond: ${metadata_columns}, 0.1, 1.0}"
 checkpoint_dir: ${work_dir}/checkpoints
 val_every: 1
-checkpoint_every: ${train.val_every}
+checkpoint_every: 10
 log_every: ${train.val_every}
 ema_decay: 0.9999
 sample_fn: null
@@ -39,4 +39,4 @@ num_samples: 4
 samples_dir: ${work_dir}/samples
 monitor: flow_matching_loss
 monitor_mode: min
-early_stopping_patience: null
+early_stopping_patience: 10
