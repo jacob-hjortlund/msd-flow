@@ -170,29 +170,70 @@ def _resolve_clearml(
     metadata_path = os.path.join(processed_dir, "metadata.csv")
     splits_hash_path = os.path.join(processed_dir, _SPLITS_HASH_FILE)
 
-    if os.path.exists(metadata_path):
-        if os.path.exists(splits_hash_path):
-            with open(splits_hash_path) as f:
-                stored = f.read().strip()
-            if stored == full_hash:
-                logger.info(
-                    "Case C: local dataset with matching metadata found at %s but no ClearML version. "
-                    "Registering new ClearML dataset version without re-download.",
-                    processed_dir,
-                )
-            else:
-                # Case D: full download
-                if skip_download:
-                    raise FileNotFoundError(
-                        f"skip_download=True but no ClearML dataset found for "
-                        f"download_hash={download_hash}"
-                    )
-                logger.info("Case D: downloading and registering new ClearML dataset")
-                call(download_cfg)(processed_dir=processed_dir)
+    # Determine if we have valid, matching local data
+    has_metadata = os.path.exists(metadata_path)
+    has_valid_hash = False
+
+    if has_metadata and os.path.exists(splits_hash_path):
+        with open(splits_hash_path) as f:
+            stored = f.read().strip()
+            has_valid_hash = stored == full_hash
+
+    # Logic Routing
+    if has_metadata and has_valid_hash:
+        logger.info(
+            "Case C: local dataset with matching metadata found at %s but no ClearML version. "
+            "Registering new ClearML dataset version without re-download.",
+            processed_dir,
+        )
+    else:
+        # Case D: We either have no data, missing hashes, or mismatched hashes. We must download.
+        if skip_download:
+            raise FileNotFoundError(
+                f"skip_download=True but valid local dataset not found for "
+                f"download_hash={download_hash}"
+            )
+
+        logger.info("Case D: downloading and registering new ClearML dataset")
+        call(download_cfg)(processed_dir=processed_dir)
+
+    # Now we are guaranteed to have the data downloaded (or we raised an error)
     assign_splits(processed_dir, seed=seed, ratios=ratios)
     new_id = register_dataset(
         task, dataset_name, processed_dir, download_hash, full_hash
     )
+
     if new_id:
         return Dataset.get(dataset_id=new_id, alias="raw_data").get_local_copy()
+
     return processed_dir
+
+    # metadata_path = os.path.join(processed_dir, "metadata.csv")
+    # splits_hash_path = os.path.join(processed_dir, _SPLITS_HASH_FILE)
+
+    # if os.path.exists(metadata_path):
+    #     if os.path.exists(splits_hash_path):
+    #         with open(splits_hash_path) as f:
+    #             stored = f.read().strip()
+    #         if stored == full_hash:
+    #             logger.info(
+    #                 "Case C: local dataset with matching metadata found at %s but no ClearML version. "
+    #                 "Registering new ClearML dataset version without re-download.",
+    #                 processed_dir,
+    #             )
+    #         else:
+    #             # Case D: full download
+    #             if skip_download:
+    #                 raise FileNotFoundError(
+    #                     f"skip_download=True but no ClearML dataset found for "
+    #                     f"download_hash={download_hash}"
+    #                 )
+    #             logger.info("Case D: downloading and registering new ClearML dataset")
+    #             call(download_cfg)(processed_dir=processed_dir)
+    # assign_splits(processed_dir, seed=seed, ratios=ratios)
+    # new_id = register_dataset(
+    #     task, dataset_name, processed_dir, download_hash, full_hash
+    # )
+    # if new_id:
+    #     return Dataset.get(dataset_id=new_id, alias="raw_data").get_local_copy()
+    # return processed_dir
