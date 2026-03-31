@@ -57,7 +57,7 @@ def test_make_train_step_dispatches_to_injected_loss_fn():
     optimizer = optax.adam(1e-3)
     state = make_train_state(SMALL_MODEL, optimizer)
 
-    def constant_loss(model, x_t, u_t, t, cond, cond_mask):
+    def constant_loss(model, x_t, u_t, t, cond, cond_mask, key):
         return jnp.array(42.0)
 
     train_step = make_train_step(optimizer, constant_loss)
@@ -71,7 +71,7 @@ def test_make_train_step_dispatches_to_injected_loss_fn():
     cond_mask = jnp.zeros(B, dtype=bool)
     x_t, u_t = sample_path(x0, x1, t)
 
-    _, loss = train_step(state, x_t, u_t, t, cond, cond_mask)
+    _, loss = train_step(state, x_t, u_t, t, cond, cond_mask, jax.random.PRNGKey(0))
     assert jnp.allclose(loss, jnp.array(42.0))
 
 
@@ -90,7 +90,7 @@ def test_train_step_returns_updated_state_and_loss():
     cond_mask = jnp.zeros(B, dtype=bool)
 
     x_t, u_t = sample_path(x0, x1, t)
-    new_state, loss = train_step(state, x_t, u_t, t, cond, cond_mask)
+    new_state, loss = train_step(state, x_t, u_t, t, cond, cond_mask, jax.random.PRNGKey(0))
 
     assert isinstance(new_state, TrainState)
     assert loss.shape == ()
@@ -111,7 +111,7 @@ def test_train_step_loss_is_finite():
     cond_mask = jnp.zeros(B, dtype=bool)
 
     x_t, u_t = sample_path(x0, x1, t)
-    _, loss = train_step(state, x_t, u_t, t, cond, cond_mask)
+    _, loss = train_step(state, x_t, u_t, t, cond, cond_mask, jax.random.PRNGKey(0))
     assert jnp.isfinite(loss)
 
 
@@ -130,7 +130,7 @@ def test_train_step_updates_model_params():
     cond_mask = jnp.zeros(B, dtype=bool)
 
     x_t, u_t = sample_path(x0, x1, t)
-    new_state, _ = train_step(state, x_t, u_t, t, cond, cond_mask)
+    new_state, _ = train_step(state, x_t, u_t, t, cond, cond_mask, jax.random.PRNGKey(0))
 
     # At least one parameter should have changed
     orig_leaves = jax.tree_util.tree_leaves(eqx.filter(state.model, eqx.is_array))
@@ -195,7 +195,7 @@ def test_make_batch_metric_step_returns_dict_keyed_by_fn_name():
     cond_mask = jnp.zeros(B, dtype=bool)
     x_t, u_t = sample_path(x0, x1, t)
 
-    result = step(SMALL_MODEL, x_t, u_t, t, cond, cond_mask)
+    result = step(SMALL_MODEL, x_t, u_t, t, cond, cond_mask, jax.random.PRNGKey(0))
     assert isinstance(result, dict)
     assert "flow_matching_loss" in result
 
@@ -212,7 +212,7 @@ def test_make_batch_metric_step_values_are_scalar_jax_arrays():
     cond_mask = jnp.zeros(B, dtype=bool)
     x_t, u_t = sample_path(x0, x1, t)
 
-    result = step(SMALL_MODEL, x_t, u_t, t, cond, cond_mask)
+    result = step(SMALL_MODEL, x_t, u_t, t, cond, cond_mask, jax.random.PRNGKey(0))
     for v in result.values():
         assert isinstance(v, jax.Array)
         assert v.shape == ()
@@ -221,7 +221,7 @@ def test_make_batch_metric_step_values_are_scalar_jax_arrays():
 def test_make_batch_metric_step_multiple_metrics_all_keys_present():
     """make_batch_metric_step with two distinct metrics returns both keys."""
 
-    def dummy_metric(model, x_t, u_t, t, cond, cond_mask):
+    def dummy_metric(model, x_t, u_t, t, cond, cond_mask, key):
         return jnp.array(0.0)
 
     step = make_batch_metric_step([_fml, dummy_metric])
@@ -234,7 +234,7 @@ def test_make_batch_metric_step_multiple_metrics_all_keys_present():
     cond_mask = jnp.zeros(B, dtype=bool)
     x_t, u_t = sample_path(x0, x1, t)
 
-    result = step(SMALL_MODEL, x_t, u_t, t, cond, cond_mask)
+    result = step(SMALL_MODEL, x_t, u_t, t, cond, cond_mask, jax.random.PRNGKey(0))
     assert "flow_matching_loss" in result
     assert "dummy_metric" in result
 
@@ -242,10 +242,10 @@ def test_make_batch_metric_step_multiple_metrics_all_keys_present():
 def test_make_batch_metric_step_raises_on_duplicate_names():
     """make_batch_metric_step must raise ValueError for duplicate metric names."""
 
-    def my_metric(model, x_t, u_t, t, cond, cond_mask):
+    def my_metric(model, x_t, u_t, t, cond, cond_mask, key):
         return jnp.array(0.0)
 
-    def my_metric_copy(model, x_t, u_t, t, cond, cond_mask):  # same __name__ via rename
+    def my_metric_copy(model, x_t, u_t, t, cond, cond_mask, key):  # same __name__ via rename
         return jnp.array(1.0)
     my_metric_copy.__name__ = "my_metric"
 
@@ -370,7 +370,7 @@ def test_train_step_with_cond():
     cond_mask = jnp.ones(B, dtype=bool)
 
     x_t, u_t = sample_path(x0, x1, t)
-    new_state, loss = train_step(state, x_t, u_t, t, cond, cond_mask)
+    new_state, loss = train_step(state, x_t, u_t, t, cond, cond_mask, jax.random.PRNGKey(0))
     assert isinstance(new_state, TrainState)
     assert loss.shape == ()
     assert jnp.isfinite(loss)
@@ -391,7 +391,7 @@ def test_train_step_with_cond_dropped():
     cond_mask = jnp.array([True, False])
 
     x_t, u_t = sample_path(x0, x1, t)
-    new_state, loss = train_step(state, x_t, u_t, t, cond, cond_mask)
+    new_state, loss = train_step(state, x_t, u_t, t, cond, cond_mask, jax.random.PRNGKey(0))
     assert isinstance(new_state, TrainState)
     assert loss.shape == ()
     assert jnp.isfinite(loss)
@@ -480,7 +480,7 @@ def test_prepare_batch_output_shapes():
     batch = (images, meta)
 
     key = jax.random.PRNGKey(0)
-    t, x_t, u_t, cond, cond_mask = prepare_batch(
+    t, x_t, u_t, cond, cond_mask, _ = prepare_batch(
         batch=batch,
         key=key,
         coupling=independent_coupling,
@@ -504,7 +504,7 @@ def test_prepare_batch_times_in_range():
     batch = (images, meta)
 
     key = jax.random.PRNGKey(1)
-    t, _, _, _, _ = prepare_batch(
+    t, _, _, _, _, _ = prepare_batch(
         batch=batch,
         key=key,
         coupling=independent_coupling,
@@ -524,7 +524,7 @@ def test_prepare_batch_p_uncond_one_masks_all():
     batch = (images, meta)
 
     key = jax.random.PRNGKey(2)
-    _, _, _, _, cond_mask = prepare_batch(
+    _, _, _, _, cond_mask, _ = prepare_batch(
         batch=batch,
         key=key,
         coupling=independent_coupling,
@@ -544,7 +544,7 @@ def test_prepare_batch_p_uncond_zero_keeps_all():
     batch = (images, meta)
 
     key = jax.random.PRNGKey(3)
-    _, _, _, _, cond_mask = prepare_batch(
+    _, _, _, _, cond_mask, _ = prepare_batch(
         batch=batch,
         key=key,
         coupling=independent_coupling,
@@ -570,8 +570,8 @@ def test_prepare_batch_different_keys_give_different_results():
         path_sampler=partial(sample_path),
         p_uncond=0.0,
     )
-    _, x_t_a, _, _, _ = prepare_batch(key=jax.random.PRNGKey(0), **kwargs)
-    _, x_t_b, _, _, _ = prepare_batch(key=jax.random.PRNGKey(1), **kwargs)
+    _, x_t_a, _, _, _, _ = prepare_batch(key=jax.random.PRNGKey(0), **kwargs)
+    _, x_t_b, _, _, _, _ = prepare_batch(key=jax.random.PRNGKey(1), **kwargs)
     assert not jnp.allclose(x_t_a, x_t_b)
 
 
@@ -658,7 +658,7 @@ def test_batch_metric_loop_num_batches_limit():
 def test_batch_metric_loop_returns_mean_not_sum():
     """batch_metric_loop must return the mean, not the sum, across batches."""
 
-    def simple_metric(model, x_t, u_t, t, cond, cond_mask):
+    def simple_metric(model, x_t, u_t, t, cond, cond_mask, key):
         """Metric that returns a simple value based on batch size."""
         # Return batch size as the metric value
         return jnp.array(float(x_t.shape[0]))
@@ -796,7 +796,7 @@ def test_train_runs_with_clearml_task_none(tmp_path):
         dataloader=dl,
         val_dataloader=dl,
         optimizer=OPTIMIZER,
-        loss_fn=lambda model, x_t, u_t, t, cond, cond_mask: jnp.mean(x_t),
+        loss_fn=lambda model, x_t, u_t, t, cond, cond_mask, key: jnp.mean(x_t),
         batch_metrics=[],
         epoch_metrics=[],
         coupling=_COUPLING,
@@ -829,7 +829,7 @@ def test_train_raises_if_sample_fn_set_but_no_samples_dir():
             dataloader=dl,
             val_dataloader=dl,
             optimizer=OPTIMIZER,
-            loss_fn=lambda model, x_t, u_t, t, cond, cond_mask: jnp.mean(x_t),
+            loss_fn=lambda model, x_t, u_t, t, cond, cond_mask, key: jnp.mean(x_t),
             batch_metrics=[],
             epoch_metrics=[],
             coupling=_COUPLING,
@@ -863,7 +863,7 @@ def test_train_calls_log_metrics_when_task_provided(tmp_path):
             dataloader=dl,
             val_dataloader=dl,
             optimizer=OPTIMIZER,
-            loss_fn=lambda model, x_t, u_t, t, cond, cond_mask: jnp.mean(x_t),
+            loss_fn=lambda model, x_t, u_t, t, cond, cond_mask, key: jnp.mean(x_t),
             batch_metrics=[],
             epoch_metrics=[],
             coupling=_COUPLING,
@@ -898,7 +898,7 @@ def test_train_calls_log_checkpoint_when_task_provided(tmp_path):
             dataloader=dl,
             val_dataloader=dl,
             optimizer=OPTIMIZER,
-            loss_fn=lambda model, x_t, u_t, t, cond, cond_mask: jnp.mean(x_t),
+            loss_fn=lambda model, x_t, u_t, t, cond, cond_mask, key: jnp.mean(x_t),
             batch_metrics=[],
             epoch_metrics=[],
             coupling=_COUPLING,
@@ -934,7 +934,7 @@ def test_train_generates_samples_to_disk(tmp_path):
         dataloader=dl,
         val_dataloader=dl,
         optimizer=OPTIMIZER,
-        loss_fn=lambda model, x_t, u_t, t, cond, cond_mask: jnp.mean(x_t),
+        loss_fn=lambda model, x_t, u_t, t, cond, cond_mask, key: jnp.mean(x_t),
         batch_metrics=[],
         epoch_metrics=[],
         coupling=_COUPLING,
@@ -976,7 +976,7 @@ def test_train_skips_sampling_when_sample_every_is_zero(tmp_path):
         dataloader=dl,
         val_dataloader=dl,
         optimizer=OPTIMIZER,
-        loss_fn=lambda model, x_t, u_t, t, cond, cond_mask: jnp.mean(x_t),
+        loss_fn=lambda model, x_t, u_t, t, cond, cond_mask, key: jnp.mean(x_t),
         batch_metrics=[],
         epoch_metrics=[],
         coupling=_COUPLING,
@@ -996,3 +996,209 @@ def test_train_skips_sampling_when_sample_every_is_zero(tmp_path):
         samples_dir=str(tmp_path / "samples"),
     )
     assert call_count["n"] == 0
+
+
+def test_train_invalid_monitor_mode_raises(tmp_path):
+    """train() raises ValueError immediately if monitor_mode is not 'min' or 'max'."""
+    dataloader = list(_make_fake_dataloader())
+    val_dataloader = _fake_val_dataloader()
+    kwargs = _make_train_kwargs(num_epochs=1)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+    kwargs["monitor_mode"] = "diagonal"
+    with pytest.raises(ValueError, match="monitor_mode"):
+        train(
+            model=SMALL_MODEL,
+            dataloader=dataloader,
+            val_dataloader=val_dataloader,
+            **kwargs,
+        )
+
+
+def test_best_checkpoint_saved_on_first_val(tmp_path):
+    """Best-model checkpoint (raw + ema) is created after the first validation epoch."""
+    dataloader = list(_make_fake_dataloader())
+    val_dataloader = _fake_val_dataloader()
+    kwargs = _make_train_kwargs(num_epochs=1)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+    train(
+        model=SMALL_MODEL,
+        dataloader=dataloader,
+        val_dataloader=val_dataloader,
+        **kwargs,
+    )
+    best_ema = list(tmp_path.glob("*_best_ema.eqx"))
+    best_raw = list(tmp_path.glob("*_best_raw.eqx"))
+    assert len(best_ema) == 1
+    assert len(best_raw) == 1
+    assert "epoch1_best_ema" in best_ema[0].name
+
+
+def test_best_checkpoint_not_saved_when_no_improvement(tmp_path):
+    """No new best-model file is written when the metric does not improve."""
+    call_count = [0]
+
+    def plateau_metric(model, val_batches, key):
+        call_count[0] += 1
+        return 1.0  # constant — never beats itself in max mode after epoch 1
+
+    dataloader = list(_make_fake_dataloader())
+    val_dataloader = _fake_val_dataloader()
+    kwargs = _make_train_kwargs(num_epochs=3)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+    kwargs["epoch_metrics"] = [plateau_metric]
+    kwargs["monitor"] = "plateau_metric"
+    kwargs["monitor_mode"] = "max"
+    train(
+        model=SMALL_MODEL,
+        dataloader=dataloader,
+        val_dataloader=val_dataloader,
+        **kwargs,
+    )
+    best_ema = list(tmp_path.glob("*_best_ema.eqx"))
+    # Only epoch 1 improves (−∞ → 1.0); epochs 2 and 3 are tied
+    assert len(best_ema) == 1
+    assert "epoch1_best_ema" in best_ema[0].name
+
+
+def test_best_checkpoint_max_mode_saves_on_each_improvement(tmp_path):
+    """In max mode, a new best file is written every time the metric strictly improves."""
+    call_count = [0]
+
+    def rising_metric(model, val_batches, key):
+        call_count[0] += 1
+        return float(call_count[0])  # 1.0 → 2.0 → 3.0, always better
+
+    dataloader = list(_make_fake_dataloader())
+    val_dataloader = _fake_val_dataloader()
+    kwargs = _make_train_kwargs(num_epochs=3)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+    kwargs["epoch_metrics"] = [rising_metric]
+    kwargs["monitor"] = "rising_metric"
+    kwargs["monitor_mode"] = "max"
+    train(
+        model=SMALL_MODEL,
+        dataloader=dataloader,
+        val_dataloader=val_dataloader,
+        **kwargs,
+    )
+    best_ema = sorted(tmp_path.glob("*_best_ema.eqx"))
+    assert len(best_ema) == 3
+
+
+def test_train_unknown_monitor_raises_value_error(tmp_path):
+    """train() raises ValueError at the first val run when monitor is not a known metric."""
+    dataloader = list(_make_fake_dataloader())
+    val_dataloader = _fake_val_dataloader()
+    kwargs = _make_train_kwargs(num_epochs=1)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+    kwargs["monitor"] = "nonexistent_metric"
+    with pytest.raises(ValueError, match="nonexistent_metric"):
+        train(
+            model=SMALL_MODEL,
+            dataloader=dataloader,
+            val_dataloader=val_dataloader,
+            **kwargs,
+        )
+
+
+def test_best_checkpoint_log_shows_monitored_metric_first(tmp_path, caplog):
+    """Log line for a new best starts with the monitored metric, not another one."""
+    import logging
+
+    dataloader = list(_make_fake_dataloader())
+    val_dataloader = _fake_val_dataloader()
+    kwargs = _make_train_kwargs(num_epochs=1)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+    with caplog.at_level(logging.INFO, logger="msdflow.train.trainer"):
+        train(
+            model=SMALL_MODEL,
+            dataloader=dataloader,
+            val_dataloader=val_dataloader,
+            **kwargs,
+        )
+    best_logs = [r.message for r in caplog.records if "New best model" in r.message]
+    assert len(best_logs) == 1
+    assert best_logs[0].startswith("New best model at epoch 1: flow_matching_loss =")
+
+
+def test_early_stopping_triggers_at_correct_cycle(tmp_path):
+    """Training halts after patience consecutive val cycles without improvement."""
+    call_count = [0]
+
+    def constant_metric(model, val_batches, key):
+        call_count[0] += 1
+        return 1.0  # constant — never beats itself in max mode after first call
+
+    dataloader = list(_make_fake_dataloader())
+    val_dataloader = _fake_val_dataloader()
+    kwargs = _make_train_kwargs(num_epochs=10, num_steps_per_epoch=1)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+    kwargs["epoch_metrics"] = [constant_metric]
+    kwargs["monitor"] = "constant_metric"
+    kwargs["monitor_mode"] = "max"
+    kwargs["early_stopping_patience"] = 1
+    train(
+        model=SMALL_MODEL,
+        dataloader=dataloader,
+        val_dataloader=val_dataloader,
+        **kwargs,
+    )
+    # Epoch 1: 1.0 > −∞ → improved, patience_counter=0
+    # Epoch 2: 1.0 not > 1.0 → patience_counter=1 >= patience=1 → stop
+    assert call_count[0] == 2
+
+
+def test_early_stopping_not_triggered_when_disabled(tmp_path):
+    """When early_stopping_patience is None, all epochs run regardless of metric."""
+    call_count = [0]
+
+    def constant_metric(model, val_batches, key):
+        call_count[0] += 1
+        return 1.0
+
+    dataloader = list(_make_fake_dataloader())
+    val_dataloader = _fake_val_dataloader()
+    kwargs = _make_train_kwargs(num_epochs=3, num_steps_per_epoch=1)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+    kwargs["epoch_metrics"] = [constant_metric]
+    kwargs["monitor"] = "constant_metric"
+    kwargs["monitor_mode"] = "max"
+    kwargs["early_stopping_patience"] = None
+    train(
+        model=SMALL_MODEL,
+        dataloader=dataloader,
+        val_dataloader=val_dataloader,
+        **kwargs,
+    )
+    assert call_count[0] == 3
+
+
+def test_early_stopping_log_message(tmp_path, caplog):
+    """Early stopping emits a log message that names the metric and patience count."""
+    import logging
+
+    call_count = [0]
+
+    def constant_metric(model, val_batches, key):
+        call_count[0] += 1
+        return 1.0
+
+    dataloader = list(_make_fake_dataloader())
+    val_dataloader = _fake_val_dataloader()
+    kwargs = _make_train_kwargs(num_epochs=5, num_steps_per_epoch=1)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+    kwargs["epoch_metrics"] = [constant_metric]
+    kwargs["monitor"] = "constant_metric"
+    kwargs["monitor_mode"] = "max"
+    kwargs["early_stopping_patience"] = 1
+    with caplog.at_level(logging.INFO, logger="msdflow.train.trainer"):
+        train(
+            model=SMALL_MODEL,
+            dataloader=dataloader,
+            val_dataloader=val_dataloader,
+            **kwargs,
+        )
+    stop_logs = [r.message for r in caplog.records if "Early stopping" in r.message]
+    assert len(stop_logs) == 1
+    assert "constant_metric" in stop_logs[0]
+    assert "1" in stop_logs[0]  # patience count in message

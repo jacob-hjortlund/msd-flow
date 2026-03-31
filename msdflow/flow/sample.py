@@ -78,6 +78,14 @@ def sample(
         _cond = cond
         _mask = mask_true
 
+    # Split off a key for model calls during integration (inference; key is
+    # unused by UNet at present but required by the signature).
+    key, model_key = jax.random.split(key)
+    # model_key is a single static key shared across all ODE solver steps.
+    # This is intentional: the UNet key is currently unused at inference
+    # (dropout is disabled via inference_mode). If a future model uses the
+    # key at inference, this will need to be re-split per step.
+
     def drift(t, y, args):
         # Python-level branch: evaluated at trace time, not a JAX conditional.
         # guidance_scale must remain a Python float (never a jax.Array).
@@ -87,11 +95,11 @@ def sample(
         y_batch = y[None]  # (1, C, H, W)
 
         if guidance_scale == 1.0:
-            pred = model(t, y, _cond, _mask)
+            pred = model(t, y, _cond, _mask, model_key)
             return _to_velocity(pred[None], y_batch, t_batch, model.prediction_type)[0]
 
-        pred_cond = model(t, y, _cond, mask_true)
-        pred_uncond = model(t, y, _cond, mask_false)
+        pred_cond = model(t, y, _cond, mask_true, model_key)
+        pred_uncond = model(t, y, _cond, mask_false, model_key)
         v_cond = _to_velocity(pred_cond[None], y_batch, t_batch, model.prediction_type)[0]
         v_uncond = _to_velocity(pred_uncond[None], y_batch, t_batch, model.prediction_type)[0]
         return v_uncond + guidance_scale * (v_cond - v_uncond)

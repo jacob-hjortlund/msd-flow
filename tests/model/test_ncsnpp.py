@@ -50,7 +50,7 @@ def test_ncsnpp_output_shape_matches_input():
     model = NCSNpp(**SMALL_CFG, key=KEY)
     x = jnp.ones((1, 8, 8))
     t = jnp.array(0.5)
-    out = model(t, x, jnp.empty(0), jnp.array(False))
+    out = model(t, x, jnp.empty(0), jnp.array(False), jax.random.PRNGKey(0))
     assert out.shape == (1, 8, 8), f"Expected (1, 8, 8), got {out.shape}"
 
 
@@ -58,8 +58,8 @@ def test_ncsnpp_different_t_gives_different_output():
     """Verify distinct timesteps produce distinct outputs."""
     model = NCSNpp(**SMALL_CFG, key=KEY)
     x = jnp.ones((1, 8, 8))
-    out0 = model(jnp.array(0.0), x, jnp.empty(0), jnp.array(False))
-    out1 = model(jnp.array(1.0), x, jnp.empty(0), jnp.array(False))
+    out0 = model(jnp.array(0.0), x, jnp.empty(0), jnp.array(False), jax.random.PRNGKey(0))
+    out1 = model(jnp.array(1.0), x, jnp.empty(0), jnp.array(False), jax.random.PRNGKey(0))
     assert not jnp.allclose(out0, out1)
 
 
@@ -68,7 +68,7 @@ def test_ncsnpp_output_finite():
     model = NCSNpp(**SMALL_CFG, key=KEY)
     k, _ = jax.random.split(KEY)
     x = jax.random.normal(k, (1, 8, 8))
-    out = model(jnp.array(0.5), x, jnp.empty(0), jnp.array(False))
+    out = model(jnp.array(0.5), x, jnp.empty(0), jnp.array(False), jax.random.PRNGKey(0))
     assert jnp.all(jnp.isfinite(out))
 
 
@@ -79,7 +79,8 @@ def test_ncsnpp_filter_vmap_over_batch():
     k, _ = jax.random.split(KEY)
     xs = jax.random.normal(k, (B, 1, 8, 8))
     ts = jnp.linspace(0.0, 1.0, B)
-    outs = eqx.filter_vmap(model)(ts, xs, jnp.empty((B, 0)), jnp.zeros(B, dtype=bool))
+    keys = jax.random.split(jax.random.PRNGKey(0), B)
+    outs = eqx.filter_vmap(model)(ts, xs, jnp.empty((B, 0)), jnp.zeros(B, dtype=bool), keys)
     assert outs.shape == (B, 1, 8, 8)
 
 
@@ -94,7 +95,7 @@ def test_ncsnpp_three_levels():
     )
     model = NCSNpp(**cfg, key=KEY)
     x = jnp.ones((1, 8, 8))
-    out = model(jnp.array(0.5), x, jnp.empty(0), jnp.array(False))
+    out = model(jnp.array(0.5), x, jnp.empty(0), jnp.array(False), jax.random.PRNGKey(0))
     assert out.shape == (1, 8, 8)
 
 
@@ -103,7 +104,7 @@ def test_ncsnpp_multichannel():
     cfg = {**SMALL_CFG, "in_channels": 3, "out_channels": 3}
     model = NCSNpp(**cfg, key=KEY)
     x = jnp.ones((3, 8, 8))
-    out = model(jnp.array(0.5), x, jnp.empty(0), jnp.array(False))
+    out = model(jnp.array(0.5), x, jnp.empty(0), jnp.array(False), jax.random.PRNGKey(0))
     assert out.shape == (3, 8, 8)
 
 
@@ -114,7 +115,7 @@ def test_ncsnpp_gradient_flows():
     t = jnp.array(0.5)
 
     def loss_fn(m):
-        return jnp.sum(m(t, x, jnp.empty(0), jnp.array(False)))
+        return jnp.sum(m(t, x, jnp.empty(0), jnp.array(False), jax.random.PRNGKey(0)))
 
     grads = eqx.filter_grad(loss_fn)(model)
     grad_arrays = jax.tree.leaves(eqx.filter(grads, eqx.is_array))
@@ -129,7 +130,7 @@ def test_ncsnpp_cond_output_shape():
     t = jnp.array(0.5)
     cond = jnp.array([0.4])
     cond_mask = jnp.array(True)
-    out = model(t, x, cond, cond_mask)
+    out = model(t, x, cond, cond_mask, jax.random.PRNGKey(0))
     assert out.shape == (1, 8, 8)
 
 
@@ -142,15 +143,15 @@ def test_ncsnpp_cond_vs_uncond_differ():
     cond_b = jnp.array([0.9])
 
     # mask=False: cond value ignored, null embedding used — outputs must match
-    out_uncond_a = model(t, x, cond_a, jnp.array(False))
-    out_uncond_b = model(t, x, cond_b, jnp.array(False))
+    out_uncond_a = model(t, x, cond_a, jnp.array(False), jax.random.PRNGKey(0))
+    out_uncond_b = model(t, x, cond_b, jnp.array(False), jax.random.PRNGKey(0))
     assert jnp.allclose(out_uncond_a, out_uncond_b), (
         "Unconditional outputs should be identical regardless of cond value"
     )
 
     # mask=True: cond is used — different conds must give different outputs
-    out_cond_a = model(t, x, cond_a, jnp.array(True))
-    out_cond_b = model(t, x, cond_b, jnp.array(True))
+    out_cond_a = model(t, x, cond_a, jnp.array(True), jax.random.PRNGKey(0))
+    out_cond_b = model(t, x, cond_b, jnp.array(True), jax.random.PRNGKey(0))
     assert not jnp.allclose(out_cond_a, out_cond_b), (
         "Conditional outputs should differ for different cond values"
     )
@@ -165,7 +166,8 @@ def test_ncsnpp_cond_vmap_over_batch():
     ts = jnp.linspace(0.0, 1.0, B)
     conds = jnp.array([[0.1], [0.5], [0.9]])
     masks = jnp.array([True, False, True])
-    outs = eqx.filter_vmap(model)(ts, xs, conds, masks)
+    keys = jax.random.split(jax.random.PRNGKey(0), B)
+    outs = eqx.filter_vmap(model)(ts, xs, conds, masks, keys)
     assert outs.shape == (B, 1, 8, 8)
 
 
@@ -182,7 +184,7 @@ def test_ncsnpp_cond_dim0_backward_compat():
     t = jnp.array(0.5)
     cond = jnp.empty(0)
     cond_mask = jnp.array(False)
-    out = model(t, x, cond, cond_mask)
+    out = model(t, x, cond, cond_mask, jax.random.PRNGKey(0))
     assert out.shape == (1, 8, 8)
 
 
@@ -201,7 +203,7 @@ def test_ncsnpp_flow_matching_loss():
     cond = jnp.empty((B, 0))
     cond_mask = jnp.zeros(B, dtype=bool)
     x_t, u_t = sample_path(x0, x1, t)
-    loss = flow_matching_loss(model, x_t, u_t, t, cond, cond_mask)
+    loss = flow_matching_loss(model, x_t, u_t, t, cond, cond_mask, jax.random.split(jax.random.PRNGKey(0), B))
     assert jnp.isfinite(loss), f"Loss is not finite: {loss}"
     assert loss.shape == (), f"Loss should be scalar, got {loss.shape}"
 

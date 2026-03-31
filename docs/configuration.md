@@ -50,9 +50,6 @@ python train_model.py clearml.enabled=true
 # Override the learning rate
 python train_model.py train.optimizer.learning_rate=5e-5
 
-# Skip data download (use existing processed data)
-python train_model.py data.dataset.skip_download=true
-
 # Train at 256×256
 python train_model.py image_size=256
 ```
@@ -106,7 +103,6 @@ ratios:
   train: 0.90                                      # Fraction of data assigned to the training split
   val:   0.05                                      # Fraction assigned to the validation split
   test:  0.05                                      # Fraction assigned to the test split
-skip_download: false    # Set to true to skip download and reuse existing data
 ```
 
 ### `configs/data/dataloader.yaml` — Image Preprocessing Pipeline
@@ -255,6 +251,11 @@ sample_fn: null                 # Set to a sampling callable to enable sample ge
 sample_every: 0                 # Generate samples every N epochs (0 = disabled)
 num_samples: 4                  # Number of samples to generate per event
 samples_dir: ${work_dir}/samples
+monitor: flow_matching_loss         # Bare metric name to monitor (looked up in val metrics first,
+                                    # then epoch metrics)
+monitor_mode: min                   # "min" (lower is better) or "max" (higher is better)
+early_stopping_patience: null       # null = disabled; set to a positive int to enable early stopping
+                                    # (counts validation cycles, not epochs)
 ```
 
 ### `configs/clearml/clearml.yaml` — Experiment Tracking

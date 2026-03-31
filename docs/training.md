@@ -98,6 +98,32 @@ checkpoints/
   model_epoch10_ema.eqx    # EMA model weights — use this for inference
 ```
 
+### Best-Model Checkpointing (every `val_every` epochs)
+
+The training loop always tracks the best observed value of `monitor`. When a new best is found, two additional files are saved alongside the periodic checkpoints:
+
+```
+checkpoints/
+  model_epoch47_best_raw.eqx   # Best instantaneous weights
+  model_epoch47_best_ema.eqx   # Best EMA weights — use this for inference
+```
+
+The epoch stamp makes it unambiguous which checkpoint is the current best. Old best-checkpoint files are not deleted when a new best is found.
+
+A log line is emitted each time a new best is found, with the monitored metric listed first:
+
+```
+New best model at epoch 47: flow_matching_loss = 0.0312 | other_metric = 0.1234
+```
+
+### Early Stopping (optional)
+
+Set `train.early_stopping_patience` to a positive integer to stop training when the monitored metric fails to improve for that many consecutive **validation cycles** (each validation cycle runs every `val_every` epochs).
+
+Example: `val_every=5` and `early_stopping_patience=10` halts training after 50 epochs without improvement.
+
+Disabled by default (`early_stopping_patience: null`).
+
 ### Logging (every `log_every` epochs)
 
 | Key | Description |
@@ -126,9 +152,6 @@ python train_model.py train.optimizer.learning_rate=5e-5
 # Switch to UNet model
 python train_model.py model=unet
 
-# Skip data download (reuse existing processed data)
-python train_model.py data.dataset.skip_download=true
-
 # Validate and checkpoint less frequently (saves time)
 python train_model.py train.val_every=5
 
@@ -143,6 +166,12 @@ python train_model.py clearml.enabled=true clearml.task_name=my_run
 
 # Use logit-normal time sampling instead of uniform
 python train_model.py "train.time_sampler._target_=msdflow.flow.sample_time_logit_normal"
+
+# Enable early stopping after 20 validation cycles without improvement
+python train_model.py train.early_stopping_patience=20
+
+# Monitor a custom metric in max mode (higher is better)
+python train_model.py train.monitor=my_metric train.monitor_mode=max
 ```
 
 ---

@@ -54,7 +54,7 @@ def make_train_step(optimizer: optax.GradientTransformation, loss_fn: callable):
     Args:
         optimizer: Optax GradientTransformation.
         loss_fn:   Differentiable loss callable with signature
-                   ``(model, x_t, u_t, t, cond, cond_mask) -> scalar``.
+                   ``(model, x_t, u_t, t, cond, cond_mask, key) -> scalar``.
     """
 
     @eqx.filter_jit
@@ -155,7 +155,7 @@ def make_batch_metric_step(batch_metrics: list):
 
     Args:
         batch_metrics: List of callables, each with signature
-                       ``(model, x_t, u_t, t, cond, cond_mask) -> scalar``.
+                       ``(model, x_t, u_t, t, cond, cond_mask, key) -> scalar``.
 
     Returns:
         A ``filter_jit``-compiled callable with signature
@@ -298,6 +298,9 @@ def train(
     sample_every: int = 0,
     num_samples: int = 4,
     samples_dir: str | None = None,
+    monitor: str = "flow_matching_loss",
+    monitor_mode: str = "min",
+    early_stopping_patience: int | None = None,
 ):
     """Main training loop with EMA and periodic validation.
 
@@ -310,10 +313,10 @@ def train(
         val_dataloader:         DataLoader for the validation split.
         optimizer:              Optax GradientTransformation.
         loss_fn:                Differentiable loss callable
-                                ``(model, x_t, u_t, t, cond, cond_mask) -> scalar``.
+                                ``(model, x_t, u_t, t, cond, cond_mask, key) -> scalar``.
                                 Drives gradient computation.
         batch_metrics:          List of callables with signature
-                                ``(model, x_t, u_t, t, cond, cond_mask) -> scalar``.
+                                ``(model, x_t, u_t, t, cond, cond_mask, key) -> scalar``.
                                 Evaluated every ``val_every`` epochs over the full
                                 val loader and ``num_train_eval_batches`` train batches.
         epoch_metrics:          List of callables with signature
@@ -344,6 +347,14 @@ def train(
                                 0 disables sample generation.
         num_samples:            Number of images per sampling event.
         samples_dir:            Root directory for saving sample .npy files.
+        monitor (str): Name of the metric to monitor for best-model checkpointing
+            and early stopping. Looked up in val_metrics first, then
+            epoch_metric_results. Defaults to "flow_matching_loss".
+        monitor_mode (str): "min" if lower metric values are better, "max" if
+            higher values are better. Defaults to "min".
+        early_stopping_patience (int | None): Number of consecutive validation
+            cycles without improvement before training is halted. None disables
+            early stopping. Defaults to None.
 
     Returns:
         Trained EMA model.
@@ -353,6 +364,11 @@ def train(
     if sample_fn is not None and sample_every > 0 and samples_dir is None:
         raise ValueError(
             "samples_dir must be provided when sample_fn and sample_every > 0 are set"
+        )
+
+    if monitor_mode not in ("min", "max"):
+        raise ValueError(
+            f"monitor_mode must be 'min' or 'max', got {monitor_mode!r}"
         )
 
     train_step = make_train_step(optimizer, loss_fn)
@@ -379,6 +395,10 @@ def train(
     val_metrics: dict = {}
     train_metrics: dict = {}
     epoch_metric_results: dict = {}
+
+    best_metric_value = float("inf") if monitor_mode == "min" else float("-inf")
+    patience_counter = 0
+    best_epoch = None
 
     for epoch in range(num_epochs):
         epoch_loss = 0.0
@@ -469,6 +489,59 @@ def train(
             total_val_time += val_time
             val_runs += 1
             avg_val_time = total_val_time / val_runs
+
+            # --- Best-model checkpointing and early stopping ---
+            current_monitor = val_metrics.get(monitor)
+            if current_monitor is None:
+                current_monitor = epoch_metric_results.get(monitor)
+            if current_monitor is None and (val_metrics or epoch_metric_results):
+                raise ValueError(
+                    f"monitor metric '{monitor}' not found in val_metrics "
+                    f"{list(val_metrics.keys())} or epoch_metric_results "
+                    f"{list(epoch_metric_results.keys())}"
+                )
+            if current_monitor is not None:
+                current_monitor = float(current_monitor)
+                is_improved = (
+                    current_monitor < best_metric_value
+                    if monitor_mode == "min"
+                    else current_monitor > best_metric_value
+                )
+                if is_improved:
+                    all_metrics = {monitor: current_monitor}
+                    all_metrics.update(
+                        {k: v for k, v in val_metrics.items() if k != monitor}
+                    )
+                    all_metrics.update(
+                        {k: v for k, v in epoch_metric_results.items() if k != monitor}
+                    )
+                    metric_str = " | ".join(
+                        f"{k} = {float(v):.4g}" for k, v in all_metrics.items()
+                    )
+                    logger.info(f"New best model at epoch {epoch + 1}: {metric_str}")
+                    os.makedirs(checkpoint_dir, exist_ok=True)
+                    best_raw_path = os.path.join(
+                        checkpoint_dir, f"model_epoch{epoch + 1}_best_raw.eqx"
+                    )
+                    best_ema_path = os.path.join(
+                        checkpoint_dir, f"model_epoch{epoch + 1}_best_ema.eqx"
+                    )
+                    eqx.tree_serialise_leaves(best_raw_path, state.model)
+                    eqx.tree_serialise_leaves(best_ema_path, ema_model)
+                    log_checkpoint(clearml_task, best_ema_path, epoch + 1)
+                    best_metric_value = current_monitor
+                    best_epoch = epoch + 1
+                    patience_counter = 0
+                else:
+                    patience_counter += 1
+
+                if early_stopping_patience is not None and patience_counter >= early_stopping_patience:
+                    logger.info(
+                        f"Early stopping triggered at epoch {epoch + 1}: '{monitor}' "
+                        f"did not improve for {early_stopping_patience} consecutive "
+                        f"validation cycles."
+                    )
+                    break
 
         if (epoch + 1) % checkpoint_every == 0:
             os.makedirs(checkpoint_dir, exist_ok=True)
