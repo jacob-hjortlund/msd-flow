@@ -1,0 +1,40 @@
+dataset_class: msdflow.data.mnist.MNISTDataset
+data_dir: ${work_dir}/data/mnist
+batch_size: 128
+
+train_dataset:
+  _target_: ${data.dataloader.dataset_class}
+  root: ${data.dataloader.data_dir}
+  split: train
+  download: true
+
+val_dataset:
+  _target_: ${data.dataloader.dataset_class}
+  root: ${data.dataloader.data_dir}
+  split: val
+  download: true
+
+test_dataset:
+  _target_: ${data.dataloader.dataset_class}
+  root: ${data.dataloader.data_dir}
+  split: test
+  download: true
+
+train:
+  _target_: torch.utils.data.DataLoader
+  dataset: ${data.dataloader.train_dataset}
+  batch_size: ${data.dataloader.batch_size}
+  shuffle: true
+  drop_last: true
+
+val:
+  _target_: torch.utils.data.DataLoader
+  dataset: ${data.dataloader.val_dataset}
+  batch_size: ${data.dataloader.batch_size}
+  shuffle: false
+
+test:
+  _target_: torch.utils.data.DataLoader
+  dataset: ${data.dataloader.test_dataset}
+  batch_size: ${data.dataloader.batch_size}
+  shuffle: false
