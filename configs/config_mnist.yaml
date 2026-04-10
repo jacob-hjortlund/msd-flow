@@ -13,3 +13,15 @@ work_dir: ${hydra:runtime.cwd}
 train:
   checkpoint_dir: ${work_dir}/checkpoints/mnist
   samples_dir: ${work_dir}/samples/mnist
+
+# sample_mnist.py / mcmc_mnist.py parameters
+checkpoint: null
+
+mcmc:
+  sigma_blur: 2.0
+  sigma_noise: 0.05
+  sample_idx: 0
+  step_size: 0.01
+  num_warmup: 200
+  num_samples: 500
+  output_dir: ${work_dir}/samples_mcmc
