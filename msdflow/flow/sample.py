@@ -119,3 +119,60 @@ def sample(
     )
     # SaveAt(ts=[t1]) stores one time point; solution.ys shape is (1, C, H, W)
     return solution.ys[0]
+
+
+def integrate_from_z(
+    z: jax.Array,
+    model,
+    dt0: float = 0.05,
+    t0: float = 0.0,
+    t1: float = 1.0,
+) -> jax.Array:
+    """Integrate the flow ODE from an explicit initial latent ``z``.
+
+    Unlike :func:`sample`, this function accepts ``z`` as a direct argument
+    rather than drawing it from ``N(0, I)`` internally. This makes the output
+    differentiable w.r.t. ``z`` via ``jax.grad``, which is required for
+    gradient-based MCMC (e.g. NUTS).
+
+    Uses a fixed Euler solver with :class:`diffrax.DirectAdjoint` so that
+    gradients flow back through every ODE step without checkpointing.
+    ``dt0=0.05`` (20 steps) is deliberately coarse to keep each MCMC
+    step cheap; increase for higher fidelity samples after burn-in.
+
+    Args:
+        z:     Initial condition of shape ``(C, H, W)``.
+        model: Trained velocity-field network. Must already be in
+            inference mode (``eqx.nn.inference_mode``).
+        dt0:   Fixed Euler step size. Defaults to 0.05 (20 steps over [0,1]).
+        t0:    Integration start time. Defaults to 0.0.
+        t1:    Integration end time. Defaults to 1.0.
+
+    Returns:
+        Generated sample of shape ``(C, H, W)``.
+    """
+    mask_false = jnp.array(False)
+    cond_dummy = jnp.zeros(1)
+    # Static key: dropout is off in inference_mode so the key is unused.
+    model_key = jax.random.PRNGKey(0)
+
+    def drift(t, y, args):
+        t_batch = jnp.reshape(t, (1,))
+        y_batch = y[None]
+        pred = model(t, y, cond_dummy, mask_false, model_key)
+        return _to_velocity(pred[None], y_batch, t_batch, model.prediction_type)[0]
+
+    term = diffrax.ODETerm(drift)
+    saveat = diffrax.SaveAt(ts=jnp.array([t1]))
+    solution = diffrax.diffeqsolve(
+        term,
+        diffrax.Euler(),
+        t0=t0,
+        t1=t1,
+        dt0=dt0,
+        y0=z,
+        stepsize_controller=diffrax.ConstantStepSize(),
+        saveat=saveat,
+        adjoint=diffrax.DirectAdjoint(),
+    )
+    return solution.ys[0]
