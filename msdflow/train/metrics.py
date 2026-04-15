@@ -107,3 +107,70 @@ def _frechet_distance(
     if np.iscomplexobj(covmean):
         covmean = covmean.real
     return float(diff @ diff + np.trace(sigma_real + sigma_fake - 2 * covmean))
+
+
+@eqx.filter_jit
+def _extract_batch(encoder, images):
+    """Encode a batch of images into feature vectors.
+
+    Args:
+        encoder: Callable mapping a single image (C, H, W) to features (D,).
+        images:  Batch of images, shape (B, C, H, W).
+
+    Returns:
+        Feature matrix of shape (B, D).
+    """
+    return jax.vmap(encoder)(images)
+
+
+class FIDAccumulator:
+    """Accumulates streaming statistics for one encoder.
+
+    Maintains running sums for mean and covariance computation with O(D²)
+    memory. Does not store images or feature vectors beyond one batch.
+
+    Args:
+        encoder: Callable mapping a single image (C, H, W) to features (D,).
+            Must be JAX-vmappable.
+    """
+
+    def __init__(self, encoder: callable):
+        self.encoder = encoder
+        self._sum_features = None  # np.ndarray (D,)
+        self._sum_outer = None     # np.ndarray (D, D)
+        self._n = 0
+
+    def update(self, images: jax.Array) -> None:
+        """Encode a batch and update running accumulators.
+
+        Args:
+            images: Batch of images, shape (B, C, H, W).
+        """
+        features = np.asarray(_extract_batch(self.encoder, images))  # (B, D)
+        if self._sum_features is None:
+            D = features.shape[1]
+            self._sum_features = np.zeros(D, dtype=np.float64)
+            self._sum_outer = np.zeros((D, D), dtype=np.float64)
+        self._sum_features += features.sum(axis=0).astype(np.float64)
+        self._sum_outer += (features.astype(np.float64).T @ features.astype(np.float64))
+        self._n += features.shape[0]
+
+    def statistics(self) -> tuple[np.ndarray, np.ndarray, int]:
+        """Compute mean, covariance, and count from accumulated sums.
+
+        Returns:
+            Tuple of (mu, sigma, n) where mu has shape (D,), sigma has
+            shape (D, D), and n is the total image count.
+        """
+        if self._n == 0:
+            empty = np.array([])
+            return empty, np.array([[]]), 0
+        mu = self._sum_features / self._n
+        sigma = (self._sum_outer / self._n) - np.outer(mu, mu)
+        return mu, sigma, self._n
+
+    def reset(self) -> None:
+        """Zero all accumulators for reuse across epochs."""
+        self._sum_features = None
+        self._sum_outer = None
+        self._n = 0
