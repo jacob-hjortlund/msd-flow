@@ -102,35 +102,22 @@ def main(cfg: DictConfig):
         log_likelihood = -jnp.sum((y_obs - y_pred) ** 2) / (2.0 * sigma_noise ** 2)
         log_prior = -0.5 * jnp.sum(z_flat ** 2)
         return log_likelihood + log_prior
-
+              
     # ------------------------------------------------------------------
-    # 4. Initialise NUTS
+    # 4+5. Adaptive warm-up (replaces manual NUTS init + warmup loop)
     # ------------------------------------------------------------------
-    nuts = blackjax.nuts(
-        log_posterior,
-        step_size=step_size,
-        inverse_mass_matrix=jnp.ones(n_dims),
-    )
-
     rng_key = jr.PRNGKey(cfg.seed + 1)
-    rng_key, init_key = jr.split(rng_key)
+    rng_key, init_key, warmup_key = jr.split(rng_key, 3)
     z_init = jr.normal(init_key, (n_dims,))
-    state = nuts.init(z_init)
+
+    log.info("Adaptive warm-up: %d steps", num_warmup)
+    warmup = blackjax.window_adaptation(blackjax.nuts, log_posterior)
+    (state, parameters), warmup_info = warmup.run(warmup_key, z_init, num_warmup)
+
+    log.info("Adapted step_size: %.6f", float(parameters["step_size"]))
+    nuts = blackjax.nuts(log_posterior, **parameters)
+    state = nuts.init(state.position)
     step_fn = jax.jit(nuts.step)
-
-    # ------------------------------------------------------------------
-    # 5. Warm-up
-    # ------------------------------------------------------------------
-    log.info("Warm-up: %d steps", num_warmup)
-    for i in range(num_warmup):
-        rng_key, subkey = jr.split(rng_key)
-        state, info = step_fn(subkey, state)
-        if (i + 1) % 50 == 0:
-            log.info(
-                "  warm-up %d/%d  acceptance=%.3f",
-                i + 1, num_warmup, float(info.acceptance_rate),
-            )
-
     # ------------------------------------------------------------------
     # 6. Sampling
     # ------------------------------------------------------------------
@@ -142,7 +129,7 @@ def main(cfg: DictConfig):
         state, info = step_fn(subkey, state)
         all_z[i] = np.array(state.position)
 
-        if (i + 1) % 50 == 0:
+        if (i + 1) % 10 == 0:
             log.info(
                 "  step %d/%d  acceptance=%.3f  divergent=%s",
                 i + 1, num_samples,
