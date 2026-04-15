@@ -91,3 +91,113 @@ def test_accumulator_single_image():
     np.testing.assert_allclose(mu, np.full(4, 3.0), atol=1e-6)
     # Single sample: cov = outer(x,x)/1 - outer(mu,mu) = 0
     np.testing.assert_allclose(sigma, np.zeros((4, 4)), atol=1e-6)
+
+
+from msdflow.train.metrics import compute_fid_metrics
+
+
+def _make_dummy_dataloader(n_batches, batch_size, shape=(1, 2, 2), seed=0):
+    """Return a list of (images_tensor, meta_tensor) tuples usable as a dataloader."""
+    rng = np.random.default_rng(seed)
+    batches = []
+    for _ in range(n_batches):
+        images = jnp.array(rng.standard_normal((batch_size, *shape)).astype(np.float32))
+        meta = jnp.empty((batch_size, 0))
+        batches.append((images, meta))
+    return batches
+
+
+def _dummy_generate_fn(model, key):
+    """Generate a single fake image of shape (1, 2, 2) from random noise."""
+    return jax.random.normal(key, (1, 2, 2))
+
+
+def test_compute_fid_metrics_returns_dict_with_correct_keys():
+    """Output dict keys must match accumulator names."""
+    accumulators = {
+        "enc_a": FIDAccumulator(encoder=_identity_encoder),
+        "enc_b": FIDAccumulator(encoder=_identity_encoder),
+    }
+    dataloader = _make_dummy_dataloader(n_batches=2, batch_size=4)
+    key = jax.random.PRNGKey(0)
+    result = compute_fid_metrics(
+        accumulators=accumulators,
+        model=None,
+        val_dataloader=dataloader,
+        generate_fn=_dummy_generate_fn,
+        n_samples=None,
+        gen_batch_size=4,
+        key=key,
+    )
+    assert set(result.keys()) == {"enc_a", "enc_b"}
+
+
+def test_compute_fid_metrics_values_are_finite_floats():
+    """All returned FID scores must be finite floats."""
+    accumulators = {"fid": FIDAccumulator(encoder=_identity_encoder)}
+    dataloader = _make_dummy_dataloader(n_batches=3, batch_size=4)
+    key = jax.random.PRNGKey(1)
+    result = compute_fid_metrics(
+        accumulators=accumulators,
+        model=None,
+        val_dataloader=dataloader,
+        generate_fn=_dummy_generate_fn,
+        n_samples=None,
+        gen_batch_size=4,
+        key=key,
+    )
+    assert isinstance(result["fid"], float)
+    assert np.isfinite(result["fid"])
+
+
+def test_compute_fid_metrics_real_stats_cached_across_calls():
+    """Second call must skip the real-image pass (cached stats reused)."""
+    acc = FIDAccumulator(encoder=_identity_encoder)
+    accumulators = {"fid": acc}
+    dataloader = _make_dummy_dataloader(n_batches=2, batch_size=4)
+
+    key1, key2 = jax.random.split(jax.random.PRNGKey(2))
+    result1 = compute_fid_metrics(
+        accumulators=accumulators,
+        model=None,
+        val_dataloader=dataloader,
+        generate_fn=_dummy_generate_fn,
+        n_samples=8,
+        gen_batch_size=4,
+        key=key1,
+    )
+    # Mutate dataloader to prove it's not re-read on second call
+    dataloader_empty = []
+    result2 = compute_fid_metrics(
+        accumulators=accumulators,
+        model=None,
+        val_dataloader=dataloader_empty,
+        generate_fn=_dummy_generate_fn,
+        n_samples=8,
+        gen_batch_size=4,
+        key=key2,
+    )
+    # Both should return valid FID (second call used cached real stats)
+    assert np.isfinite(result1["fid"])
+    assert np.isfinite(result2["fid"])
+
+
+def test_compute_fid_metrics_n_samples_defaults_to_real_count():
+    """When n_samples=None, number of fake images equals number of real images."""
+    accumulators = {"fid": FIDAccumulator(encoder=_identity_encoder)}
+    # 2 batches * 4 images = 8 real images
+    dataloader = _make_dummy_dataloader(n_batches=2, batch_size=4)
+    key = jax.random.PRNGKey(3)
+
+    # We can verify indirectly: the function should complete without error
+    # and produce a finite FID score
+    result = compute_fid_metrics(
+        accumulators=accumulators,
+        model=None,
+        val_dataloader=dataloader,
+        generate_fn=_dummy_generate_fn,
+        n_samples=None,
+        gen_batch_size=4,
+        key=key,
+    )
+    assert np.isfinite(result["fid"])

@@ -175,3 +175,75 @@ class FIDAccumulator:
         self._sum_features = None
         self._sum_outer = None
         self._n = 0
+
+
+def compute_fid_metrics(
+    accumulators: dict[str, "FIDAccumulator"],
+    model,
+    val_dataloader,
+    generate_fn: callable,
+    n_samples: int | None,
+    gen_batch_size: int,
+    key: jax.Array,
+) -> dict[str, float]:
+    """Compute FID scores for one or more encoders.
+
+    Iterates the validation dataloader once (or skips if cached) and
+    generates fake images in chunks, dispatching each batch to all
+    accumulators. Returns one FID score per accumulator.
+
+    Args:
+        accumulators:    Named accumulators, one per encoder. Keys become
+            the output metric names.
+        model:           The generative model passed to ``generate_fn``.
+        val_dataloader:  Iterable yielding ``(images, meta)`` tuples.
+        generate_fn:     ``(model, key) -> jax.Array`` of shape ``(C, H, W)``.
+            One unconditional sample. Solver args baked in via partial.
+        n_samples:       Number of fake images. ``None`` matches real count.
+        gen_batch_size:  Images generated and encoded per chunk.
+        key:             PRNG key for generation.
+
+    Returns:
+        Dict mapping accumulator names to FID scores.
+    """
+    # --- Real-image pass (skip if all accumulators have cached stats) ---
+    all_cached = all(
+        hasattr(acc, "_cached_real") and acc._cached_real is not None
+        for acc in accumulators.values()
+    )
+    if not all_cached:
+        for acc in accumulators.values():
+            acc.reset()
+        for images, _meta in val_dataloader:
+            for acc in accumulators.values():
+                acc.update(images)
+        for acc in accumulators.values():
+            mu, sigma, n = acc.statistics()
+            acc._cached_real = (mu, sigma, n)
+            acc.reset()
+
+    # --- Determine n_samples ---
+    if n_samples is None:
+        n_samples = max(acc._cached_real[2] for acc in accumulators.values())
+
+    # --- Fake-image pass ---
+    for acc in accumulators.values():
+        acc.reset()
+
+    n_generated = 0
+    while n_generated < n_samples:
+        chunk_size = min(gen_batch_size, n_samples - n_generated)
+        key, *sub_keys = jax.random.split(key, chunk_size + 1)
+        fake_images = jnp.stack([generate_fn(model, k) for k in sub_keys])
+        for acc in accumulators.values():
+            acc.update(fake_images)
+        n_generated += chunk_size
+
+    # --- Compute FID per accumulator ---
+    results = {}
+    for name, acc in accumulators.items():
+        mu_real, sigma_real, _ = acc._cached_real
+        mu_fake, sigma_fake, _ = acc.statistics()
+        results[name] = _frechet_distance(mu_real, sigma_real, mu_fake, sigma_fake)
+
+    return results
