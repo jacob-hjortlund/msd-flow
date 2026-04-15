@@ -151,8 +151,9 @@ class FIDAccumulator:
             D = features.shape[1]
             self._sum_features = np.zeros(D, dtype=np.float64)
             self._sum_outer = np.zeros((D, D), dtype=np.float64)
-        self._sum_features += features.sum(axis=0).astype(np.float64)
-        self._sum_outer += (features.astype(np.float64).T @ features.astype(np.float64))
+        f64 = features.astype(np.float64)
+        self._sum_features += f64.sum(axis=0)
+        self._sum_outer += f64.T @ f64
         self._n += features.shape[0]
 
     def statistics(self) -> tuple[np.ndarray, np.ndarray, int]:
