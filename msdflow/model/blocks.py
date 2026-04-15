@@ -10,7 +10,7 @@ import jax
 import equinox as eqx
 import jax.numpy as jnp
 
-from typing import Callable, Optional
+from typing import Callable, Optional, Tuple, Sequence
 
 
 class SinusoidalEmbedding(eqx.Module):
@@ -81,7 +81,7 @@ class Downsample(eqx.Module):
             x: Input array of shape ``(C, H, W)``.
 
         Returns:
-            Array of shape ``(C, H/2, W/2)``.
+            sArray of shape ``(C, H/2, W/2)``.
         """
         return self.conv(x)
 
@@ -439,3 +439,400 @@ class AttnBlockNCSN(eqx.Module):
         if self.skip_rescale:
             out = out / jnp.sqrt(2.0)
         return out
+
+
+class Identity(eqx.Module):
+    def __call__(self, x, *, key=None):
+        return x
+
+
+class LayerNorm2d(eqx.Module):
+    """timm-style LayerNorm2d for inputs of shape (C, H, W).
+
+    Normalizes across channels only, independently at each spatial location.
+    """
+
+    weight: jax.Array
+    bias: jax.Array
+    eps: float = eqx.field(static=True)
+
+    def __init__(
+        self,
+        num_channels: int,
+        eps: float = 1e-6,
+        *,
+        dtype=jnp.float32,
+    ):
+        self.weight = jnp.ones((num_channels,), dtype=dtype)
+        self.bias = jnp.zeros((num_channels,), dtype=dtype)
+        self.eps = eps
+
+    def __call__(self, x: jax.Array) -> jax.Array:
+        # x: (C, H, W)
+        mean = jnp.mean(x, axis=0, keepdims=True)  # (1, H, W)
+        var = jnp.mean((x - mean) ** 2, axis=0, keepdims=True)  # (1, H, W)
+        x = (x - mean) / jnp.sqrt(var + self.eps)
+        x = x * self.weight[:, None, None] + self.bias[:, None, None]
+        return x
+
+
+class DropPath(eqx.Module):
+    """Sample-wise stochastic depth for unbatched (C,H,W) inputs.
+
+    Under vmap, this becomes normal per-example stochastic depth.
+    """
+
+    p: float = eqx.field(static=True)
+    inference: bool = eqx.field(static=True)
+
+    def __init__(self, p: float = 0.0, inference: bool = False):
+        self.p = p
+        self.inference = inference
+
+    def __call__(self, x: jax.Array, *, key: Optional[jax.Array] = None) -> jax.Array:
+        if self.inference or self.p == 0.0:
+            return x
+        if key is None:
+            raise ValueError("DropPath requires a PRNG key when p > 0.")
+        keep_prob = 1.0 - self.p
+        mask = jax.random.bernoulli(key, keep_prob, shape=(1, 1, 1))
+        return x * mask.astype(x.dtype) / keep_prob
+
+
+class ConvNeXtBlock(eqx.Module):
+    """ConvNeXt block for (C, H, W) inputs.
+
+    Matches the conv-MLP variant shown in your timm printout:
+      dwconv7x7 -> LayerNorm2d -> 1x1 conv -> GELU -> 1x1 conv -> gamma -> residual
+    """
+
+    conv_dw: eqx.nn.Conv2d
+    norm: LayerNorm2d
+    fc1: eqx.nn.Conv2d
+    fc2: eqx.nn.Conv2d
+    gamma: Optional[jax.Array]
+    drop_path: DropPath
+
+    def __init__(
+        self,
+        dim: int,
+        *,
+        mlp_ratio: int = 4,
+        kernel_size: int = 7,
+        ls_init_value: Optional[float] = 1e-6,
+        drop_path: float = 0.0,
+        inference: bool = False,
+        dtype=jnp.float32,
+        key: jax.Array,
+    ):
+        k1, k2, k3 = jax.random.split(key, 3)
+        hidden_dim = dim * mlp_ratio
+        padding = kernel_size // 2
+
+        self.conv_dw = eqx.nn.Conv2d(
+            in_channels=dim,
+            out_channels=dim,
+            kernel_size=kernel_size,
+            stride=1,
+            padding=padding,
+            groups=dim,
+            use_bias=True,
+            dtype=dtype,
+            key=k1,
+        )
+        self.norm = LayerNorm2d(dim, eps=1e-6, dtype=dtype)
+        self.fc1 = eqx.nn.Conv2d(
+            in_channels=dim,
+            out_channels=hidden_dim,
+            kernel_size=1,
+            stride=1,
+            padding=0,
+            use_bias=True,
+            dtype=dtype,
+            key=k2,
+        )
+        self.fc2 = eqx.nn.Conv2d(
+            in_channels=hidden_dim,
+            out_channels=dim,
+            kernel_size=1,
+            stride=1,
+            padding=0,
+            use_bias=True,
+            dtype=dtype,
+            key=k3,
+        )
+        self.gamma = (
+            None
+            if ls_init_value is None
+            else jnp.full((dim,), ls_init_value, dtype=dtype)
+        )
+        self.drop_path = DropPath(drop_path, inference=inference)
+
+    def __call__(self, x: jax.Array, *, key: Optional[jax.Array] = None) -> jax.Array:
+        residual = x
+
+        x = self.conv_dw(x)
+        x = self.norm(x)
+        x = self.fc1(x)
+        x = jax.nn.gelu(x, approximate=False)
+        x = self.fc2(x)
+
+        if self.gamma is not None:
+            x = x * self.gamma[:, None, None]
+
+        x = self.drop_path(x, key=key)
+        return residual + x
+
+
+class ConvNeXtDownsample(eqx.Module):
+    """Stage downsample: LayerNorm2d -> Conv2d(kernel=2, stride=2)."""
+
+    norm: LayerNorm2d
+    conv: eqx.nn.Conv2d
+
+    def __init__(
+        self,
+        in_chs: int,
+        out_chs: int,
+        *,
+        stride: int = 2,
+        dtype=jnp.float32,
+        key: jax.Array,
+    ):
+        if stride not in (1, 2):
+            raise ValueError(f"Expected stride 1 or 2, got {stride}.")
+        self.norm = LayerNorm2d(in_chs, eps=1e-6, dtype=dtype)
+        self.conv = eqx.nn.Conv2d(
+            in_channels=in_chs,
+            out_channels=out_chs,
+            kernel_size=stride,
+            stride=stride,
+            padding=0,
+            use_bias=True,
+            dtype=dtype,
+            key=key,
+        )
+
+    def __call__(self, x: jax.Array) -> jax.Array:
+        x = self.norm(x)
+        x = self.conv(x)
+        return x
+
+
+class ConvNeXtStage(eqx.Module):
+    """One ConvNeXt stage: optional downsample + repeated ConvNeXt blocks."""
+
+    downsample: eqx.Module
+    blocks: Tuple[ConvNeXtBlock, ...]
+
+    def __init__(
+        self,
+        in_chs: int,
+        out_chs: int,
+        depth: int,
+        *,
+        stride: int,
+        kernel_size: int = 7,
+        mlp_ratio: int = 4,
+        ls_init_value: Optional[float] = 1e-6,
+        drop_path_rates: Sequence[float] | None = None,
+        inference: bool = False,
+        dtype=jnp.float32,
+        key: jax.Array,
+    ):
+        if depth < 1:
+            raise ValueError("depth must be >= 1")
+
+        nkeys = depth + 1
+        keys = jax.random.split(key, nkeys)
+
+        if in_chs == out_chs and stride == 1:
+            self.downsample = Identity()
+        else:
+            self.downsample = ConvNeXtDownsample(
+                in_chs=in_chs,
+                out_chs=out_chs,
+                stride=stride,
+                dtype=dtype,
+                key=keys[0],
+            )
+
+        if drop_path_rates is None:
+            drop_path_rates = [0.0] * depth
+        if len(drop_path_rates) != depth:
+            raise ValueError("drop_path_rates must have length == depth")
+
+        self.blocks = tuple(
+            ConvNeXtBlock(
+                dim=out_chs,
+                mlp_ratio=mlp_ratio,
+                kernel_size=kernel_size,
+                ls_init_value=ls_init_value,
+                drop_path=drop_path_rates[i],
+                inference=inference,
+                dtype=dtype,
+                key=keys[i + 1],
+            )
+            for i in range(depth)
+        )
+
+    def __call__(self, x: jax.Array, *, key: Optional[jax.Array] = None) -> jax.Array:
+        x = self.downsample(x)
+
+        if key is None:
+            for block in self.blocks:
+                x = block(x)
+        else:
+            keys = jax.random.split(key, len(self.blocks))
+            for block, k in zip(self.blocks, keys):
+                x = block(x, key=k)
+
+        return x
+
+
+class ConvNeXtStem(eqx.Module):
+    """Patch stem: Conv2d(patch_size, stride=patch_size) -> LayerNorm2d."""
+
+    conv: eqx.nn.Conv2d
+    norm: LayerNorm2d
+
+    def __init__(
+        self,
+        in_chans: int,
+        out_chs: int,
+        *,
+        patch_size: int = 4,
+        dtype=jnp.float32,
+        key: jax.Array,
+    ):
+        self.conv = eqx.nn.Conv2d(
+            in_channels=in_chans,
+            out_channels=out_chs,
+            kernel_size=patch_size,
+            stride=patch_size,
+            padding=0,
+            use_bias=True,
+            dtype=dtype,
+            key=key,
+        )
+        self.norm = LayerNorm2d(out_chs, eps=1e-6, dtype=dtype)
+
+    def __call__(self, x: jax.Array) -> jax.Array:
+        x = self.conv(x)
+        x = self.norm(x)
+        return x
+
+
+class ConvNeXtHead(eqx.Module):
+    """Matches your printed head for num_classes=0:
+    global avg pool (keepdims) -> LayerNorm2d -> flatten
+    """
+
+    norm: LayerNorm2d
+
+    def __init__(self, dim: int, *, dtype=jnp.float32):
+        self.norm = LayerNorm2d(dim, eps=1e-6, dtype=dtype)
+
+    def __call__(self, x: jax.Array) -> jax.Array:
+        # x: (C, H, W)
+        x = jnp.mean(x, axis=(1, 2), keepdims=True)  # (C, 1, 1)
+        x = self.norm(x)  # (C, 1, 1)
+        x = jnp.reshape(x, (-1,))  # (C,)
+        return x
+
+
+class ConvNeXtEncoder(eqx.Module):
+    """Full ConvNeXt encoder ending in the pooled feature vector."""
+
+    stem: ConvNeXtStem
+    stages: Tuple[ConvNeXtStage, ...]
+    norm_pre: eqx.Module
+    head: ConvNeXtHead
+
+    def __init__(
+        self,
+        *,
+        in_chans: int = 1,
+        depths: Tuple[int, int, int, int] = (2, 2, 8, 2),
+        dims: Tuple[int, int, int, int] = (80, 160, 320, 640),
+        patch_size: int = 4,
+        kernel_sizes: Tuple[int, int, int, int] = (7, 7, 7, 7),
+        mlp_ratio: int = 4,
+        ls_init_value: Optional[float] = 1e-6,
+        drop_path_rate: float = 0.0,
+        inference: bool = False,
+        dtype=jnp.float32,
+        key: jax.Array,
+    ):
+
+        n_depths = len(depths)
+        n_dims = len(dims)
+        n_kernels = len(kernel_sizes)
+        if (n_depths != n_dims) or (n_depths != n_kernels) or (n_dims != n_kernels):
+            raise ValueError(
+                "depths, dims, and kernel_sizes must all have same length."
+            )
+
+        total_blocks = sum(depths)
+        dpr = jnp.linspace(0.0, drop_path_rate, total_blocks).tolist()
+
+        keys = jax.random.split(key, n_depths + 1)
+        self.stem = ConvNeXtStem(
+            in_chans=in_chans,
+            out_chs=dims[0],
+            patch_size=patch_size,
+            dtype=dtype,
+            key=keys[0],
+        )
+
+        stages = []
+        block_idx = 0
+        in_dim = dims[0]
+
+        for i in range(n_depths):
+            out_dim = dims[i]
+            depth = depths[i]
+            stride = 1 if i == 0 else 2
+            stage = ConvNeXtStage(
+                in_chs=in_dim,
+                out_chs=out_dim,
+                depth=depth,
+                stride=stride,
+                kernel_size=kernel_sizes[i],
+                mlp_ratio=mlp_ratio,
+                ls_init_value=ls_init_value,
+                drop_path_rates=dpr[block_idx : block_idx + depth],
+                inference=inference,
+                dtype=dtype,
+                key=keys[i + 1],
+            )
+            stages.append(stage)
+            in_dim = out_dim
+            block_idx += depth
+
+        self.stages = tuple(stages)
+        self.norm_pre = Identity()
+        self.head = ConvNeXtHead(dims[-1], dtype=dtype)
+
+    def __call__(
+        self,
+        x: jax.Array,
+        *,
+        key: Optional[jax.Array] = None,
+    ):
+        x = self.stem(x)
+
+        feats = []
+        if key is None:
+            stage_keys = [None] * len(self.stages)
+        else:
+            stage_keys = jax.random.split(key, len(self.stages))
+
+        for stage, k in zip(self.stages, stage_keys):
+            x = stage(x, key=k)
+            feats.append(x)
+
+        x = self.norm_pre(x)
+        x = self.head(x)
+
+        return x
