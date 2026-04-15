@@ -173,6 +173,6 @@ def integrate_from_z(
         y0=z,
         stepsize_controller=diffrax.ConstantStepSize(),
         saveat=saveat,
-        adjoint=diffrax.DirectAdjoint(),
+        #adjoint=diffrax.DirectAdjoint(),
     )
     return solution.ys[0]
