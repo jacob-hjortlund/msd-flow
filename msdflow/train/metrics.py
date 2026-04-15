@@ -1,6 +1,8 @@
 import jax
 import equinox as eqx
 import jax.numpy as jnp
+import numpy as np
+from scipy.linalg import sqrtm
 
 # ---------------------------------------------------------------------------
 # Metric signatures
@@ -13,12 +15,12 @@ import jax.numpy as jnp
 #     tensors. Must return a scalar JAX array. Used for logging and
 #     overfitting detection (train vs. val comparison).
 #
-#   Epoch metric:  (model, val_batches, key) -> scalar
-#     Evaluated once per validation cycle over a fixed set of raw
-#     ``(images, meta)`` tuples from the val dataloader. Any additional
-#     dependencies (solver, n_samples, etc.) should be baked in via Hydra
-#     ``_partial_: true``. Used for generation-based metrics (e.g. FID)
-#     and early stopping.
+#   Epoch metric:  (model, val_dataloader, key) -> scalar
+#     Evaluated once per validation cycle. Receives the val dataloader
+#     iterable directly and streams through it (no pre-collection).
+#     Any additional dependencies (solver, n_samples, etc.) should be
+#     baked in via Hydra ``_partial_: true``. Used for generation-based
+#     metrics (e.g. FID) and early stopping.
 # ---------------------------------------------------------------------------
 
 
@@ -81,3 +83,27 @@ def flow_matching_loss(
     pred = eqx.filter_vmap(model)(t, x_t, cond, cond_mask, key)
     v_t = _to_velocity(pred, x_t, t, model.prediction_type)
     return jnp.mean((v_t - u_t) ** 2)
+
+
+def _frechet_distance(
+    mu_real: np.ndarray,
+    sigma_real: np.ndarray,
+    mu_fake: np.ndarray,
+    sigma_fake: np.ndarray,
+) -> float:
+    """Compute the Fréchet distance between two multivariate Gaussians.
+
+    Args:
+        mu_real:    Mean of real distribution, shape (D,).
+        sigma_real: Covariance of real distribution, shape (D, D).
+        mu_fake:    Mean of fake distribution, shape (D,).
+        sigma_fake: Covariance of fake distribution, shape (D, D).
+
+    Returns:
+        Fréchet distance (scalar float).
+    """
+    diff = mu_real - mu_fake
+    covmean = sqrtm(sigma_real @ sigma_fake)
+    if np.iscomplexobj(covmean):
+        covmean = covmean.real
+    return float(diff @ diff + np.trace(sigma_real + sigma_fake - 2 * covmean))
