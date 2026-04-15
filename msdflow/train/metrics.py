@@ -139,6 +139,7 @@ class FIDAccumulator:
         self._sum_features = None  # np.ndarray (D,)
         self._sum_outer = None     # np.ndarray (D, D)
         self._n = 0
+        self._cached_real = None   # set by compute_fid_metrics
 
     def update(self, images: jax.Array) -> None:
         """Encode a batch and update running accumulators.
@@ -171,7 +172,10 @@ class FIDAccumulator:
         return mu, sigma, self._n
 
     def reset(self) -> None:
-        """Zero all accumulators for reuse across epochs."""
+        """Zero streaming accumulators for reuse across epochs.
+
+        Does not clear cached real-image statistics (``_cached_real``).
+        """
         self._sum_features = None
         self._sum_outer = None
         self._n = 0
@@ -208,8 +212,7 @@ def compute_fid_metrics(
     """
     # --- Real-image pass (skip if all accumulators have cached stats) ---
     all_cached = all(
-        hasattr(acc, "_cached_real") and acc._cached_real is not None
-        for acc in accumulators.values()
+        acc._cached_real is not None for acc in accumulators.values()
     )
     if not all_cached:
         for acc in accumulators.values():
