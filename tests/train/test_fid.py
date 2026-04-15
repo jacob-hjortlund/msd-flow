@@ -1,5 +1,7 @@
 """Tests for FID metric components in msdflow.train.metrics."""
 
+import inspect
+
 import numpy as np
 import pytest
 import jax
@@ -7,6 +9,7 @@ import jax.numpy as jnp
 
 from msdflow.train.metrics import _frechet_distance
 from msdflow.train.metrics import FIDAccumulator
+from msdflow.train.trainer import train
 
 
 def test_frechet_distance_identical_distributions_is_zero():
@@ -201,10 +204,6 @@ def test_compute_fid_metrics_n_samples_defaults_to_real_count():
         key=key,
     )
     assert np.isfinite(result["fid"])
-
-
-from msdflow.train.trainer import train
-import inspect
 
 
 def test_train_has_no_num_val_eval_batches_param():

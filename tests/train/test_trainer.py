@@ -728,7 +728,7 @@ def test_train_epoch_metric_receives_val_dataloader():
     )
 
     assert "val_dataloader" in received
-    assert len(list(received["val_dataloader"])) > 0
+    assert received["val_dataloader"] is val_dataloader
 
 
 # ---------------------------------------------------------------------------
