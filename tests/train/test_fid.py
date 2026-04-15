@@ -206,6 +206,52 @@ def test_compute_fid_metrics_n_samples_defaults_to_real_count():
     assert np.isfinite(result["fid"])
 
 
+def test_compute_fid_metrics_n_real_limits_real_images():
+    """When n_real is set, only that many real images are used."""
+    acc = FIDAccumulator(encoder=_identity_encoder)
+    accumulators = {"fid": acc}
+    # 3 batches * 4 images = 12 real images, but cap at 6
+    dataloader = _make_dummy_dataloader(n_batches=3, batch_size=4)
+    key = jax.random.PRNGKey(4)
+
+    result = compute_fid_metrics(
+        accumulators=accumulators,
+        model=None,
+        val_dataloader=dataloader,
+        generate_fn=_dummy_generate_fn,
+        n_samples=6,
+        gen_batch_size=4,
+        key=key,
+        n_real=6,
+    )
+    assert np.isfinite(result["fid"])
+    # Cached real stats should reflect exactly 6 images
+    _, _, n = acc._cached_real
+    assert n == 6
+
+
+def test_compute_fid_metrics_n_real_none_uses_full_dataset():
+    """When n_real is None (default), all real images are used."""
+    acc = FIDAccumulator(encoder=_identity_encoder)
+    accumulators = {"fid": acc}
+    # 3 batches * 4 images = 12 real images
+    dataloader = _make_dummy_dataloader(n_batches=3, batch_size=4)
+    key = jax.random.PRNGKey(5)
+
+    result = compute_fid_metrics(
+        accumulators=accumulators,
+        model=None,
+        val_dataloader=dataloader,
+        generate_fn=_dummy_generate_fn,
+        n_samples=12,
+        gen_batch_size=4,
+        key=key,
+    )
+    assert np.isfinite(result["fid"])
+    _, _, n = acc._cached_real
+    assert n == 12
+
+
 def test_train_has_no_num_val_eval_batches_param():
     """The num_val_eval_batches parameter must be removed from train()."""
     sig = inspect.signature(train)

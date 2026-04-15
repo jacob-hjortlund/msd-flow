@@ -189,6 +189,7 @@ def compute_fid_metrics(
     n_samples: int | None,
     gen_batch_size: int,
     key: jax.Array,
+    n_real: int | None = None,
 ) -> dict[str, float]:
     """Compute FID scores for one or more encoders.
 
@@ -206,6 +207,8 @@ def compute_fid_metrics(
         n_samples:       Number of fake images. ``None`` matches real count.
         gen_batch_size:  Images generated and encoded per chunk.
         key:             PRNG key for generation.
+        n_real:          Maximum number of real images to use from
+            ``val_dataloader``. ``None`` (default) uses the full dataset.
 
     Returns:
         Dict mapping accumulator names to FID scores.
@@ -217,9 +220,17 @@ def compute_fid_metrics(
     if not all_cached:
         for acc in accumulators.values():
             acc.reset()
+        n_real_seen = 0
         for images, _meta in val_dataloader:
+            if n_real is not None:
+                remaining = n_real - n_real_seen
+                if remaining <= 0:
+                    break
+                if images.shape[0] > remaining:
+                    images = images[:remaining]
             for acc in accumulators.values():
                 acc.update(images)
+            n_real_seen += images.shape[0]
         for acc in accumulators.values():
             mu, sigma, n = acc.statistics()
             acc._cached_real = (mu, sigma, n)
