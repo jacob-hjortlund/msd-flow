@@ -287,7 +287,6 @@ def _make_train_kwargs(num_epochs=1, num_steps_per_epoch=3, p_uncond=0.0):
         batch_metrics=[_fml],
         epoch_metrics=[],
         num_train_eval_batches=0,
-        num_val_eval_batches=0,
         coupling=independent_coupling,
         time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
         path_sampler=partial(sample_path),
@@ -702,39 +701,13 @@ def test_batch_metric_loop_returns_mean_not_sum():
     assert abs(result["simple_metric"] - 3.0) < 1e-5
 
 
-from msdflow.train.trainer import collect_batches
 
-
-def test_collect_batches_returns_correct_count():
-    """collect_batches returns exactly num_batches tuples."""
-    loader = _make_val_dataloader(num_batches=5)
-    batches = collect_batches(loader, num_batches=3)
-    assert len(batches) == 3
-
-
-def test_collect_batches_zero_returns_all():
-    """collect_batches with num_batches=0 returns the full dataloader."""
-    loader = _make_val_dataloader(num_batches=5)
-    batches = collect_batches(loader, num_batches=0)
-    assert len(batches) == 5
-
-
-def test_collect_batches_each_tuple_is_images_meta():
-    """Each element returned by collect_batches is a (images, meta) pair."""
-    loader = _make_val_dataloader(B=2, num_batches=3)
-    batches = collect_batches(loader, num_batches=0)
-    for batch in batches:
-        images, meta = batch
-        assert images.shape[0] == 2
-        assert images.shape[1:] == (1, 8, 8)
-
-
-def test_train_epoch_metric_receives_nonempty_val_batches():
-    """A no-op epoch metric must receive a non-empty val_batches list."""
+def test_train_epoch_metric_receives_val_dataloader():
+    """A no-op epoch metric must receive the val_dataloader iterable."""
     received = {}
 
-    def capture_epoch_metric(model, val_batches, key):
-        received["val_batches"] = val_batches
+    def capture_epoch_metric(model, val_dataloader, key):
+        received["val_dataloader"] = val_dataloader
         return jnp.array(0.0)
 
     capture_epoch_metric.__name__ = "capture_epoch_metric"
@@ -746,7 +719,6 @@ def test_train_epoch_metric_receives_nonempty_val_batches():
     kwargs["batch_metrics"] = [_fml]
     kwargs["epoch_metrics"] = [capture_epoch_metric]
     kwargs["num_train_eval_batches"] = 0
-    kwargs["num_val_eval_batches"] = 0
 
     train(
         model=SMALL_MODEL,
@@ -755,8 +727,8 @@ def test_train_epoch_metric_receives_nonempty_val_batches():
         **kwargs,
     )
 
-    assert "val_batches" in received
-    assert len(received["val_batches"]) > 0
+    assert "val_dataloader" in received
+    assert len(list(received["val_dataloader"])) > 0
 
 
 # ---------------------------------------------------------------------------

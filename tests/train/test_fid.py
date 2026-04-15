@@ -201,3 +201,13 @@ def test_compute_fid_metrics_n_samples_defaults_to_real_count():
         key=key,
     )
     assert np.isfinite(result["fid"])
+
+
+from msdflow.train.trainer import train
+import inspect
+
+
+def test_train_has_no_num_val_eval_batches_param():
+    """The num_val_eval_batches parameter must be removed from train()."""
+    sig = inspect.signature(train)
+    assert "num_val_eval_batches" not in sig.parameters

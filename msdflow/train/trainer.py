@@ -253,23 +253,6 @@ def batch_metric_loop(
     return {k: v / n_batches for k, v in totals.items()}
 
 
-def collect_batches(dataloader, num_batches: int) -> list:
-    """Collect raw batches from a dataloader into a list.
-
-    Args:
-        dataloader:  Iterable of ``(images, meta)`` batches.
-        num_batches: Maximum number of batches to collect. ``0`` collects all.
-
-    Returns:
-        List of ``(images, meta)`` tuples.
-    """
-    batches = []
-    for batch in dataloader:
-        batches.append(batch)
-        if num_batches > 0 and len(batches) >= num_batches:
-            break
-    return batches
-
 
 def train(
     key,
@@ -292,7 +275,6 @@ def train(
     checkpoint_every: int,
     checkpoint_dir: str,
     num_train_eval_batches: int = 0,
-    num_val_eval_batches: int = 0,
     clearml_task: Any = None,
     sample_fn=None,
     sample_every: int = 0,
@@ -320,10 +302,12 @@ def train(
                                 Evaluated every ``val_every`` epochs over the full
                                 val loader and ``num_train_eval_batches`` train batches.
         epoch_metrics:          List of callables with signature
-                                ``(model, val_batches, key) -> scalar``.
-                                Evaluated every ``val_every`` epochs on
-                                ``num_val_eval_batches`` collected val batches.
-                                Extra dependencies must be baked in via partial.
+                                ``(model, val_dataloader, key) -> scalar | dict``.
+                                Evaluated every ``val_every`` epochs. Receives
+                                the val dataloader iterable directly. Extra
+                                dependencies must be baked in via partial.
+                                If a metric returns a dict, its entries are
+                                merged into epoch_metric_results directly.
         coupling:               Callable ``(x0_np, x1_np) -> x0_paired``.
         time_sampler:           Callable ``(key, batch_size) -> t``.
         path_sampler:           Callable ``(x0, x1, t, *, key) -> (x_t, u_t)``.
@@ -337,7 +321,6 @@ def train(
         checkpoint_dir:         Directory for checkpoint files.
         num_train_eval_batches: Batches from train loader for batch metrics.
                                 ``0`` = all.
-        num_val_eval_batches:   Batches collected for epoch metrics. ``0`` = all.
         clearml_task:           ClearML Task for experiment tracking, or None
                                 to disable all tracking (default).
         sample_fn:              Callable ``(model, key, num_samples) ->
@@ -471,7 +454,6 @@ def train(
 
             epoch_metric_results = {}
             if epoch_metrics:
-                val_batches = collect_batches(val_dataloader, num_val_eval_batches)
                 fn_names = [
                     (
                         fn.func.__name__
@@ -481,9 +463,11 @@ def train(
                     for fn in epoch_metrics
                 ]
                 for fn, fn_name in zip(epoch_metrics, fn_names):
-                    epoch_metric_results[fn_name] = fn(
-                        ema_model, val_batches, key_epoch
-                    )
+                    result = fn(ema_model, val_dataloader, key_epoch)
+                    if isinstance(result, dict):
+                        epoch_metric_results.update(result)
+                    else:
+                        epoch_metric_results[fn_name] = result
 
             val_time = time.perf_counter() - val_start_time
             total_val_time += val_time
