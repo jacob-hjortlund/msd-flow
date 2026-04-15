@@ -8,7 +8,6 @@ batch_metrics:
     _partial_: true
 epoch_metrics: []
 num_train_eval_batches: 0
-num_val_eval_batches: 0
 optimizer:
   _target_: optax.adamw
   learning_rate: 1.0e-4
