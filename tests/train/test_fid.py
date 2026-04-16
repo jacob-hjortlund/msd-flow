@@ -8,7 +8,9 @@ import jax
 import jax.numpy as jnp
 
 from msdflow.train.metrics import _frechet_distance
+from msdflow.train.metrics import compute_fid_metrics
 from msdflow.train.metrics import FIDAccumulator
+from msdflow.train.metrics import FIDMetric
 from msdflow.train.trainer import train
 
 
@@ -96,7 +98,6 @@ def test_accumulator_single_image():
     np.testing.assert_allclose(sigma, np.zeros((4, 4)), atol=1e-6)
 
 
-from msdflow.train.metrics import compute_fid_metrics
 
 
 def _make_dummy_dataloader(n_batches, batch_size, shape=(1, 2, 2), seed=0):
@@ -256,3 +257,49 @@ def test_train_has_no_num_val_eval_batches_param():
     """The num_val_eval_batches parameter must be removed from train()."""
     sig = inspect.signature(train)
     assert "num_val_eval_batches" not in sig.parameters
+
+
+
+
+def test_fid_metric_delegates_to_compute_fid_metrics():
+    """FIDMetric.__call__ must delegate to compute_fid_metrics and return its dict."""
+    accumulators = {
+        "enc_a": FIDAccumulator(encoder=_identity_encoder),
+        "enc_b": FIDAccumulator(encoder=_identity_encoder),
+    }
+    dataloader = _make_dummy_dataloader(n_batches=2, batch_size=4)
+    key = jax.random.PRNGKey(10)
+
+    metric = FIDMetric(
+        accumulators=accumulators,
+        generate_fn=_dummy_generate_fn,
+        n_samples=8,
+        gen_batch_size=4,
+    )
+    result = metric(model=None, val_dataloader=dataloader, key=key)
+
+    assert isinstance(result, dict)
+    assert set(result.keys()) == {"enc_a", "enc_b"}
+    for v in result.values():
+        assert isinstance(v, float)
+        assert np.isfinite(v)
+
+
+def test_fid_metric_caches_real_stats_across_calls():
+    """FIDMetric must cache real-image stats so a second call skips the real pass."""
+    acc = FIDAccumulator(encoder=_identity_encoder)
+    metric = FIDMetric(
+        accumulators={"fid": acc},
+        generate_fn=_dummy_generate_fn,
+        n_samples=8,
+        gen_batch_size=4,
+    )
+    dataloader = _make_dummy_dataloader(n_batches=2, batch_size=4)
+    key1, key2 = jax.random.split(jax.random.PRNGKey(11))
+
+    result1 = metric(model=None, val_dataloader=dataloader, key=key1)
+    # Second call with empty dataloader — should still work via cache
+    result2 = metric(model=None, val_dataloader=[], key=key2)
+
+    assert np.isfinite(result1["fid"])
+    assert np.isfinite(result2["fid"])
