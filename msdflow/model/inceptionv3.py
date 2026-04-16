@@ -38,7 +38,7 @@ def reshape(x):
     return x
 
 
-def build_headless_incpetionv3():
+def build_headless_inceptionv3():
     model = InceptionV3(pretrained=True)
     rng = jax.random.PRNGKey(0)
     params = model.init(rng, jnp.ones((1, 299, 299, 3)))
