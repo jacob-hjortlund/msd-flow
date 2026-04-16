@@ -731,6 +731,31 @@ def test_train_epoch_metric_receives_val_dataloader():
     assert received["val_dataloader"] is val_dataloader
 
 
+def test_train_epoch_metric_callable_object():
+    """A callable object (not function/partial) must work as an epoch metric."""
+
+    class DictMetric:
+        def __call__(self, model, val_dataloader, key):
+            return {"custom_a": 1.0, "custom_b": 2.0}
+
+    dataloader = list(_make_fake_dataloader(B=2, num_batches=3))
+    val_dataloader = _fake_val_dataloader()
+
+    kwargs = _make_train_kwargs()
+    kwargs["batch_metrics"] = [_fml]
+    kwargs["epoch_metrics"] = [DictMetric()]
+    kwargs["num_train_eval_batches"] = 0
+
+    result_model = train(
+        model=SMALL_MODEL,
+        dataloader=dataloader,
+        val_dataloader=val_dataloader,
+        **kwargs,
+    )
+    # If we get here without AttributeError, the callable object was handled
+    assert result_model is not None
+
+
 # ---------------------------------------------------------------------------
 # ClearML + sample integration tests
 # ---------------------------------------------------------------------------

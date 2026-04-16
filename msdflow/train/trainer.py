@@ -454,20 +454,18 @@ def train(
 
             epoch_metric_results = {}
             if epoch_metrics:
-                fn_names = [
-                    (
-                        fn.func.__name__
-                        if isinstance(fn, functools.partial)
-                        else fn.__name__
-                    )
-                    for fn in epoch_metrics
-                ]
-                for fn, fn_name in zip(epoch_metrics, fn_names):
+                for fn in epoch_metrics:
                     result = fn(ema_model, val_dataloader, key_epoch)
                     if isinstance(result, dict):
                         epoch_metric_results.update(result)
                     else:
-                        epoch_metric_results[fn_name] = result
+                        if isinstance(fn, functools.partial):
+                            name = fn.func.__name__
+                        elif hasattr(fn, "__name__"):
+                            name = fn.__name__
+                        else:
+                            name = type(fn).__name__
+                        epoch_metric_results[name] = result
 
             val_time = time.perf_counter() - val_start_time
             total_val_time += val_time
