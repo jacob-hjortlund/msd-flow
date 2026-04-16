@@ -5,6 +5,8 @@ the specific implementation used in the HuggingFace timm package.
 """
 
 import jax
+import timm
+import torch
 
 import numpy as np
 import equinox as eqx
@@ -238,6 +240,43 @@ def copy_timm_convnext_encoder_to_eqx(pt_model, eq_model, *, verbose: bool = Tru
         print("Successfully copied timm ConvNeXt encoder weights to Equinox model.")
 
     return eq_model
+
+
+def build_zoobot_nano():
+
+    model_name = "hf_hub:mwalmsley/zoobot-encoder-greyscale-convnext_nano"
+    torch_model = timm.create_model(
+        model_name, pretrained=True, num_classes=0, in_chans=1
+    ).eval()
+
+    key = jax.random.PRNGKey(0)
+    eq_model = ConvNeXtEncoder(
+        in_chans=1,
+        depths=(2, 2, 8, 2),
+        dims=(80, 160, 320, 640),
+        patch_size=4,
+        kernel_sizes=(7, 7, 7, 7),
+        mlp_ratio=4,
+        ls_init_value=1e-6,
+        drop_path_rate=0.0,
+        inference=True,
+        key=key,
+    )
+
+    model = copy_timm_convnext_encoder_to_eqx(pt_model=torch_model, eq_model=eq_model)
+
+    def apply_model(x):
+        x = (x + 1.0) / 2.0
+        x = jax.image.resize(
+            x,
+            shape=(1, 224, 224),
+            method="bilinear",
+            antialias=True,
+        )
+        out = model(x)
+        return out
+
+    return apply_model
 
 
 class ConvNeXtEncoder(eqx.Module):
