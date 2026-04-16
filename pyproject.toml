@@ -29,6 +29,7 @@ dependencies = [
     "matplotlib",
     "seaborn",
     "timm",
+    "flax",
 ]
 
 [project.optional-dependencies]
