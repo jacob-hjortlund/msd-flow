@@ -261,3 +261,59 @@ def compute_fid_metrics(
         results[name] = _frechet_distance(mu_real, sigma_real, mu_fake, sigma_fake)
 
     return results
+
+
+class FIDMetric:
+    """Epoch metric wrapper that adapts ``compute_fid_metrics`` to the
+    ``(model, val_dataloader, key)`` signature expected by the trainer.
+
+    Holds persistent ``FIDAccumulator`` instances so real-image statistics
+    are cached across epochs. All generation and scoring logic is delegated
+    to ``compute_fid_metrics``.
+
+    Args:
+        accumulators:   Named accumulators, one per encoder. Keys become
+            the output metric names.
+        generate_fn:    ``(model, key) -> jax.Array`` of shape ``(C, H, W)``.
+            One unconditional sample. Solver args baked in via partial.
+        n_samples:      Number of fake images. ``None`` matches real count.
+        gen_batch_size: Images generated and encoded per chunk.
+        n_real:         Maximum real images from val_dataloader. ``None``
+            uses the full dataset.
+    """
+
+    def __init__(
+        self,
+        accumulators: dict[str, "FIDAccumulator"],
+        generate_fn: callable,
+        n_samples: int | None = None,
+        gen_batch_size: int = 64,
+        n_real: int | None = None,
+    ):
+        self.accumulators = accumulators
+        self.generate_fn = generate_fn
+        self.n_samples = n_samples
+        self.gen_batch_size = gen_batch_size
+        self.n_real = n_real
+
+    def __call__(self, model, val_dataloader, key: jax.Array) -> dict[str, float]:
+        """Compute FID scores for all accumulators.
+
+        Args:
+            model:          Generative model passed to ``generate_fn``.
+            val_dataloader: Iterable yielding ``(images, meta)`` tuples.
+            key:            PRNG key for generation.
+
+        Returns:
+            Dict mapping accumulator names to FID scores.
+        """
+        return compute_fid_metrics(
+            accumulators=self.accumulators,
+            model=model,
+            val_dataloader=val_dataloader,
+            generate_fn=self.generate_fn,
+            n_samples=self.n_samples,
+            gen_batch_size=self.gen_batch_size,
+            key=key,
+            n_real=self.n_real,
+        )
