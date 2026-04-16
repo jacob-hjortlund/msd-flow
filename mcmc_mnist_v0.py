@@ -15,6 +15,7 @@ import os
 import logging
 import functools
 
+import arviz as az
 import hydra
 import jax
 import jax.numpy as jnp
@@ -123,19 +124,29 @@ def main(cfg: DictConfig):
     # ------------------------------------------------------------------
     log.info("Sampling: %d steps", num_samples)
     all_z = np.zeros((num_samples, n_dims), dtype=np.float32)
+    lp_trace = np.zeros(num_samples, dtype=np.float32)
 
     for i in range(num_samples):
         rng_key, subkey = jr.split(rng_key)
         state, info = step_fn(subkey, state)
         all_z[i] = np.array(state.position)
+        lp_trace[i] = float(log_posterior(jnp.array(all_z[i])))
 
-        if (i + 1) % 10 == 0:
+        if (i + 1) % 100 == 0:
             log.info(
-                "  step %d/%d  acceptance=%.3f  divergent=%s",
+                "  step %d/%d  acceptance=%.3f  divergent=%s. Saving samples",
                 i + 1, num_samples,
                 float(info.acceptance_rate),
                 bool(info.is_divergent),
             )
+            np.save(os.path.join(output_dir, f"z_samples_{i+1}.npy"), all_z[:i+1])
+            ess_lp = float(az.ess({"lp": lp_trace[None, :i+1]})["lp"])
+            subset_dimensions= range(100,700,100)
+            subset = all_z[:i+1, subset_dimensions]
+            ess = az.ess({"z": subset[None, :, :]})
+            log.info("Ess for Log Pos: %.1f. Mean ESS for pixel subset: %.1f. min ESS for pixel subset: %.1f", ess_lp,
+             float(ess["z"].mean()), float(ess["z"].min()),
+             )
 
     # ------------------------------------------------------------------
     # 7. Decode all posterior Z samples → images
@@ -149,6 +160,9 @@ def main(cfg: DictConfig):
 
     np.save(os.path.join(output_dir, "z_samples.npy"), all_z)
     np.save(os.path.join(output_dir, "x_samples.npy"), x_samples)
+    # Save ESS values
+    ess_values = np.array(az.ess({"z": all_z[None]})["z"])  # (784,)
+    np.save(os.path.join(output_dir, "ess.npy"), ess_values)
 
     # ------------------------------------------------------------------
     # 8. Quick summary figure
@@ -171,6 +185,16 @@ def main(cfg: DictConfig):
 
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, "posterior_samples.png"), dpi=120)
+    plt.close(fig)
+
+    # Heatmap
+    ess_map = ess_values.reshape(cfg.image_size, cfg.image_size)
+    fig, ax = plt.subplots(figsize=(4, 3.5))
+    im = ax.imshow(ess_map, cmap="viridis")
+    plt.colorbar(im, ax=ax, label="ESS")
+    ax.set_title("Effective Sample Size (per latent pixel)")
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, "mnist_ess_heatmap.png"), dpi=120)
     plt.close(fig)
 
     log.info("Done. Outputs in %s", output_dir)
