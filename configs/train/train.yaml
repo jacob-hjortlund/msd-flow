@@ -16,11 +16,14 @@ epoch_metrics:
       fid_inception:
         _target_: msdflow.train.metrics.FIDAccumulator
         encoder:
-          _target_: msdflow.model.inceptionv3.build_headless_incpetionv3
+          _target_: msdflow.model.inceptionv3.build_headless_inceptionv3
     generate_fn:
       _target_: msdflow.flow.sample.sample
       _partial_: true
-      shape: [1, ${image_size}, ${image_size}]
+      shape:
+        - 1
+        - ${image_size}
+        - ${image_size}
       solver:
         _target_: diffrax.Euler
       dt0: 0.01
@@ -28,7 +31,6 @@ epoch_metrics:
       t1: 1.0
       stepsize_controller:
         _target_: diffrax.ConstantStepSize
-      stepsize_controller_cfg: {}
     n_samples: null
     gen_batch_size: 64
     n_real: null
