@@ -15,7 +15,6 @@ from msdflow.train.metrics import _to_velocity
 # TODO: Move to inference
 
 
-@eqx.filter_jit
 def sample(
     model,
     shape: tuple,
@@ -115,5 +114,5 @@ def sample(
         stepsize_controller=stepsize_controller,
         saveat=saveat,
     )
-    # SaveAt(ts=[t1]) stores one time point; solution.ys shape is (1, C, H, W)
+
     return solution.ys[0]

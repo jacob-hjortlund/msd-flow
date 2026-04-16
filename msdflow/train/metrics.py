@@ -246,10 +246,18 @@ def compute_fid_metrics(
         acc.reset()
 
     n_generated = 0
+
+    def _generate_fn(key):
+        return generate_fn(model, key=key)
+
+    _generate_fn = eqx.filter_jit(jax.vmap(_generate_fn))
+
     while n_generated < n_samples:
         chunk_size = min(gen_batch_size, n_samples - n_generated)
-        key, *sub_keys = jax.random.split(key, chunk_size + 1)
-        fake_images = jnp.stack([generate_fn(model, key=k) for k in sub_keys])
+        all_keys = jax.random.split(key, chunk_size + 1)
+        key = all_keys[0]
+        sub_keys = all_keys[1:]
+        fake_images = _generate_fn(sub_keys)
         for acc in accumulators.values():
             acc.update(fake_images)
         n_generated += chunk_size
