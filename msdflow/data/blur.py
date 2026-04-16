@@ -48,11 +48,13 @@ def gaussian_blur(
     # Depthwise conv kernel shape: (out_channels, in_channels/groups, kH, kW)
     kernel_4d = jnp.tile(kernel[None, None], (C, 1, 1, 1))
     image_4d = image[None]  # (1, C, H, W)
+    pad = kernel_size // 2
+    image_padded = jnp.pad(image_4d, ((0,0),(0,0),(pad,pad),(pad,pad)), constant_values=-1.0)
     blurred = lax.conv_general_dilated(
-        image_4d,
+        image_padded,
         kernel_4d,
         window_strides=(1, 1),
-        padding="SAME",
+        padding="VALID",
         feature_group_count=C,  # depthwise: each channel uses its own kernel
     )
     return blurred[0]  # (C, H, W)

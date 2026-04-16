@@ -51,7 +51,7 @@ class BlurredMNIST(Dataset):
         clean_np = self._clean.numpy()  # (N, 1, 28, 28)
         if sigma_blur > 0:
             # gaussian_filter operates per-channel; sigma=(0, 0, sy, sx)
-            blurred = gaussian_filter(clean_np, sigma=(0, 0, sigma_blur, sigma_blur))
+            blurred = gaussian_filter(clean_np, sigma=(0, 0, sigma_blur, sigma_blur), mode='constant', cval=-1.0)
         else:
             blurred = clean_np.copy()
 
