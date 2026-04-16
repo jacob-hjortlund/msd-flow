@@ -7,6 +7,7 @@ using Diffrax solvers.
 import jax
 import diffrax
 
+import equinox as eqx
 import jax.numpy as jnp
 
 from msdflow.train.metrics import _to_velocity
@@ -14,6 +15,7 @@ from msdflow.train.metrics import _to_velocity
 # TODO: Move to inference
 
 
+@eqx.filter_jit
 def sample(
     model,
     shape: tuple,
@@ -23,7 +25,6 @@ def sample(
     t0: float,
     t1: float,
     stepsize_controller,
-    stepsize_controller_cfg: dict,
     cond: jax.Array | None = None,
     guidance_scale: float = 1.0,
 ) -> jax.Array:
@@ -40,8 +41,6 @@ def sample(
         t0:                   Start time (0.0 = noise).
         t1:                   End time (1.0 = data).
         stepsize_controller:  Diffrax step-size controller class.
-        stepsize_controller_cfg: Keyword arguments forwarded to the step-size
-            controller constructor.
         cond:                 Conditioning vector of shape ``(D,)``. Pass
             ``None`` for unconditional sampling (the model's null embedding
             is used).
@@ -59,11 +58,6 @@ def sample(
             "guidance_scale != 1.0 requires an explicit cond; "
             "for unconditional sampling, leave cond=None (the default)."
         )
-
-    solver = solver()
-    stepsize_controller = (
-        stepsize_controller()
-    )  # TODO: Fix when controller has args / kwargs
 
     mask_true = jnp.array(True)
     mask_false = jnp.array(False)
@@ -100,8 +94,12 @@ def sample(
 
         pred_cond = model(t, y, _cond, mask_true, model_key)
         pred_uncond = model(t, y, _cond, mask_false, model_key)
-        v_cond = _to_velocity(pred_cond[None], y_batch, t_batch, model.prediction_type)[0]
-        v_uncond = _to_velocity(pred_uncond[None], y_batch, t_batch, model.prediction_type)[0]
+        v_cond = _to_velocity(pred_cond[None], y_batch, t_batch, model.prediction_type)[
+            0
+        ]
+        v_uncond = _to_velocity(
+            pred_uncond[None], y_batch, t_batch, model.prediction_type
+        )[0]
         return v_uncond + guidance_scale * (v_cond - v_uncond)
 
     x0 = jax.random.normal(key, shape)
