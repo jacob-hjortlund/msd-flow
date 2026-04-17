@@ -148,6 +148,17 @@ class FIDAccumulator:
             images: Batch of images, shape (B, C, H, W).
         """
         features = np.asarray(_extract_batch(self.encoder, images))  # (B, D)
+        print(
+            "feat shape:",
+            features.shape,
+            "mean:",
+            features.mean(),
+            "std across batch:",
+            features.std(axis=0).mean(),
+            "std within sample:",
+            features.std(axis=1).mean(),
+        )
+
         if self._sum_features is None:
             D = features.shape[1]
             self._sum_features = np.zeros(D, dtype=np.float64)
