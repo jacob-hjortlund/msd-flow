@@ -36,6 +36,7 @@ def main(cfg: DictConfig):
     # 2. Inject resolved path into dataloader config
     log.info("--- Step 2: Config Injection ---")
     with open_dict(cfg):
+        cfg.data.dataloader.cache_dir = cfg.data.dataloader.data_dir
         cfg.data.dataloader.data_dir = dataset_path
 
     # 3. Build dataloaders

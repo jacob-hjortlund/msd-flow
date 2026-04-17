@@ -1,4 +1,10 @@
 data_dir: null
+cache_dir: null
+
+tdigest:
+  sample_fraction: null
+  sample_seed: 42
+  n_workers: 0
 
 pre_arcsinh_image_transforms:
   _target_: torchvision.transforms.Compose
@@ -18,6 +24,10 @@ arcsinh_transform:
       percentile: 10
       data_dir: ${data.dataloader.data_dir}
       split: train
+      sample_fraction: ${data.dataloader.tdigest.sample_fraction}
+      sample_seed: ${data.dataloader.tdigest.sample_seed}
+      n_workers: ${data.dataloader.tdigest.n_workers}
+      cache_dir: ${data.dataloader.cache_dir}
 
 post_arcsinh_image_transforms:
   _target_: torchvision.transforms.Compose
@@ -35,6 +45,10 @@ post_arcsinh_image_transforms:
         transforms:
           - ${data.dataloader.pre_arcsinh_image_transforms}
           - ${data.dataloader.arcsinh_transform}
+      sample_fraction: ${data.dataloader.tdigest.sample_fraction}
+      sample_seed: ${data.dataloader.tdigest.sample_seed}
+      n_workers: ${data.dataloader.tdigest.n_workers}
+      cache_dir: ${data.dataloader.cache_dir}
 
 augmentations:
   _target_: torchvision.transforms.Compose
