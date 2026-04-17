@@ -475,6 +475,79 @@ class TestBuildTdigest:
         np.testing.assert_allclose(digest.max(), 3.0)
 
 
+class TestBuildTdigestSampling:
+    """Tests for sampling support in build_tdigest."""
+
+    @pytest.fixture
+    def large_dataset(self, tmp_path):
+        """Create a dataset with 20 files for sampling tests."""
+        import pandas as pd
+        records = []
+        for i in range(20):
+            name = f"galaxy_{i:05d}.npy"
+            np.save(tmp_path / name, np.full((1, 4, 4), float(i)))
+            records.append({"filename": name, "split": "train"})
+        pd.DataFrame(records).to_csv(tmp_path / "metadata.csv", index=False)
+        return str(tmp_path)
+
+    def test_sampling_uses_subset(self, large_dataset):
+        """Verify sample_fraction reduces the number of files processed."""
+        t = ArcsinhStretch(
+            scale=None, percentile=50, data_dir=large_dataset, split="train",
+            sample_fraction=0.5, sample_seed=42,
+        )
+        # Should succeed without error; scale should be a positive number
+        assert t.scale > 0
+
+    def test_sampling_is_reproducible(self, large_dataset):
+        """Verify same seed produces same scale."""
+        t1 = ArcsinhStretch(
+            scale=None, percentile=50, data_dir=large_dataset, split="train",
+            sample_fraction=0.5, sample_seed=42,
+        )
+        # Remove cache to force recomputation
+        import glob
+        for f in glob.glob(os.path.join(large_dataset, "arcsinh_tdigest*.json")):
+            os.remove(f)
+        t2 = ArcsinhStretch(
+            scale=None, percentile=50, data_dir=large_dataset, split="train",
+            sample_fraction=0.5, sample_seed=42,
+        )
+        np.testing.assert_allclose(t1.scale, t2.scale)
+
+    def test_sampling_cache_filename_encodes_params(self, large_dataset):
+        """Verify cache filename includes sample_fraction and sample_seed."""
+        ArcsinhStretch(
+            scale=None, percentile=50, data_dir=large_dataset, split="train",
+            sample_fraction=0.1, sample_seed=99,
+        )
+        assert os.path.isfile(
+            os.path.join(large_dataset, "arcsinh_tdigest_train_s0.1_seed99.json")
+        )
+
+    def test_no_sampling_cache_filename_unchanged(self, large_dataset):
+        """Verify no sampling produces the original cache filename."""
+        ArcsinhStretch(
+            scale=None, percentile=50, data_dir=large_dataset, split="train",
+        )
+        assert os.path.isfile(
+            os.path.join(large_dataset, "arcsinh_tdigest_train.json")
+        )
+
+    def test_global_norm_sampling_cache_filename(self, large_dataset):
+        """Verify GlobalNorm cache filename encodes sampling params."""
+        GlobalNorm(
+            global_min=None, global_max=None,
+            data_dir=large_dataset, percentile=50, split="train",
+            sample_fraction=0.2, sample_seed=7,
+        )
+        assert os.path.isfile(
+            os.path.join(
+                large_dataset, "global_norm_tdigest_50_train_s0.2_seed7.json"
+            )
+        )
+
+
 class TestComposeEndToEnd:
     """End-to-end test for the active transform pipeline."""
 

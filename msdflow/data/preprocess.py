@@ -88,6 +88,50 @@ def build_tdigest(
     return result
 
 
+def _tdigest_cache_suffix(
+    split: str | None,
+    sample_fraction: float | None = None,
+    sample_seed: int = 42,
+) -> str:
+    """Build the suffix for a tdigest cache filename.
+
+    Args:
+        split: Split name (e.g. ``"train"``).
+        sample_fraction: Fraction of files sampled, or ``None`` for all.
+        sample_seed: RNG seed used for sampling.
+
+    Returns:
+        Suffix string, e.g. ``"_train"`` or ``"_train_s0.1_seed42"``.
+    """
+    suffix = f"_{split}" if split is not None else ""
+    if sample_fraction is not None:
+        suffix += f"_s{sample_fraction}_seed{sample_seed}"
+    return suffix
+
+
+def _sample_filenames(
+    filenames: list[str],
+    sample_fraction: float | None,
+    sample_seed: int,
+) -> list[str]:
+    """Optionally subsample a file list for TDigest estimation.
+
+    Args:
+        filenames: Full list of filenames.
+        sample_fraction: Fraction to keep, or ``None`` for all.
+        sample_seed: RNG seed for reproducibility.
+
+    Returns:
+        (Possibly subsampled) list of filenames in original order.
+    """
+    if sample_fraction is None:
+        return filenames
+    rng = np.random.default_rng(sample_seed)
+    n_sample = max(1, int(len(filenames) * sample_fraction))
+    indices = rng.choice(len(filenames), size=n_sample, replace=False)
+    return [filenames[i] for i in sorted(indices)]
+
+
 class SurfaceBrightnessToNanomaggies:
     """Convert surface-brightness (AB mag/pixel) to nanomaggies.
 
@@ -204,6 +248,8 @@ class ArcsinhStretch:
         percentile=None,
         data_dir: str = None,
         split: str | None = "train",
+        sample_fraction: float | None = None,
+        sample_seed: int = 42,
     ):
         use_percentile = (percentile is not None) and (data_dir is not None)
         use_scale = scale is not None
@@ -223,13 +269,15 @@ class ArcsinhStretch:
         self.percentile = percentile
         self.data_dir = data_dir
         self.split = split
+        self.sample_fraction = sample_fraction
+        self.sample_seed = sample_seed
 
         if use_scale:
             self.scale = scale
 
         if use_percentile:
 
-            suffix = f"_{split}" if split is not None else ""
+            suffix = _tdigest_cache_suffix(split, sample_fraction, sample_seed)
             tdigest_path = os.path.join(data_dir, f"arcsinh_tdigest{suffix}.json")
 
             if os.path.isfile(tdigest_path):
@@ -259,6 +307,9 @@ class ArcsinhStretch:
         if self.split is not None:
             metadata = metadata[metadata["split"] == self.split]
         filenames = metadata["filename"].tolist()
+        filenames = _sample_filenames(
+            filenames, self.sample_fraction, self.sample_seed
+        )
 
         return build_tdigest(
             data_dir=self.data_dir,
@@ -318,6 +369,8 @@ class GlobalNorm:
         percentile=None,
         data_dir: str = None,
         split: str | None = "train",
+        sample_fraction: float | None = None,
+        sample_seed: int = 42,
     ):
 
         if transforms is None:
@@ -325,6 +378,8 @@ class GlobalNorm:
         self.transforms = transforms
         self.data_dir = data_dir
         self.split = split
+        self.sample_fraction = sample_fraction
+        self.sample_seed = sample_seed
 
         self.norm_min = norm_min
         self.norm_max = norm_max
@@ -333,7 +388,7 @@ class GlobalNorm:
 
         if global_value_not_set:
 
-            suffix = f"_{split}" if split is not None else ""
+            suffix = _tdigest_cache_suffix(split, sample_fraction, sample_seed)
             tdigest_path = os.path.join(
                 data_dir, f"global_norm_tdigest_{int(percentile)}{suffix}.json"
             )
@@ -372,6 +427,9 @@ class GlobalNorm:
         if self.split is not None:
             metadata = metadata[metadata["split"] == self.split]
         filenames = metadata["filename"].tolist()
+        filenames = _sample_filenames(
+            filenames, self.sample_fraction, self.sample_seed
+        )
 
         return build_tdigest(
             data_dir=self.data_dir,
