@@ -619,3 +619,77 @@ class TestComposeEndToEnd:
         assert out.shape == (1, 128, 128)
         assert out.min() >= -1.0 - 1e-7
         assert out.max() <= 1.0 + 1e-7
+
+
+class TestCacheDir:
+    """Tests for separate cache_dir parameter."""
+
+    @pytest.fixture
+    def split_dirs(self, tmp_path):
+        """Create data_dir with .npy files and a separate empty cache_dir."""
+        import pandas as pd
+        data_dir = tmp_path / "data"
+        cache_dir = tmp_path / "cache"
+        data_dir.mkdir()
+        cache_dir.mkdir()
+
+        records = []
+        for i in range(3):
+            name = f"galaxy_{i:05d}.npy"
+            np.save(data_dir / name, np.full((1, 4, 4), float(i + 1)))
+            records.append({"filename": name, "split": "train"})
+        pd.DataFrame(records).to_csv(data_dir / "metadata.csv", index=False)
+        return str(data_dir), str(cache_dir)
+
+    def test_arcsinh_writes_cache_to_cache_dir(self, split_dirs):
+        """Verify ArcsinhStretch writes tdigest JSON to cache_dir, not data_dir."""
+        data_dir, cache_dir = split_dirs
+        ArcsinhStretch(
+            scale=None, percentile=50, data_dir=data_dir,
+            split="train", cache_dir=cache_dir,
+        )
+        assert os.path.isfile(
+            os.path.join(cache_dir, "arcsinh_tdigest_train.json")
+        )
+        assert not os.path.isfile(
+            os.path.join(data_dir, "arcsinh_tdigest_train.json")
+        )
+
+    def test_global_norm_writes_cache_to_cache_dir(self, split_dirs):
+        """Verify GlobalNorm writes tdigest JSON to cache_dir, not data_dir."""
+        data_dir, cache_dir = split_dirs
+        GlobalNorm(
+            global_min=None, global_max=None,
+            data_dir=data_dir, percentile=50,
+            split="train", cache_dir=cache_dir,
+        )
+        assert os.path.isfile(
+            os.path.join(cache_dir, "global_norm_tdigest_50_train.json")
+        )
+        assert not os.path.isfile(
+            os.path.join(data_dir, "global_norm_tdigest_50_train.json")
+        )
+
+    def test_cache_dir_none_falls_back_to_data_dir(self, split_dirs):
+        """Verify cache_dir=None writes to data_dir (backward compat)."""
+        data_dir, _ = split_dirs
+        ArcsinhStretch(
+            scale=None, percentile=50, data_dir=data_dir,
+            split="train", cache_dir=None,
+        )
+        assert os.path.isfile(
+            os.path.join(data_dir, "arcsinh_tdigest_train.json")
+        )
+
+    def test_cache_dir_reads_existing_cache(self, split_dirs):
+        """Verify second instantiation reads from cache_dir without recomputing."""
+        data_dir, cache_dir = split_dirs
+        t1 = ArcsinhStretch(
+            scale=None, percentile=50, data_dir=data_dir,
+            split="train", cache_dir=cache_dir,
+        )
+        t2 = ArcsinhStretch(
+            scale=None, percentile=50, data_dir=data_dir,
+            split="train", cache_dir=cache_dir,
+        )
+        np.testing.assert_allclose(t1.scale, t2.scale)

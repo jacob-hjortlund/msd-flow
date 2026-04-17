@@ -246,6 +246,8 @@ class ArcsinhStretch:
             ``sample_fraction`` is set. Defaults to ``42``.
         n_workers: Number of multiprocessing workers for TDigest
             computation. ``0`` means serial. Defaults to ``0``.
+        cache_dir: Directory for writing/reading tdigest cache files.
+            Falls back to ``data_dir`` when ``None``. Defaults to ``None``.
     """
 
     def __init__(
@@ -258,6 +260,7 @@ class ArcsinhStretch:
         sample_fraction: float | None = None,
         sample_seed: int = 42,
         n_workers: int = 0,
+        cache_dir: str | None = None,
     ):
         use_percentile = (percentile is not None) and (data_dir is not None)
         use_scale = scale is not None
@@ -280,6 +283,7 @@ class ArcsinhStretch:
         self.sample_fraction = sample_fraction
         self.sample_seed = sample_seed
         self.n_workers = n_workers
+        self.cache_dir = cache_dir if cache_dir is not None else data_dir
 
         if use_scale:
             self.scale = scale
@@ -287,7 +291,9 @@ class ArcsinhStretch:
         if use_percentile:
 
             suffix = _tdigest_cache_suffix(split, sample_fraction, sample_seed)
-            tdigest_path = os.path.join(data_dir, f"arcsinh_tdigest{suffix}.json")
+            tdigest_path = os.path.join(
+                self.cache_dir, f"arcsinh_tdigest{suffix}.json"
+            )
 
             if os.path.isfile(tdigest_path):
                 with open(tdigest_path, "r") as fp:
@@ -374,6 +380,8 @@ class GlobalNorm:
             ``sample_fraction`` is set. Defaults to ``42``.
         n_workers: Number of multiprocessing workers for TDigest
             computation. ``0`` means serial. Defaults to ``0``.
+        cache_dir: Directory for writing/reading tdigest cache files.
+            Falls back to ``data_dir`` when ``None``. Defaults to ``None``.
     """
 
     def __init__(
@@ -389,6 +397,7 @@ class GlobalNorm:
         sample_fraction: float | None = None,
         sample_seed: int = 42,
         n_workers: int = 0,
+        cache_dir: str | None = None,
     ):
 
         if transforms is None:
@@ -399,6 +408,7 @@ class GlobalNorm:
         self.sample_fraction = sample_fraction
         self.sample_seed = sample_seed
         self.n_workers = n_workers
+        self.cache_dir = cache_dir if cache_dir is not None else data_dir
 
         self.norm_min = norm_min
         self.norm_max = norm_max
@@ -409,7 +419,8 @@ class GlobalNorm:
 
             suffix = _tdigest_cache_suffix(split, sample_fraction, sample_seed)
             tdigest_path = os.path.join(
-                data_dir, f"global_norm_tdigest_{int(percentile)}{suffix}.json"
+                self.cache_dir,
+                f"global_norm_tdigest_{int(percentile)}{suffix}.json",
             )
 
             if os.path.isfile(tdigest_path):
