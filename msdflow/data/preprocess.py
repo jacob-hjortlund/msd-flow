@@ -7,6 +7,7 @@ Each transform is a callable class with ``__init__`` for parameters and
 
 import os
 import json
+from multiprocessing import Pool
 import numpy as np
 import pandas as pd
 from fastdigest import TDigest
@@ -71,13 +72,13 @@ def build_tdigest(
     if n_workers <= 0:
         return _worker_build_tdigest((data_dir, filenames, transforms, pixel_filter))
 
-    chunks = np.array_split(filenames, n_workers)
+    chunk_size = (len(filenames) + n_workers - 1) // n_workers
+    chunks = [filenames[i:i + chunk_size] for i in range(0, len(filenames), chunk_size)]
     args = [
-        (data_dir, chunk.tolist(), transforms, pixel_filter)
+        (data_dir, chunk, transforms, pixel_filter)
         for chunk in chunks
     ]
 
-    from multiprocessing import Pool
     with Pool(n_workers) as pool:
         digests = pool.map(_worker_build_tdigest, args)
 
