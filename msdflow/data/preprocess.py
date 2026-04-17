@@ -9,13 +9,82 @@ import os
 import json
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
 from fastdigest import TDigest
 
 
 def _identity(x):
     """Identity transform (picklable replacement for ``lambda x: x``)."""
     return x
+
+
+def _filter_positive(img: np.ndarray) -> np.ndarray:
+    """Return only positive pixel values (flattened)."""
+    return img[img > 0]
+
+
+def _flatten(img: np.ndarray) -> np.ndarray:
+    """Return all pixel values flattened."""
+    return img.flatten()
+
+
+def _worker_build_tdigest(args: tuple) -> TDigest:
+    """Build a TDigest over a chunk of files (for use with multiprocessing).
+
+    Args:
+        args: Tuple of ``(data_dir, filenames, transforms, pixel_filter)``.
+
+    Returns:
+        Fitted ``TDigest`` for this chunk.
+    """
+    data_dir, filenames, transforms, pixel_filter = args
+    digest = TDigest()
+    for fn in filenames:
+        path = os.path.join(data_dir, fn)
+        img = np.load(path)
+        img = transforms(img)
+        digest.batch_update(pixel_filter(img))
+    return digest
+
+
+def build_tdigest(
+    data_dir: str,
+    filenames: list[str],
+    transforms,
+    pixel_filter,
+    n_workers: int = 0,
+) -> TDigest:
+    """Build a TDigest over pixel values from a list of ``.npy`` files.
+
+    Args:
+        data_dir: Directory containing the ``.npy`` files.
+        filenames: List of filenames (relative to ``data_dir``).
+        transforms: Preprocessing pipeline applied to each image.
+        pixel_filter: Callable that selects/reshapes pixels from a
+            transformed image into a 1-D array for the TDigest.
+            Use ``_filter_positive`` for non-zero pixels or
+            ``_flatten`` for all pixels.
+        n_workers: Number of multiprocessing workers. ``0`` means serial.
+
+    Returns:
+        Fitted ``TDigest`` instance.
+    """
+    if n_workers <= 0:
+        return _worker_build_tdigest((data_dir, filenames, transforms, pixel_filter))
+
+    chunks = np.array_split(filenames, n_workers)
+    args = [
+        (data_dir, chunk.tolist(), transforms, pixel_filter)
+        for chunk in chunks
+    ]
+
+    from multiprocessing import Pool
+    with Pool(n_workers) as pool:
+        digests = pool.map(_worker_build_tdigest, args)
+
+    result = digests[0]
+    for d in digests[1:]:
+        result = result.merge(d)
+    return result
 
 
 class SurfaceBrightnessToNanomaggies:
@@ -190,16 +259,12 @@ class ArcsinhStretch:
             metadata = metadata[metadata["split"] == self.split]
         filenames = metadata["filename"].tolist()
 
-        digest = TDigest()
-
-        for fn in tqdm(filenames):
-            path = os.path.join(self.data_dir, fn)
-            img = np.load(path)
-            img = self.transforms(img)
-            non_zero = img[img > 0]
-            digest.batch_update(non_zero)
-
-        return digest
+        return build_tdigest(
+            data_dir=self.data_dir,
+            filenames=filenames,
+            transforms=self.transforms,
+            pixel_filter=_filter_positive,
+        )
 
     def __call__(self, img: np.ndarray) -> np.ndarray:
         """Apply arcsinh stretch.
@@ -307,15 +372,12 @@ class GlobalNorm:
             metadata = metadata[metadata["split"] == self.split]
         filenames = metadata["filename"].tolist()
 
-        digest = TDigest()
-
-        for fn in tqdm(filenames):
-            path = os.path.join(self.data_dir, fn)
-            img = np.load(path)
-            img = self.transforms(img)
-            digest.batch_update(img.flatten())
-
-        return digest
+        return build_tdigest(
+            data_dir=self.data_dir,
+            filenames=filenames,
+            transforms=self.transforms,
+            pixel_filter=_flatten,
+        )
 
     def __call__(self, img: np.ndarray) -> np.ndarray:
         """Apply global linear normalization.

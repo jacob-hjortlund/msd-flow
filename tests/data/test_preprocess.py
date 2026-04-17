@@ -1,5 +1,7 @@
 """Tests for msdflow.data.preprocess."""
 
+import os
+
 import numpy as np
 import pytest
 
@@ -16,6 +18,10 @@ from msdflow.data.preprocess import (
     RandomRotation90,
     RandomVerticalFlip,
     SurfaceBrightnessToNanomaggies,
+    _identity,
+    build_tdigest,
+    _filter_positive,
+    _flatten,
 )
 
 
@@ -422,6 +428,51 @@ class TestIdentityPicklable:
         restored = pickle.loads(pickled)
         img = np.ones((1, 4, 4))
         np.testing.assert_array_equal(restored(img), img)
+
+
+class TestBuildTdigest:
+    """Tests for the shared build_tdigest function."""
+
+    @pytest.fixture
+    def dataset_dir(self, tmp_path):
+        """Create a small dataset with 4 .npy files and metadata.csv."""
+        import pandas as pd
+        records = []
+        for i in range(4):
+            name = f"galaxy_{i:05d}.npy"
+            np.save(tmp_path / name, np.full((1, 4, 4), float(i)))
+            records.append({"filename": name, "split": "train"})
+        pd.DataFrame(records).to_csv(tmp_path / "metadata.csv", index=False)
+        return str(tmp_path)
+
+    def test_serial_positive_filter(self, dataset_dir):
+        """Verify build_tdigest with positive filter matches ArcsinhStretch behavior."""
+        import pandas as pd
+        metadata = pd.read_csv(os.path.join(dataset_dir, "metadata.csv"))
+        filenames = metadata["filename"].tolist()
+        digest = build_tdigest(
+            data_dir=dataset_dir,
+            filenames=filenames,
+            transforms=_identity,
+            pixel_filter=_filter_positive,
+        )
+        # galaxy_0 is all 0.0 (filtered out), galaxy_1/2/3 are 1.0/2.0/3.0
+        np.testing.assert_allclose(digest.percentile(50), 2.0, atol=0.1)
+
+    def test_serial_flatten_filter(self, dataset_dir):
+        """Verify build_tdigest with flatten filter matches GlobalNorm behavior."""
+        import pandas as pd
+        metadata = pd.read_csv(os.path.join(dataset_dir, "metadata.csv"))
+        filenames = metadata["filename"].tolist()
+        digest = build_tdigest(
+            data_dir=dataset_dir,
+            filenames=filenames,
+            transforms=_identity,
+            pixel_filter=_flatten,
+        )
+        # All pixels: 0.0, 1.0, 2.0, 3.0 (16 pixels each)
+        np.testing.assert_allclose(digest.min(), 0.0)
+        np.testing.assert_allclose(digest.max(), 3.0)
 
 
 class TestComposeEndToEnd:
