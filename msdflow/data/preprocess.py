@@ -11,6 +11,7 @@ from multiprocessing import Pool
 import numpy as np
 import pandas as pd
 from fastdigest import TDigest
+from tqdm import tqdm
 
 
 def _identity(x):
@@ -28,22 +29,21 @@ def _flatten(img: np.ndarray) -> np.ndarray:
     return img.flatten()
 
 
-def _worker_build_tdigest(args: tuple) -> TDigest:
-    """Build a TDigest over a chunk of files (for use with multiprocessing).
+def _worker_single_file(args: tuple) -> TDigest:
+    """Build a TDigest from a single .npy file.
 
     Args:
-        args: Tuple of ``(data_dir, filenames, transforms, pixel_filter)``.
+        args: Tuple of ``(data_dir, filename, transforms, pixel_filter)``.
 
     Returns:
-        Fitted ``TDigest`` for this chunk.
+        Fitted ``TDigest`` for this file.
     """
-    data_dir, filenames, transforms, pixel_filter = args
+    data_dir, filename, transforms, pixel_filter = args
+    path = os.path.join(data_dir, filename)
+    img = np.load(path)
+    img = transforms(img)
     digest = TDigest()
-    for fn in filenames:
-        path = os.path.join(data_dir, fn)
-        img = np.load(path)
-        img = transforms(img)
-        digest.batch_update(pixel_filter(img))
+    digest.batch_update(pixel_filter(img))
     return digest
 
 
@@ -69,22 +69,25 @@ def build_tdigest(
     Returns:
         Fitted ``TDigest`` instance.
     """
-    if n_workers <= 0:
-        return _worker_build_tdigest((data_dir, filenames, transforms, pixel_filter))
-
-    chunk_size = (len(filenames) + n_workers - 1) // n_workers
-    chunks = [filenames[i:i + chunk_size] for i in range(0, len(filenames), chunk_size)]
     args = [
-        (data_dir, chunk, transforms, pixel_filter)
-        for chunk in chunks
+        (data_dir, fn, transforms, pixel_filter)
+        for fn in filenames
     ]
 
-    with Pool(n_workers) as pool:
-        digests = pool.map(_worker_build_tdigest, args)
+    if n_workers <= 0:
+        result = TDigest()
+        for digest in tqdm(map(_worker_single_file, args),
+                           total=len(filenames),
+                           desc="Building TDigest", unit="file"):
+            result = result.merge(digest)
+        return result
 
-    result = digests[0]
-    for d in digests[1:]:
-        result = result.merge(d)
+    with Pool(n_workers) as pool:
+        result = TDigest()
+        for digest in tqdm(pool.imap_unordered(_worker_single_file, args),
+                           total=len(filenames),
+                           desc="Building TDigest", unit="file"):
+            result = result.merge(digest)
     return result
 
 
