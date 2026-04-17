@@ -239,6 +239,11 @@ class ArcsinhStretch:
             Required when ``percentile`` is set.
         split: Split name used to filter ``metadata.csv`` when building the
             TDigest. Defaults to ``"train"``. Pass ``None`` to use all rows.
+        sample_fraction: Fraction of the filtered file list to use when
+            building the TDigest. ``None`` uses all files. Defaults to
+            ``None``.
+        sample_seed: RNG seed for reproducible sampling. Only used when
+            ``sample_fraction`` is set. Defaults to ``42``.
     """
 
     def __init__(
@@ -357,6 +362,11 @@ class GlobalNorm:
             Required when either bound is ``None``.
         split: Split name used to filter ``metadata.csv`` when building the
             TDigest. Defaults to ``"train"``. Pass ``None`` to use all rows.
+        sample_fraction: Fraction of the filtered file list to use when
+            building the TDigest. ``None`` uses all files. Defaults to
+            ``None``.
+        sample_seed: RNG seed for reproducible sampling. Only used when
+            ``sample_fraction`` is set. Defaults to ``42``.
     """
 
     def __init__(
