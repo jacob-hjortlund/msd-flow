@@ -411,6 +411,19 @@ class TestRandomRotation90:
             assert out.tobytes() in valid
 
 
+class TestIdentityPicklable:
+    """Verify the identity transform fallback is picklable."""
+
+    def test_identity_is_picklable(self):
+        """Default transforms must be picklable for multiprocessing."""
+        import pickle
+        t = ArcsinhStretch(scale=1.0)
+        pickled = pickle.dumps(t.transforms)
+        restored = pickle.loads(pickled)
+        img = np.ones((1, 4, 4))
+        np.testing.assert_array_equal(restored(img), img)
+
+
 class TestComposeEndToEnd:
     """End-to-end test for the active transform pipeline."""
 

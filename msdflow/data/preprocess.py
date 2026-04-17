@@ -13,6 +13,11 @@ from tqdm import tqdm
 from fastdigest import TDigest
 
 
+def _identity(x):
+    """Identity transform (picklable replacement for ``lambda x: x``)."""
+    return x
+
+
 class SurfaceBrightnessToNanomaggies:
     """Convert surface-brightness (AB mag/pixel) to nanomaggies.
 
@@ -143,7 +148,7 @@ class ArcsinhStretch:
             )
 
         if transforms is None:
-            transforms = lambda x: x
+            transforms = _identity
         self.transforms = transforms
         self.percentile = percentile
         self.data_dir = data_dir
@@ -250,7 +255,7 @@ class GlobalNorm:
     ):
 
         if transforms is None:
-            transforms = lambda x: x
+            transforms = _identity
         self.transforms = transforms
         self.data_dir = data_dir
         self.split = split
