@@ -7,6 +7,7 @@ import pandas as pd
 import jax.random as jr
 import jax.numpy as jnp
 
+from tqdm import tqdm
 from hydra.utils import instantiate, call
 from jax.scipy.ndimage import map_coordinates
 from omegaconf import DictConfig, OmegaConf, open_dict
@@ -243,7 +244,8 @@ def morphology_metrics(img, eps=1e-12):
 
 def get_mu_sig(acc, imgs, batch_size=128):
     acc.reset()
-    for i in range(0, len(imgs), batch_size):
+    n = len(imgs)
+    for i in tqdm(range(0, len(imgs), batch_size), total=n):
         acc.update(jnp.asarray(imgs[i : i + batch_size]))
     mu, sig, _ = acc.statistics()
     acc.reset()
@@ -288,7 +290,7 @@ def compare_metric_groups(
     values = np.asarray(metrics[metric].values)
     groups = split_into_three_groups(values)
 
-    print(f"\nMetric: {metric}")
+    print_string = f"\nMetric: {metric}"
     summarize_groups(values, groups)
 
     # Precompute Gaussian stats for each group for both encoders
@@ -303,7 +305,7 @@ def compare_metric_groups(
     # Pairwise comparisons
     pairs = [("low", "medium"), ("medium", "high"), ("low", "high")]
 
-    print("\nPairwise FID comparisons:")
+    print_string += "\nPairwise FID comparisons:"
     for g1, g2 in pairs:
         zb_mu_1, zb_sig_1 = zb_stats[g1]
         zb_mu_2, zb_sig_2 = zb_stats[g2]
@@ -313,31 +315,35 @@ def compare_metric_groups(
         zb_dist = _frechet_distance(zb_mu_1, zb_sig_1, zb_mu_2, zb_sig_2)
         in_dist = _frechet_distance(in_mu_1, in_sig_1, in_mu_2, in_sig_2)
 
-        print(f"\n{g1.upper()} vs {g2.upper()}")
-        print(f"  Zoobot      FID: {zb_dist:.4g}")
-        print(f"  InceptionV3 FID: {in_dist:.4g}")
+        print_string += (
+            f"\n{g1.upper()} vs {g2.upper()}"
+            + f"  Zoobot      FID: {zb_dist:.4g}"
+            + f"  InceptionV3 FID: {in_dist:.4g}"
+        )
 
         if zb_dist_ref is not None:
             delta_zb = zb_dist - zb_dist_ref
             frac_zb = delta_zb / zb_dist_ref
-            print(
+            print_string += (
                 f"  Zoobot      ΔFID: {delta_zb:.4g}, " f"Frac. Δ: {100 * frac_zb:.3g}%"
             )
 
         if in_dist_ref is not None:
             delta_in = in_dist - in_dist_ref
             frac_in = delta_in / in_dist_ref
-            print(
+            print_string += (
                 f"  InceptionV3 ΔFID: {delta_in:.4g}, " f"Frac. Δ: {100 * frac_in:.3g}%"
             )
 
         if (zb_dist_ref is not None) and (in_dist_ref is not None):
             rel_zb = zb_dist / zb_dist_ref
             rel_in = in_dist / in_dist_ref
-            print(
+            print_string += (
                 f"  Relative separation vs ref: "
                 f"Zoobot={rel_zb:.3f}x, InceptionV3={rel_in:.3f}x"
             )
+
+    log.info(print_string)
 
 
 @hydra.main(version_base=None, config_path="./configs", config_name="config")
@@ -374,7 +380,9 @@ def main(cfg: DictConfig):
     dataframes = []
     batches = []
 
-    for batch, _ in val_loader:
+    log.info("--- Step 4: Extract Data ---")
+    n_batches = len(val_loader)
+    for batch, _ in tqdm(val_loader, total=n_batches):
         batch = jnp.asarray(batch.numpy())
         batch_metrics = metrics_fn(batch)
         dataframes.append(pd.DataFrame(batch_metrics))
@@ -400,6 +408,7 @@ def main(cfg: DictConfig):
     split_1 = images[mask]
     split_2 = images[~mask]
 
+    log.info("--- Calculate Reference FIDs ---")
     zb_mu_1, zb_sig_1 = get_mu_sig(zb_acc, split_1)
     in_mu_1, in_sig_1 = get_mu_sig(in_acc, split_1)
 
@@ -409,13 +418,13 @@ def main(cfg: DictConfig):
     zb_dist_ref = _frechet_distance(zb_mu_1, zb_sig_1, zb_mu_2, zb_sig_2)
     in_dist_ref = _frechet_distance(in_mu_1, in_sig_1, in_mu_2, in_sig_2)
 
-    print(f"Zoobot Ref. FID: {zb_dist_ref:.3g}")
-    print(f"InceptionV3 Ref. FID: {in_dist_ref:.3g}")
+    log.info(f"Zoobot Ref. FID: {zb_dist_ref:.3g}")
+    log.info(f"InceptionV3 Ref. FID: {in_dist_ref:.3g}")
 
     metrics_to_check = ["axis_ratio", "concentration", "asymmetry"]
     for metric in metrics_to_check:
 
-        print(
+        log.info(
             f"\n----------------------- FID Comparison for {metric} -----------------------\n"
         )
         compare_metric_groups(
