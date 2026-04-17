@@ -31,6 +31,7 @@ def main(cfg: DictConfig):
         seed=dataset_cfg.seed,
         ratios=OmegaConf.to_container(dataset_cfg.ratios, resolve=True),
         download_cfg=cfg.data.download,
+        use_dataset=cfg.clearml.use_dataset,
     )
 
     # 2. Inject resolved path into dataloader config
