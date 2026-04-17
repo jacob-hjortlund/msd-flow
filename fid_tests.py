@@ -269,13 +269,15 @@ def split_into_three_groups(values):
 
 
 def summarize_groups(values, groups):
+    print_string = "\n"
     for name, idx in groups.items():
         vals = values[idx]
-        print(
+        print_string += (
             f"{name:>6}: n={len(idx):5d}, "
             f"range=[{vals.min():.3g}, {vals.max():.3g}], "
             f"mean={vals.mean():.3g}, median={np.median(vals):.3g}"
         )
+    return print_string
 
 
 def compare_metric_groups(
@@ -291,7 +293,7 @@ def compare_metric_groups(
     groups = split_into_three_groups(values)
 
     print_string = f"\nMetric: {metric}"
-    summarize_groups(values, groups)
+    print_string += summarize_groups(values, groups)
 
     # Precompute Gaussian stats for each group for both encoders
     zb_stats = {}
@@ -317,30 +319,32 @@ def compare_metric_groups(
 
         print_string += (
             f"\n{g1.upper()} vs {g2.upper()}"
-            + f"  Zoobot      FID: {zb_dist:.4g}"
-            + f"  InceptionV3 FID: {in_dist:.4g}"
+            + f"\n  Zoobot      FID: {zb_dist:.4g}"
+            + f"\n  InceptionV3 FID: {in_dist:.4g}"
         )
 
         if zb_dist_ref is not None:
             delta_zb = zb_dist - zb_dist_ref
             frac_zb = delta_zb / zb_dist_ref
             print_string += (
-                f"  Zoobot      ΔFID: {delta_zb:.4g}, " f"Frac. Δ: {100 * frac_zb:.3g}%"
+                f"\n  Zoobot      ΔFID: {delta_zb:.4g}, "
+                f"\nFrac. Δ: {100 * frac_zb:.3g}%"
             )
 
         if in_dist_ref is not None:
             delta_in = in_dist - in_dist_ref
             frac_in = delta_in / in_dist_ref
             print_string += (
-                f"  InceptionV3 ΔFID: {delta_in:.4g}, " f"Frac. Δ: {100 * frac_in:.3g}%"
+                f"\n  InceptionV3 ΔFID: {delta_in:.4g}, "
+                f"\nFrac. Δ: {100 * frac_in:.3g}%"
             )
 
         if (zb_dist_ref is not None) and (in_dist_ref is not None):
             rel_zb = zb_dist / zb_dist_ref
             rel_in = in_dist / in_dist_ref
             print_string += (
-                f"  Relative separation vs ref: "
-                f"Zoobot={rel_zb:.3f}x, InceptionV3={rel_in:.3f}x"
+                f"\n  Relative separation vs ref: "
+                f"\nZoobot={rel_zb:.3f}x, InceptionV3={rel_in:.3f}x"
             )
 
     log.info(print_string)
