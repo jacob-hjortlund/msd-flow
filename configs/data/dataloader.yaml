@@ -2,9 +2,9 @@ data_dir: null
 cache_dir: null
 
 tdigest:
-  sample_fraction: null
+  sample_fraction: 0.1
   sample_seed: 42
-  n_workers: 0
+  n_workers: 10
 
 pre_arcsinh_image_transforms:
   _target_: torchvision.transforms.Compose
