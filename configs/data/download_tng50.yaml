@@ -4,7 +4,7 @@ api_key: ${oc.env:TNG_API_KEY,null}
 version_ids: [0,1,2,3]
 snapshots: ${generate_snapshot_ids:72,20}
 num_files_per_view: 0
-max_workers: 5
+max_workers: 10
 raw_dir: "${data.dataset.data_dir}/raw"
 bands: ["SUBARU_HSC.I"]
-batch_size: 100
+batch_size: 1000
