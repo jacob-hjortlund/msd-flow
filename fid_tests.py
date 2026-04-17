@@ -244,8 +244,8 @@ def morphology_metrics(img, eps=1e-12):
 
 def get_mu_sig(acc, imgs, batch_size=128):
     acc.reset()
-    n = len(imgs)
-    for i in tqdm(range(0, len(imgs), batch_size), total=n):
+    total = (len(imgs) + batch_size - 1) // batch_size
+    for i in tqdm(range(0, len(imgs), batch_size), total=total):
         acc.update(jnp.asarray(imgs[i : i + batch_size]))
     mu, sig, _ = acc.statistics()
     acc.reset()
@@ -387,10 +387,11 @@ def main(cfg: DictConfig):
     log.info("--- Step 4: Extract Data ---")
     n_batches = len(val_loader)
     for batch, _ in tqdm(val_loader, total=n_batches):
-        batch = jnp.asarray(batch.numpy())
+        batch = batch.numpy()
         batch_metrics = metrics_fn(batch)
         dataframes.append(pd.DataFrame(batch_metrics))
-        batches.append(np.asarray(batch))
+        batches.append(batch)
+        break
 
     images = np.concatenate(batches)
 

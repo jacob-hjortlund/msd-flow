@@ -104,7 +104,7 @@ test_dataset:
   metadata_transform: ${data.dataloader.metadata_transform}
 
 
-batch_size: 32
+batch_size: 512
 train:
   _target_: torch.utils.data.DataLoader
   dataset: ${data.dataloader.train_dataset}
