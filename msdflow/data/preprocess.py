@@ -244,6 +244,8 @@ class ArcsinhStretch:
             ``None``.
         sample_seed: RNG seed for reproducible sampling. Only used when
             ``sample_fraction`` is set. Defaults to ``42``.
+        n_workers: Number of multiprocessing workers for TDigest
+            computation. ``0`` means serial. Defaults to ``0``.
     """
 
     def __init__(
@@ -255,6 +257,7 @@ class ArcsinhStretch:
         split: str | None = "train",
         sample_fraction: float | None = None,
         sample_seed: int = 42,
+        n_workers: int = 0,
     ):
         use_percentile = (percentile is not None) and (data_dir is not None)
         use_scale = scale is not None
@@ -276,6 +279,7 @@ class ArcsinhStretch:
         self.split = split
         self.sample_fraction = sample_fraction
         self.sample_seed = sample_seed
+        self.n_workers = n_workers
 
         if use_scale:
             self.scale = scale
@@ -321,6 +325,7 @@ class ArcsinhStretch:
             filenames=filenames,
             transforms=self.transforms,
             pixel_filter=_filter_positive,
+            n_workers=self.n_workers,
         )
 
     def __call__(self, img: np.ndarray) -> np.ndarray:
@@ -367,6 +372,8 @@ class GlobalNorm:
             ``None``.
         sample_seed: RNG seed for reproducible sampling. Only used when
             ``sample_fraction`` is set. Defaults to ``42``.
+        n_workers: Number of multiprocessing workers for TDigest
+            computation. ``0`` means serial. Defaults to ``0``.
     """
 
     def __init__(
@@ -381,6 +388,7 @@ class GlobalNorm:
         split: str | None = "train",
         sample_fraction: float | None = None,
         sample_seed: int = 42,
+        n_workers: int = 0,
     ):
 
         if transforms is None:
@@ -390,6 +398,7 @@ class GlobalNorm:
         self.split = split
         self.sample_fraction = sample_fraction
         self.sample_seed = sample_seed
+        self.n_workers = n_workers
 
         self.norm_min = norm_min
         self.norm_max = norm_max
@@ -446,6 +455,7 @@ class GlobalNorm:
             filenames=filenames,
             transforms=self.transforms,
             pixel_filter=_flatten,
+            n_workers=self.n_workers,
         )
 
     def __call__(self, img: np.ndarray) -> np.ndarray:

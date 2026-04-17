@@ -548,6 +548,56 @@ class TestBuildTdigestSampling:
         )
 
 
+class TestBuildTdigestParallel:
+    """Tests for multiprocessing support in build_tdigest."""
+
+    @pytest.fixture
+    def dataset_dir(self, tmp_path):
+        """Create a dataset with 8 files for parallel tests."""
+        import pandas as pd
+        records = []
+        for i in range(8):
+            name = f"galaxy_{i:05d}.npy"
+            np.save(tmp_path / name, np.full((1, 4, 4), float(i + 1)))
+            records.append({"filename": name, "split": "train"})
+        pd.DataFrame(records).to_csv(tmp_path / "metadata.csv", index=False)
+        return str(tmp_path)
+
+    def test_parallel_matches_serial_arcsinh(self, dataset_dir):
+        """Verify parallel ArcsinhStretch produces same scale as serial."""
+        serial = ArcsinhStretch(
+            scale=None, percentile=50, data_dir=dataset_dir, split="train",
+            n_workers=0,
+        )
+        # Remove cache to force recomputation
+        import glob
+        for f in glob.glob(os.path.join(dataset_dir, "arcsinh_tdigest*.json")):
+            os.remove(f)
+        parallel = ArcsinhStretch(
+            scale=None, percentile=50, data_dir=dataset_dir, split="train",
+            n_workers=2,
+        )
+        np.testing.assert_allclose(serial.scale, parallel.scale)
+
+    def test_parallel_matches_serial_global_norm(self, dataset_dir):
+        """Verify parallel GlobalNorm produces same bounds as serial."""
+        serial = GlobalNorm(
+            global_min=None, global_max=None,
+            data_dir=dataset_dir, percentile=50, split="train",
+            n_workers=0,
+        )
+        import glob
+        for f in glob.glob(os.path.join(dataset_dir, "global_norm_tdigest*.json")):
+            os.remove(f)
+        parallel = GlobalNorm(
+            global_min=None, global_max=None,
+            data_dir=dataset_dir, percentile=50, split="train",
+            n_workers=2,
+        )
+        np.testing.assert_allclose(serial.global_min, parallel.global_min)
+        np.testing.assert_allclose(serial.global_max, parallel.global_max)
+
+
 class TestComposeEndToEnd:
     """End-to-end test for the active transform pipeline."""
 
