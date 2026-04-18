@@ -395,10 +395,29 @@ def main(cfg: DictConfig):
 
     images = np.concatenate(batches)
 
+    print("first-5 sample means:", [float(images[i].mean()) for i in range(5)])
+    print("first-5 sample stds: ", [float(images[i].std()) for i in range(5)])
+    print(
+        "inter-sample std of pixel means:",
+        float(images.reshape(images.shape[0], -1).mean(axis=1).std()),
+    )
+    print("range:", float(images.min()), float(images.max()))
+
     metrics_df = pd.concat(dataframes, ignore_index=True)
 
     zoobot = build_zoobot_nano()
     inception = build_headless_inceptionv3()
+
+    x0 = jnp.asarray(images[0])  # (1, H, W)
+    x1 = jnp.asarray(images[100])  # (1, H, W)
+
+    print("input difference:", float(jnp.abs(x0 - x1).mean()))
+
+    z0, z1 = zoobot(x0), zoobot(x1)
+    i0, i1 = inception(x0), inception(x1)
+
+    print("zoobot   diff:", float(jnp.abs(z0 - z1).mean()), "z0[:5]:", z0[:5])
+    print("incep    diff:", float(jnp.abs(i0 - i1).mean()), "i0[:5]:", i0[:5])
 
     zb_acc = FIDAccumulator(zoobot)
     in_acc = FIDAccumulator(inception)
