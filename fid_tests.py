@@ -273,9 +273,9 @@ def summarize_groups(values, groups):
     for name, idx in groups.items():
         vals = values[idx]
         print_string += (
-            f"{name:>6}: n={len(idx):5d}, "
-            f"range=[{vals.min():.3g}, {vals.max():.3g}], "
-            f"mean={vals.mean():.3g}, median={np.median(vals):.3g}"
+            f"\n{name:>6}: n={len(idx):5d}, "
+            f"\nrange=[{vals.min():.3g}, {vals.max():.3g}], "
+            f"\nmean={vals.mean():.3g}, median={np.median(vals):.3g}\n"
         )
     return print_string
 
