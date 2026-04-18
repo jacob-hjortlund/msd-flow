@@ -387,7 +387,7 @@ def main(cfg: DictConfig):
     log.info("--- Step 4: Extract Data ---")
     n_batches = len(val_loader)
     for batch, _ in tqdm(val_loader, total=n_batches):
-        batch = batch.numpy()
+        batch = np.array(batch.numpy(), copy=True)
         batch_metrics = metrics_fn(batch)
         dataframes.append(pd.DataFrame(batch_metrics))
         batches.append(batch)
