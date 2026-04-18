@@ -386,12 +386,15 @@ def main(cfg: DictConfig):
 
     log.info("--- Step 4: Extract Data ---")
     n_batches = len(val_loader)
+    i = 0
     for batch, _ in tqdm(val_loader, total=n_batches):
         batch = np.array(batch.numpy(), copy=True)
         batch_metrics = metrics_fn(batch)
         dataframes.append(pd.DataFrame(batch_metrics))
         batches.append(batch)
-        break
+        i += 1
+        if i == 2:
+            break
 
     images = np.concatenate(batches)
 
