@@ -1199,3 +1199,35 @@ def test_early_stopping_log_message(tmp_path, caplog):
     assert len(stop_logs) == 1
     assert "constant_metric" in stop_logs[0]
     assert "1" in stop_logs[0]  # patience count in message
+
+
+def test_train_rejects_grad_accum_steps_below_one(tmp_path):
+    """train() raises ValueError when grad_accum_steps < 1."""
+    dataloader = list(_make_fake_dataloader())
+    val_dataloader = _fake_val_dataloader()
+    kwargs = _make_train_kwargs(num_epochs=1)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+    with pytest.raises(ValueError, match="grad_accum_steps"):
+        train(
+            model=SMALL_MODEL,
+            dataloader=dataloader,
+            val_dataloader=val_dataloader,
+            grad_accum_steps=0,
+            **kwargs,
+        )
+
+
+def test_train_accepts_grad_accum_steps_one(tmp_path):
+    """train() completes normally with grad_accum_steps=1 (default, no wrapping)."""
+    dataloader = list(_make_fake_dataloader())
+    val_dataloader = _fake_val_dataloader()
+    kwargs = _make_train_kwargs(num_epochs=1)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+    result = train(
+        model=SMALL_MODEL,
+        dataloader=dataloader,
+        val_dataloader=val_dataloader,
+        grad_accum_steps=1,
+        **kwargs,
+    )
+    assert result is not None

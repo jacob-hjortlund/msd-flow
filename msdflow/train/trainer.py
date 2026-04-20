@@ -282,6 +282,7 @@ def train(
     monitor: str = "flow_matching_loss",
     monitor_mode: str = "min",
     early_stopping_patience: int | None = None,
+    grad_accum_steps: int = 1,
     *args,
     **kwargs,
 ):
@@ -339,12 +340,14 @@ def train(
         early_stopping_patience (int | None): Number of consecutive validation
             cycles without improvement before training is halted. None disables
             early stopping. Defaults to None.
+        grad_accum_steps (int): Number of gradient accumulation steps. When > 1,
+            the optimizer is wrapped with ``optax.MultiSteps`` so that gradients
+            are accumulated across that many mini-batches before an update is
+            applied. Must be >= 1. Defaults to 1 (no accumulation).
 
     Returns:
         Trained EMA model.
     """
-    state = make_train_state(model, optimizer)
-
     if sample_fn is not None and sample_every > 0 and samples_dir is None:
         raise ValueError(
             "samples_dir must be provided when sample_fn and sample_every > 0 are set"
@@ -352,6 +355,16 @@ def train(
 
     if monitor_mode not in ("min", "max"):
         raise ValueError(f"monitor_mode must be 'min' or 'max', got {monitor_mode!r}")
+
+    if grad_accum_steps < 1:
+        raise ValueError(
+            f"grad_accum_steps must be >= 1, got {grad_accum_steps}"
+        )
+
+    if grad_accum_steps > 1:
+        optimizer = optax.MultiSteps(optimizer, every_k_schedule=grad_accum_steps)
+
+    state = make_train_state(model, optimizer)
 
     train_step = make_train_step(optimizer, loss_fn)
     batch_metric_step = make_batch_metric_step(batch_metrics)
