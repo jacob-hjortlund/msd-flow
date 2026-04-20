@@ -1231,3 +1231,32 @@ def test_train_accepts_grad_accum_steps_one(tmp_path):
         **kwargs,
     )
     assert result is not None
+
+
+def test_train_grad_accum_processes_correct_microsteps(tmp_path):
+    """With grad_accum_steps=K, the loop processes K microbatches per effective step."""
+    call_count = [0]
+    original_fml = _fml
+
+    def counting_loss(model, x_t, u_t, t, cond, cond_mask, key):
+        call_count[0] += 1
+        return original_fml(model, x_t, u_t, t, cond, cond_mask, key)
+
+    num_steps = 3
+    grad_accum_steps = 2
+    # Need enough batches: num_steps * grad_accum_steps = 6
+    dataloader = list(_make_fake_dataloader(B=2, num_batches=6))
+    val_dataloader = _fake_val_dataloader()
+    kwargs = _make_train_kwargs(num_epochs=1, num_steps_per_epoch=num_steps)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+    kwargs["loss_fn"] = counting_loss
+    with jax.disable_jit():
+        train(
+            model=SMALL_MODEL,
+            dataloader=dataloader,
+            val_dataloader=val_dataloader,
+            grad_accum_steps=grad_accum_steps,
+            **kwargs,
+        )
+    # 3 effective steps * 2 accumulation steps = 6 microbatch forward passes
+    assert call_count[0] == num_steps * grad_accum_steps

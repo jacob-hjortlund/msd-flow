@@ -369,9 +369,12 @@ def train(
     train_step = make_train_step(optimizer, loss_fn)
     batch_metric_step = make_batch_metric_step(batch_metrics)
 
-    steps_per_epoch = (
-        len(dataloader) if num_steps_per_epoch == 0 else num_steps_per_epoch
-    )
+    if num_steps_per_epoch == 0:
+        microsteps_per_epoch = len(dataloader)
+        steps_per_epoch = microsteps_per_epoch // grad_accum_steps
+    else:
+        steps_per_epoch = num_steps_per_epoch
+        microsteps_per_epoch = steps_per_epoch * grad_accum_steps
 
     ema_model = model
     data_iter = iter(dataloader)
@@ -401,7 +404,7 @@ def train(
 
         with logging_redirect_tqdm():
             pbar = tqdm(
-                range(steps_per_epoch),
+                range(microsteps_per_epoch),
                 desc=f"Epoch {epoch + 1}/{num_epochs}",
                 leave=False,
                 dynamic_ncols=True,
