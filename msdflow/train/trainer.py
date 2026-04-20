@@ -370,8 +370,14 @@ def train(
     batch_metric_step = make_batch_metric_step(batch_metrics)
 
     if num_steps_per_epoch == 0:
-        microsteps_per_epoch = len(dataloader)
+        microsteps_per_epoch = (len(dataloader) // grad_accum_steps) * grad_accum_steps
         steps_per_epoch = microsteps_per_epoch // grad_accum_steps
+        if len(dataloader) % grad_accum_steps != 0:
+            logger.warning(
+                f"Dataloader length ({len(dataloader)}) is not divisible by "
+                f"grad_accum_steps ({grad_accum_steps}). Dropping last "
+                f"{len(dataloader) - microsteps_per_epoch} batches per epoch."
+            )
     else:
         steps_per_epoch = num_steps_per_epoch
         microsteps_per_epoch = steps_per_epoch * grad_accum_steps
@@ -571,7 +577,7 @@ def train(
 
         if (epoch + 1) % log_every == 0:
             scalars = {
-                "train/loss": epoch_loss / steps_per_epoch,
+                "train/loss": epoch_loss / microsteps_per_epoch,
                 **{f"val/{k}": v for k, v in val_metrics.items()},
                 **{f"train/{k}": v for k, v in train_metrics.items()},
                 **{f"epoch/{k}": v for k, v in epoch_metric_results.items()},

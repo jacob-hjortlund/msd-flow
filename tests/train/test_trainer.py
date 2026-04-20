@@ -1319,3 +1319,79 @@ def test_train_grad_accum_auto_steps_per_epoch(tmp_path):
     # len(dataloader)=6, grad_accum_steps=2 → microsteps=6, steps_per_epoch=3
     # The loop should process all 6 microbatches
     assert call_count[0] == num_batches
+
+
+def test_train_grad_accum_truncates_non_divisible_dataloader(tmp_path, caplog):
+    """When len(dataloader) % grad_accum_steps != 0, extra batches are dropped with a warning."""
+    import logging
+
+    call_count = [0]
+
+    def counting_loss(model, x_t, u_t, t, cond, cond_mask, key):
+        call_count[0] += 1
+        return _fml(model, x_t, u_t, t, cond, cond_mask, key)
+
+    # 7 batches with grad_accum_steps=2 → should truncate to 6 microsteps
+    dataloader = list(_make_fake_dataloader(B=2, num_batches=7))
+    val_dataloader = _fake_val_dataloader()
+    kwargs = _make_train_kwargs(num_epochs=1, num_steps_per_epoch=0)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+    kwargs["loss_fn"] = counting_loss
+
+    with jax.disable_jit(), caplog.at_level(logging.WARNING, logger="msdflow.train.trainer"):
+        train(
+            model=SMALL_MODEL,
+            dataloader=dataloader,
+            val_dataloader=val_dataloader,
+            grad_accum_steps=2,
+            **kwargs,
+        )
+
+    # Should process 6 microsteps (not 7)
+    assert call_count[0] == 6
+    # Should have logged a warning about dropping 1 batch
+    warning_logs = [r.message for r in caplog.records if "Dropping last" in r.message]
+    assert len(warning_logs) == 1
+    assert "1 batches" in warning_logs[0]
+
+
+def test_train_grad_accum_loss_normalized_by_microsteps(tmp_path):
+    """train/loss should be epoch_loss / microsteps_per_epoch (per-microbatch average)."""
+    mock_task = MagicMock()
+
+    # Run with grad_accum_steps=1
+    dataloader = list(_make_fake_dataloader(B=2, num_batches=4))
+    val_dataloader = _fake_val_dataloader()
+    kwargs = _make_train_kwargs(num_epochs=1, num_steps_per_epoch=4)
+    kwargs["checkpoint_dir"] = str(tmp_path / "run1")
+
+    with patch("msdflow.train.trainer.log_metrics") as mock_log1:
+        train(
+            model=SMALL_MODEL,
+            dataloader=dataloader,
+            val_dataloader=val_dataloader,
+            grad_accum_steps=1,
+            clearml_task=mock_task,
+            **{k: v for k, v in kwargs.items() if k not in ("clearml_task",)},
+        )
+    loss_no_accum = mock_log1.call_args_list[0][0][1]["train/loss"]
+
+    # Run with grad_accum_steps=2 on same data
+    kwargs2 = _make_train_kwargs(num_epochs=1, num_steps_per_epoch=2)
+    kwargs2["checkpoint_dir"] = str(tmp_path / "run2")
+
+    with patch("msdflow.train.trainer.log_metrics") as mock_log2:
+        train(
+            model=SMALL_MODEL,
+            dataloader=dataloader,
+            val_dataloader=val_dataloader,
+            grad_accum_steps=2,
+            clearml_task=mock_task,
+            **{k: v for k, v in kwargs2.items() if k not in ("clearml_task",)},
+        )
+    loss_with_accum = mock_log2.call_args_list[0][0][1]["train/loss"]
+
+    # Both should be similar magnitude (not 2x different)
+    # They won't be exactly equal due to different optimizer update patterns,
+    # but they should be within an order of magnitude
+    assert abs(loss_no_accum - loss_with_accum) / max(abs(loss_no_accum), 1e-8) < 1.0
