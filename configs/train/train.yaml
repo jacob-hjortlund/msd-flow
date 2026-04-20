@@ -62,7 +62,7 @@ _epoch_metrics_dict:
       stepsize_controller:
         _target_: diffrax.ConstantStepSize
     n_samples: null
-    gen_batch_size: 128
+    gen_batch_size: ${data.dataloader.batch_size}
     n_real: null
 epoch_metrics: "${oc.dict.values: train._epoch_metrics_dict}"
 optimizer:
