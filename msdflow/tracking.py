@@ -14,6 +14,16 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 try:
+    from clearml.config import config
+
+    # Tell ClearML to use threads for reporting/monitoring, not a forked subprocess
+    config.set_overrides(
+        {
+            "development": {
+                "report_use_subprocess": False,
+            }
+        }
+    )
     from clearml import Task, Dataset
 except ImportError:
     Task = None  # type: ignore
@@ -52,6 +62,7 @@ def setup_task(clearml_cfg) -> Any:
             return Task.init(
                 project_name=clearml_cfg.project_name,
                 task_name=clearml_cfg.task_name,
+                auto_resource_monitoring=True,
             )
         except Exception as exc2:
             logger.warning(
