@@ -104,21 +104,27 @@ test_dataset:
   metadata_transform: ${data.dataloader.metadata_transform}
 
 
-batch_size: 512
+batch_size: 128
 train:
   _target_: torch.utils.data.DataLoader
   dataset: ${data.dataloader.train_dataset}
   batch_size: ${data.dataloader.batch_size}
   shuffle: true
+  num_workers: 10
+  prefetch_factor: 2
 
 val:
   _target_: torch.utils.data.DataLoader
   dataset: ${data.dataloader.val_dataset}
   batch_size: ${data.dataloader.batch_size}
   shuffle: false
+  num_workers: 10
+  prefetch_factor: 2
 
 test:
   _target_: torch.utils.data.DataLoader
   dataset: ${data.dataloader.test_dataset}
   batch_size: ${data.dataloader.batch_size}
   shuffle: false
+  num_workers: 10
+  prefetch_factor: 2

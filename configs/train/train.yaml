@@ -63,6 +63,6 @@ sample_fn: null
 sample_every: 0
 num_samples: 4
 samples_dir: ${work_dir}/samples
-monitor: flow_matching_loss
+monitor: fid_zoobot
 monitor_mode: min
 early_stopping_patience: 10
