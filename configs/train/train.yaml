@@ -34,7 +34,7 @@ batch_metrics:
 #     n_samples: null
 #     gen_batch_size: 128
 #     n_real: null
-# num_train_eval_batches: 0
+num_train_eval_batches: ${train.num_steps_per_epoch} #0
 _epoch_metrics_dict:
   fid_metric:
     _target_: msdflow.train.metrics.FIDMetric

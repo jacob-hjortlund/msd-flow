@@ -436,7 +436,7 @@ def train(
                 time_sampler=time_sampler,
                 path_sampler=path_sampler,
                 p_uncond=p_uncond,
-                num_batches=0,
+                num_batches=num_train_eval_batches,
             )
 
             train_metrics = batch_metric_loop(
