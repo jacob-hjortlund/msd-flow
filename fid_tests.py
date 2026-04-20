@@ -1,4 +1,3 @@
-import os
 import logging
 
 import hydra
@@ -6,7 +5,7 @@ import numpy as np
 import pandas as pd
 
 from tqdm import tqdm
-from hydra.utils import instantiate, call
+from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf, open_dict
 
 from msdflow.tracking import setup_task
@@ -17,15 +16,98 @@ from msdflow.data.pipeline import resolve_dataset
 register_all_resolvers()
 log = logging.getLogger(__name__)
 
+LINE_WIDTH = 88
+HEAVY = "═" * LINE_WIDTH
+LIGHT = "─" * LINE_WIDTH
+
+
+def configure_terminal_logging(level: int = logging.INFO) -> None:
+    """Force a clean, readable terminal logging format."""
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s | %(levelname)-7s | %(message)s",
+        datefmt="%H:%M:%S",
+        force=True,
+    )
+
+
+
+def banner(title: str) -> str:
+    return f"\n{HEAVY}\n{title.upper():^{LINE_WIDTH}}\n{HEAVY}"
+
+
+
+def section(title: str) -> str:
+    return f"\n{LIGHT}\n{title:<{LINE_WIDTH}}\n{LIGHT}"
+
+
+
+def kv(key: str, value, indent: int = 2) -> str:
+    return f"{' ' * indent}{key:<24}: {value}"
+
+
+
+def format_group_summary(values, groups) -> str:
+    lines = [section("Group summary")]
+    for name, idx in groups.items():
+        vals = values[idx]
+        lines.extend(
+            [
+                f"  [{name.upper()}]",
+                kv("count", len(idx), indent=4),
+                kv("range", f"[{vals.min():.3g}, {vals.max():.3g}]", indent=4),
+                kv("mean", f"{vals.mean():.3g}", indent=4),
+                kv("median", f"{np.median(vals):.3g}", indent=4),
+                "",
+            ]
+        )
+    return "\n".join(lines).rstrip()
+
+
+
+def format_pairwise_block(
+    g1,
+    g2,
+    zb_dist,
+    in_dist,
+    zb_dist_ref=None,
+    in_dist_ref=None,
+) -> str:
+    lines = [f"  {g1.upper()} vs {g2.upper()}"]
+    lines.append(kv("Zoobot FID", f"{zb_dist:.4g}", indent=4))
+    lines.append(kv("InceptionV3 FID", f"{in_dist:.4g}", indent=4))
+
+    if zb_dist_ref is not None:
+        delta_zb = zb_dist - zb_dist_ref
+        frac_zb = delta_zb / zb_dist_ref
+        lines.append(kv("Zoobot ΔFID", f"{delta_zb:.4g}", indent=4))
+        lines.append(kv("Zoobot frac. Δ", f"{100 * frac_zb:.3g}%", indent=4))
+
+    if in_dist_ref is not None:
+        delta_in = in_dist - in_dist_ref
+        frac_in = delta_in / in_dist_ref
+        lines.append(kv("InceptionV3 ΔFID", f"{delta_in:.4g}", indent=4))
+        lines.append(kv("InceptionV3 frac. Δ", f"{100 * frac_in:.3g}%", indent=4))
+
+    if (zb_dist_ref is not None) and (in_dist_ref is not None):
+        rel_zb = zb_dist / zb_dist_ref
+        rel_in = in_dist / in_dist_ref
+        lines.append(kv("Zoobot vs ref", f"{rel_zb:.3f}x", indent=4))
+        lines.append(kv("InceptionV3 vs ref", f"{rel_in:.3f}x", indent=4))
+
+    return "\n".join(lines)
+
 
 @hydra.main(version_base=None, config_path="./configs", config_name="config")
 def main(cfg: DictConfig):
+    configure_terminal_logging()
+    log.info(banner("FID metric comparison"))
 
     # 0. ClearML setup (may fork a background monitor subprocess)
+    log.info(section("Step 0 | ClearML setup"))
     task = setup_task(cfg.clearml)
 
     import jax
-    import jax.random as jr
     import jax.numpy as jnp
 
     from msdflow.model.convnext import build_zoobot_nano
@@ -36,40 +118,31 @@ def main(cfg: DictConfig):
         morphology_metrics,
     )
 
-    def get_mu_sig(acc, imgs, batch_size=128):
+    def get_mu_sig(acc, imgs, batch_size=128, desc="Embedding batches"):
         acc.reset()
         total = (len(imgs) + batch_size - 1) // batch_size
-        for i in tqdm(range(0, len(imgs), batch_size), total=total):
+        for i in tqdm(
+            range(0, len(imgs), batch_size),
+            total=total,
+            desc=desc,
+            leave=False,
+            dynamic_ncols=True,
+        ):
             acc.update(jnp.asarray(imgs[i : i + batch_size]))
         mu, sig, _ = acc.statistics()
         acc.reset()
         return mu, sig
 
     def split_into_three_groups(values):
-        """
-        Split indices into low / medium / high groups with near-equal counts.
-        """
+        """Split indices into low / medium / high groups with near-equal counts."""
         values = np.asarray(values)
         order = np.argsort(values)
         idx_low, idx_med, idx_high = np.array_split(order, 3)
-
-        groups = {
+        return {
             "low": idx_low,
             "medium": idx_med,
             "high": idx_high,
         }
-        return groups
-
-    def summarize_groups(values, groups):
-        print_string = "\n"
-        for name, idx in groups.items():
-            vals = values[idx]
-            print_string += (
-                f"\n{name:>6}: n={len(idx):5d}, "
-                f"\nrange=[{vals.min():.3g}, {vals.max():.3g}], "
-                f"\nmean={vals.mean():.3g}, median={np.median(vals):.3g}\n"
-            )
-        return print_string
 
     def compare_metric_groups(
         images,
@@ -83,8 +156,9 @@ def main(cfg: DictConfig):
         values = np.asarray(metrics[metric].values)
         groups = split_into_three_groups(values)
 
-        print_string = f"\nMetric: {metric}"
-        print_string += summarize_groups(values, groups)
+        lines = [banner(f"FID comparison | {metric}")]
+        lines.append(format_group_summary(values, groups))
+        lines.append(section("Pairwise FID comparisons"))
 
         # Precompute Gaussian stats for each group for both encoders
         zb_stats = {}
@@ -92,13 +166,20 @@ def main(cfg: DictConfig):
 
         for name, idx in groups.items():
             imgs = images[idx]
-            zb_stats[name] = get_mu_sig(zb_acc, imgs)
-            in_stats[name] = get_mu_sig(in_acc, imgs)
+            zb_stats[name] = get_mu_sig(
+                zb_acc,
+                imgs,
+                desc=f"Zoobot stats ({metric} | {name})",
+            )
+            in_stats[name] = get_mu_sig(
+                in_acc,
+                imgs,
+                desc=f"Inception stats ({metric} | {name})",
+            )
 
         # Pairwise comparisons
         pairs = [("low", "medium"), ("medium", "high"), ("low", "high")]
 
-        print_string += "\nPairwise FID comparisons:"
         for g1, g2 in pairs:
             zb_mu_1, zb_sig_1 = zb_stats[g1]
             zb_mu_2, zb_sig_2 = zb_stats[g2]
@@ -108,40 +189,22 @@ def main(cfg: DictConfig):
             zb_dist = _frechet_distance(zb_mu_1, zb_sig_1, zb_mu_2, zb_sig_2)
             in_dist = _frechet_distance(in_mu_1, in_sig_1, in_mu_2, in_sig_2)
 
-            print_string += (
-                f"\n{g1.upper()} vs {g2.upper()}"
-                + f"\n  Zoobot      FID: {zb_dist:.4g}"
-                + f"\n  InceptionV3 FID: {in_dist:.4g}"
+            lines.append(
+                format_pairwise_block(
+                    g1=g1,
+                    g2=g2,
+                    zb_dist=zb_dist,
+                    in_dist=in_dist,
+                    zb_dist_ref=zb_dist_ref,
+                    in_dist_ref=in_dist_ref,
+                )
             )
+            lines.append("")
 
-            if zb_dist_ref is not None:
-                delta_zb = zb_dist - zb_dist_ref
-                frac_zb = delta_zb / zb_dist_ref
-                print_string += (
-                    f"\n  Zoobot      ΔFID: {delta_zb:.4g}, "
-                    f"\nFrac. Δ: {100 * frac_zb:.3g}%"
-                )
-
-            if in_dist_ref is not None:
-                delta_in = in_dist - in_dist_ref
-                frac_in = delta_in / in_dist_ref
-                print_string += (
-                    f"\n  InceptionV3 ΔFID: {delta_in:.4g}, "
-                    f"\nFrac. Δ: {100 * frac_in:.3g}%"
-                )
-
-            if (zb_dist_ref is not None) and (in_dist_ref is not None):
-                rel_zb = zb_dist / zb_dist_ref
-                rel_in = in_dist / in_dist_ref
-                print_string += (
-                    f"\n  Relative separation vs ref: "
-                    f"\nZoobot={rel_zb:.3f}x, InceptionV3={rel_in:.3f}x"
-                )
-
-        log.info(print_string)
+        log.info("\n".join(lines).rstrip())
 
     # 1. Dataset resolution — download / re-split / reuse as needed
-    log.info("--- Step 1: Dataset Resolution ---")
+    log.info(section("Step 1 | Dataset resolution"))
     dataset_cfg = cfg.data.dataset
     dataset_path = resolve_dataset(
         task=task,
@@ -152,26 +215,36 @@ def main(cfg: DictConfig):
         download_cfg=cfg.data.download,
         use_dataset=cfg.clearml.use_dataset,
     )
+    log.info(kv("Resolved dataset path", dataset_path))
 
     # 2. Inject resolved path into dataloader config
-    log.info("--- Step 2: Config Injection ---")
+    log.info(section("Step 2 | Config injection"))
     with open_dict(cfg):
         cfg.data.dataloader.cache_dir = cfg.data.dataloader.data_dir
         cfg.data.dataloader.data_dir = dataset_path
+    log.info(kv("cache_dir", cfg.data.dataloader.cache_dir))
+    log.info(kv("data_dir", cfg.data.dataloader.data_dir))
 
     # 3. Build dataloaders
-    log.info("--- Step 3: Dataloader Initialization ---")
+    log.info(section("Step 3 | Dataloader initialization"))
     train_loader = instantiate(cfg.data.dataloader.train)
     val_loader = instantiate(cfg.data.dataloader.val)
+    log.info(kv("Train batches", len(train_loader)))
+    log.info(kv("Val batches", len(val_loader)))
 
     metrics_fn = jax.jit(jax.vmap(morphology_metrics))
     dataframes = []
     batches = []
 
-    log.info("--- Step 4: Extract Data ---")
+    log.info(section("Step 4 | Extract data"))
     n_batches = len(val_loader)
     i = 0
-    for batch, _ in tqdm(val_loader, total=n_batches):
+    for batch, _ in tqdm(
+        val_loader,
+        total=n_batches,
+        desc="Validation batches",
+        dynamic_ncols=True,
+    ):
         batch = np.array(batch.numpy(), copy=True)
         batch_metrics = metrics_fn(batch)
         dataframes.append(pd.DataFrame(batch_metrics))
@@ -181,52 +254,46 @@ def main(cfg: DictConfig):
             break
 
     images = np.concatenate(batches)
-
-    print("first-5 sample means:", [float(images[i].mean()) for i in range(5)])
-    print("first-5 sample stds: ", [float(images[i].std()) for i in range(5)])
-    print(
-        "inter-sample std of pixel means:",
-        float(images.reshape(images.shape[0], -1).mean(axis=1).std()),
-    )
-    print("range:", float(images.min()), float(images.max()))
-
     metrics_df = pd.concat(dataframes, ignore_index=True)
+    log.info(kv("Collected images", len(images)))
+    log.info(kv("Metrics rows", len(metrics_df)))
 
+    log.info(section("Step 5 | Build encoders and accumulators"))
     zoobot = build_zoobot_nano()
     inception = build_headless_inceptionv3()
 
     zb_acc = FIDAccumulator(zoobot)
     in_acc = FIDAccumulator(inception)
+    log.info(kv("Zoobot accumulator", "ready"))
+    log.info(kv("Inception accumulator", "ready"))
 
-    # ---------------------------------------------------------------------------- #
-    #                                Reference FIDs                                #
-    # ---------------------------------------------------------------------------- #
+    log.info(banner("Reference FIDs"))
 
-    # Use random 50/50 split of val dataset to caclulate FIDs
+    # Use random 50/50 split of val dataset to calculate FIDs
     mask = np.random.binomial(n=1, p=0.5, size=len(metrics_df)).astype(bool)
-
     split_1 = images[mask]
     split_2 = images[~mask]
 
-    log.info("--- Calculate Reference FIDs ---")
-    zb_mu_1, zb_sig_1 = get_mu_sig(zb_acc, split_1)
-    in_mu_1, in_sig_1 = get_mu_sig(in_acc, split_1)
+    log.info(kv("Split 1 size", len(split_1)))
+    log.info(kv("Split 2 size", len(split_2)))
 
-    zb_mu_2, zb_sig_2 = get_mu_sig(zb_acc, split_2)
-    in_mu_2, in_sig_2 = get_mu_sig(in_acc, split_2)
+    zb_mu_1, zb_sig_1 = get_mu_sig(zb_acc, split_1, desc="Zoobot ref split 1")
+    in_mu_1, in_sig_1 = get_mu_sig(in_acc, split_1, desc="Inception ref split 1")
+
+    zb_mu_2, zb_sig_2 = get_mu_sig(zb_acc, split_2, desc="Zoobot ref split 2")
+    in_mu_2, in_sig_2 = get_mu_sig(in_acc, split_2, desc="Inception ref split 2")
 
     zb_dist_ref = _frechet_distance(zb_mu_1, zb_sig_1, zb_mu_2, zb_sig_2)
     in_dist_ref = _frechet_distance(in_mu_1, in_sig_1, in_mu_2, in_sig_2)
 
-    log.info(f"Zoobot Ref. FID: {zb_dist_ref:.3g}")
-    log.info(f"InceptionV3 Ref. FID: {in_dist_ref:.3g}")
+    log.info(kv("Zoobot ref. FID", f"{zb_dist_ref:.3g}"))
+    log.info(kv("InceptionV3 ref. FID", f"{in_dist_ref:.3g}"))
 
     metrics_to_check = ["axis_ratio", "concentration", "asymmetry"]
-    for metric in metrics_to_check:
+    log.info(section("Step 6 | Metric comparisons"))
+    log.info(kv("Metrics", ", ".join(metrics_to_check)))
 
-        log.info(
-            f"\n----------------------- FID Comparison for {metric} -----------------------\n"
-        )
+    for metric in metrics_to_check:
         compare_metric_groups(
             images=images,
             metrics=metrics_df,
@@ -236,7 +303,8 @@ def main(cfg: DictConfig):
             zb_dist_ref=zb_dist_ref,
             in_dist_ref=in_dist_ref,
         )
-        print("\n")
+
+    log.info(banner("Done"))
 
 
 if __name__ == "__main__":
