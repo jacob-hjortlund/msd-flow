@@ -350,11 +350,34 @@ def compare_metric_groups(
     log.info(print_string)
 
 
+def _jax_probe(tag, a, b):
+    """Quick sanity check: do two numpy arrays stay distinct after GPU transfer?"""
+    np_diff = float(np.abs(a - b).mean())
+    ja, jb = jnp.asarray(a.copy()), jnp.asarray(b.copy())
+    jax_diff = float(jax.device_get(jnp.abs(ja - jb).mean()))
+    status = "PASS" if abs(jax_diff - np_diff) < 0.01 else "FAIL"
+    print(f"  [{status}] {tag}: np={np_diff:.4f} jax={jax_diff:.4f}")
+
+
+def _jax_probe_random(tag):
+    """Probe with fresh random data."""
+    a = np.random.randn(1, 512, 512).astype(np.float32)
+    b = np.random.randn(1, 512, 512).astype(np.float32)
+    _jax_probe(f"{tag}/random", a, b)
+
+
 @hydra.main(version_base=None, config_path="./configs", config_name="config")
 def main(cfg: DictConfig):
 
+    # -- Checkpoint A: before anything --
+    print("\n=== Checkpoint A: start of main ===")
+    _jax_probe_random("A")
+
     # 0. ClearML setup
     task = setup_task(cfg.clearml)
+
+    print("\n=== Checkpoint B: after ClearML init (fork happened here) ===")
+    _jax_probe_random("B")
 
     # 1. Dataset resolution — download / re-split / reuse as needed
     log.info("--- Step 1: Dataset Resolution ---")
@@ -380,6 +403,9 @@ def main(cfg: DictConfig):
     train_loader = instantiate(cfg.data.dataloader.train)
     val_loader = instantiate(cfg.data.dataloader.val)
 
+    print("\n=== Checkpoint C: after dataloader creation ===")
+    _jax_probe_random("C")
+
     metrics_fn = jax.jit(jax.vmap(morphology_metrics))
     dataframes = []
     batches = []
@@ -389,7 +415,21 @@ def main(cfg: DictConfig):
     i = 0
     for batch, _ in tqdm(val_loader, total=n_batches):
         batch = np.array(batch.numpy(), copy=True)
+
+        # -- Checkpoint D: actual batch data BEFORE jax.jit --
+        if i == 0:
+            print("\n=== Checkpoint D: first batch, before metrics_fn ===")
+            _jax_probe("D/actual-batch", batch[0], batch[1])
+            _jax_probe_random("D")
+
         batch_metrics = metrics_fn(batch)
+
+        # -- Checkpoint E: actual batch data AFTER jax.jit --
+        if i == 0:
+            print("\n=== Checkpoint E: first batch, after metrics_fn ===")
+            _jax_probe("E/actual-batch", batch[0], batch[1])
+            _jax_probe_random("E")
+
         dataframes.append(pd.DataFrame(batch_metrics))
         batches.append(batch)
         i += 1
@@ -398,6 +438,10 @@ def main(cfg: DictConfig):
 
     images = np.concatenate(batches)
     print(images.shape)
+
+    print("\n=== Checkpoint F: after np.concatenate ===")
+    _jax_probe("F/from-images", images[0], images[1])
+    _jax_probe_random("F")
 
     print("first-5 sample means:", [float(images[i].mean()) for i in range(5)])
     print("first-5 sample stds: ", [float(images[i].std()) for i in range(5)])
