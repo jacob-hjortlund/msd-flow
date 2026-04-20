@@ -409,15 +409,25 @@ def main(cfg: DictConfig):
 
     metrics_df = pd.concat(dataframes, ignore_index=True)
 
-    x0 = jnp.asarray(images[0])
-    x1 = jnp.asarray(images[100])
-    print("pre-model input difference:", float(jnp.abs(x0 - x1).mean()))
+    flat = images.reshape(images.shape[0], -1)
+
+    print("n images:", len(images))
+    print("pixel-mean std across samples:", flat.mean(axis=1).std())
+
+    # Compare several pairs, not just one
+    pairs = [(0, 1), (0, 10), (0, 100), (5, 105), (10, 110)]
+    for a, b in pairs:
+        print(a, b, np.abs(images[a] - images[b]).mean())
+
+    # Check whether many images are literally identical
+    diffs = np.abs(images[:, None] - images[None, :]).mean(axis=(2, 3, 4))
+    print(
+        "min off-diagonal mean abs diff:",
+        diffs[np.triu_indices(len(images), k=1)].min(),
+    )
 
     zoobot = build_zoobot_nano()
-    print("post-zoobot input difference:", float(jnp.abs(x0 - x1).mean()))
-
     inception = build_headless_inceptionv3()
-    print("post-inception input difference:", float(jnp.abs(x0 - x1).mean()))
 
     z0, z1 = zoobot(x0), zoobot(x1)
     i0, i1 = inception(x0), inception(x1)
