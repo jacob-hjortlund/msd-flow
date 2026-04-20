@@ -409,25 +409,31 @@ def main(cfg: DictConfig):
 
     metrics_df = pd.concat(dataframes, ignore_index=True)
 
-    flat = images.reshape(images.shape[0], -1)
-
-    print("n images:", len(images))
-    print("pixel-mean std across samples:", flat.mean(axis=1).std())
-
-    # Compare several pairs, not just one
     pairs = [(0, 1), (0, 10), (0, 100), (5, 105), (10, 110)]
-    for a, b in pairs:
-        print(a, b, np.abs(images[a] - images[b]).mean())
 
-    # Check whether many images are literally identical
-    diffs = np.abs(images[:512][:, None] - images[:512][None, :]).mean(axis=(2, 3, 4))
-    print(
-        "min off-diagonal mean abs diff:",
-        diffs[np.triu_indices(len(images), k=1)].min(),
-    )
+    def compare_pairs(tag):
+        print(f"\n--- {tag} ---")
+        for a, b in pairs:
+            np_diff = np.abs(images[a] - images[b]).mean()
+
+            xa = jnp.asarray(images[a])
+            xb = jnp.asarray(images[b])
+
+            jax_diff = jnp.abs(xa - xb).mean()
+            jax_diff = float(jax.device_get(jax_diff))
+
+            rt_diff = np.abs(
+                np.array(jax.device_get(xa)) - np.array(jax.device_get(xb))
+            ).mean()
+
+            print(a, b, "numpy:", np_diff, "jax:", jax_diff, "roundtrip:", rt_diff)
+
+    compare_pairs("before models")
 
     zoobot = build_zoobot_nano()
+    compare_pairs("after zoobot")
     inception = build_headless_inceptionv3()
+    compare_pairs("after inception")
 
     z0, z1 = zoobot(x0), zoobot(x1)
     i0, i1 = inception(x0), inception(x1)
