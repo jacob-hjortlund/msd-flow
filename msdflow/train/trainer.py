@@ -253,7 +253,6 @@ def batch_metric_loop(
     return {k: v / n_batches for k, v in totals.items()}
 
 
-
 def train(
     key,
     model,
@@ -283,6 +282,8 @@ def train(
     monitor: str = "flow_matching_loss",
     monitor_mode: str = "min",
     early_stopping_patience: int | None = None,
+    *args,
+    **kwargs,
 ):
     """Main training loop with EMA and periodic validation.
 
@@ -350,9 +351,7 @@ def train(
         )
 
     if monitor_mode not in ("min", "max"):
-        raise ValueError(
-            f"monitor_mode must be 'min' or 'max', got {monitor_mode!r}"
-        )
+        raise ValueError(f"monitor_mode must be 'min' or 'max', got {monitor_mode!r}")
 
     train_step = make_train_step(optimizer, loss_fn)
     batch_metric_step = make_batch_metric_step(batch_metrics)
@@ -517,7 +516,10 @@ def train(
                 else:
                     patience_counter += 1
 
-                if early_stopping_patience is not None and patience_counter >= early_stopping_patience:
+                if (
+                    early_stopping_patience is not None
+                    and patience_counter >= early_stopping_patience
+                ):
                     logger.info(
                         f"Early stopping triggered at epoch {epoch + 1}: '{monitor}' "
                         f"did not improve for {early_stopping_patience} consecutive "
