@@ -246,7 +246,7 @@ def get_mu_sig(acc, imgs, batch_size=128):
     acc.reset()
     total = (len(imgs) + batch_size - 1) // batch_size
     for i in tqdm(range(0, len(imgs), batch_size), total=total):
-        acc.update(jnp.asarray(imgs[i : i + batch_size]))
+        acc.update(jnp.asarray(imgs[i : i + batch_size].copy()))
     mu, sig, _ = acc.statistics()
     acc.reset()
     return mu, sig
@@ -300,7 +300,7 @@ def compare_metric_groups(
     in_stats = {}
 
     for name, idx in groups.items():
-        imgs = np.ascontiguousarray(images[idx])
+        imgs = images[idx]
         zb_stats[name] = get_mu_sig(zb_acc, imgs)
         in_stats[name] = get_mu_sig(in_acc, imgs)
 
@@ -416,8 +416,8 @@ def main(cfg: DictConfig):
         for a, b in pairs:
             np_diff = np.abs(images[a] - images[b]).mean()
 
-            xa = jnp.asarray(np.ascontiguousarray(images[a]))
-            xb = jnp.asarray(np.ascontiguousarray(images[b]))
+            xa = jnp.asarray(images[a].copy())
+            xb = jnp.asarray(images[b].copy())
 
             jax_diff = jnp.abs(xa - xb).mean()
             jax_diff = float(jax.device_get(jax_diff))
@@ -451,8 +451,8 @@ def main(cfg: DictConfig):
     # Use random 50/50 split of val dataset to caclulate FIDs
     mask = np.random.binomial(n=1, p=0.5, size=len(metrics_df)).astype(bool)
 
-    split_1 = np.ascontiguousarray(images[mask])
-    split_2 = np.ascontiguousarray(images[~mask])
+    split_1 = images[mask].copy()
+    split_2 = images[~mask].copy()
 
     log.info("--- Calculate Reference FIDs ---")
     zb_mu_1, zb_sig_1 = get_mu_sig(zb_acc, split_1)
