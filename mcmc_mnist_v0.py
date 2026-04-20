@@ -75,6 +75,7 @@ def main(cfg: DictConfig):
         "Loading MNIST sample %d (sigma_blur=%.2f, sigma_noise=%.3f)",
         sample_idx, sigma_blur, sigma_noise,
     )
+    """
     dataset = BlurredMNIST(
         root=os.path.join(cfg.work_dir, "data", "mnist"),
         train=False,
@@ -85,7 +86,15 @@ def main(cfg: DictConfig):
     y_torch, x_true_torch = dataset[sample_idx]
     y_obs = jnp.array(y_torch.numpy())        # (1, 28, 28)
     x_true = jnp.array(x_true_torch.numpy())  # (1, 28, 28)
-
+    """
+    n_dims = cfg.image_size * cfg.image_size
+    log.info("Consistency check: generating FM sample  (sigma_blur=%.2f)", sigma_blur)
+    rng_key, z_key, noise_key = jr.split(jr.PRNGKey(cfg.seed + 2), 3)
+    z_true = jr.normal(z_key, (n_dims,))
+    x_true = integrate_from_z(z_true.reshape(1, cfg.image_size, cfg.image_size), model)
+    noise  = sigma_noise * jr.normal(noise_key, x_true.shape)
+    y_obs  = gaussian_blur(x_true, sigma=sigma_blur) + noise   # Y = A(FM(Z)) + ε
+    np.save(os.path.join(output_dir, "z_true.npy"),np.array(z_true))
     np.save(os.path.join(output_dir, "y_obs.npy"), np.array(y_obs))
     np.save(os.path.join(output_dir, "x_true.npy"), np.array(x_true))
 
@@ -93,7 +102,7 @@ def main(cfg: DictConfig):
     # 3. Log-posterior
     # ------------------------------------------------------------------
     blur_fn = functools.partial(gaussian_blur, sigma=sigma_blur)
-    n_dims = cfg.image_size * cfg.image_size  # 784
+    #n_dims = cfg.image_size * cfg.image_size  # 784
 
     @jax.jit
     def log_posterior(z_flat: jax.Array) -> jax.Array:
@@ -110,6 +119,8 @@ def main(cfg: DictConfig):
     rng_key = jr.PRNGKey(cfg.seed + 1)
     rng_key, init_key, warmup_key = jr.split(rng_key, 3)
     z_init = jr.normal(init_key, (n_dims,))
+    # Uncomment below to initialize with true initial noise sample
+    #z_init = z_true
 
     log.info("Adaptive warm-up: %d steps", num_warmup)
     warmup = blackjax.window_adaptation(blackjax.nuts, log_posterior)

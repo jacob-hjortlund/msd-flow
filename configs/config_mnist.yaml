@@ -24,4 +24,5 @@ mcmc:
   step_size: 0.01
   num_warmup: 200
   num_samples: 500
+  z_file: null
   output_dir: ${work_dir}/samples_mcmc
