@@ -420,7 +420,7 @@ def main(cfg: DictConfig):
         print(a, b, np.abs(images[a] - images[b]).mean())
 
     # Check whether many images are literally identical
-    diffs = np.abs(images[:, None] - images[None, :]).mean(axis=(2, 3, 4))
+    diffs = np.abs(images[:512][:, None] - images[:512][None, :]).mean(axis=(2, 3, 4))
     print(
         "min off-diagonal mean abs diff:",
         diffs[np.triu_indices(len(images), k=1)].min(),
