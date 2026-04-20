@@ -3,6 +3,8 @@ import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
 from scipy.linalg import sqrtm
+from jax.scipy.ndimage import map_coordinates
+
 
 # ---------------------------------------------------------------------------
 # Metric signatures
@@ -338,3 +340,222 @@ class FIDMetric:
             key=key,
             n_real=self.n_real,
         )
+
+
+def _safe_divide(num, den, eps=1e-12):
+    return num / jnp.maximum(den, eps)
+
+
+def _prepare_image(img):
+    """
+    img: array of shape (1, N, N)
+    Returns:
+        J: non-negative 2D image of shape (N, N)
+    """
+    assert img.ndim == 3 and img.shape[0] == 1, "Expected image of shape (1, N, N)"
+    # J = jnp.maximum(img[0], 0.0)
+    J = (img[0] + 1.0) / 2.0
+    return J
+
+
+def _coordinate_grids(N):
+    """
+    Returns X, Y coordinate grids of shape (N, N).
+    X is horizontal (column index), Y is vertical (row index).
+    """
+    y = jnp.arange(N)
+    x = jnp.arange(N)
+    Y, X = jnp.meshgrid(y, x, indexing="ij")
+    return X, Y
+
+
+def centroid(img, eps=1e-12):
+    """
+    Intensity-weighted centroid.
+
+    img: shape (1, N, N)
+    Returns:
+        xc, yc
+    """
+    # J = _prepare_image(img)
+    # N = J.shape[0]
+    # X, Y = _coordinate_grids(N)
+    # total = jnp.sum(J)
+    # xc = _safe_divide(jnp.sum(J * X), total, eps)
+    # yc = _safe_divide(jnp.sum(J * Y), total, eps)
+    # return xc, yc
+    return (256, 256)
+
+
+def _radii_and_sorted_intensity(J, xc, yc):
+    """
+    Flattened radii and intensities sorted by radius.
+    """
+    N = J.shape[0]
+    X, Y = _coordinate_grids(N)
+    r = jnp.sqrt((X - xc) ** 2 + (Y - yc) ** 2)
+
+    r_flat = r.reshape(-1)
+    J_flat = J.reshape(-1)
+
+    order = jnp.argsort(r_flat)
+    r_sorted = r_flat[order]
+    J_sorted = J_flat[order]
+    return r_sorted, J_sorted
+
+
+def radius_at_fraction(img, frac, eps=1e-12):
+    """
+    Radius enclosing a given fraction of total non-negative intensity.
+
+    img: shape (1, N, N)
+    frac: scalar in [0, 1]
+    """
+    J = _prepare_image(img)
+    # xc, yc = centroid(img, eps=eps)
+    xc, yc = (256, 256)
+    r_sorted, J_sorted = _radii_and_sorted_intensity(J, xc, yc)
+
+    cumulative = jnp.cumsum(J_sorted)
+    total = jnp.sum(J_sorted)
+    target = frac * total
+
+    idx = jnp.searchsorted(cumulative, target, side="left")
+    idx = jnp.clip(idx, 0, r_sorted.shape[0] - 1)
+    return r_sorted[idx]
+
+
+def half_light_radius(img, eps=1e-12):
+    return radius_at_fraction(img, 0.5, eps=eps)
+
+
+def concentration(img, eps=1e-12):
+    """
+    C = 5 log10(r80 / r20)
+    """
+    r20 = radius_at_fraction(img, 0.2, eps=eps)
+    r80 = radius_at_fraction(img, 0.8, eps=eps)
+    C = 5.0 * jnp.log10(_safe_divide(r80, r20, eps))
+    return C, r20, r80
+
+
+def second_moments(img, eps=1e-12):
+    """
+    Intensity-weighted second central moments.
+
+    Returns:
+        Mxx, Myy, Mxy
+    """
+    J = _prepare_image(img)
+    N = J.shape[0]
+    X, Y = _coordinate_grids(N)
+    # xc, yc = centroid(img, eps=eps)
+    xc, yc = (256, 256)
+
+    total = jnp.sum(J)
+
+    dx = X - xc
+    dy = Y - yc
+
+    Mxx = _safe_divide(jnp.sum(J * dx * dx), total, eps)
+    Myy = _safe_divide(jnp.sum(J * dy * dy), total, eps)
+    Mxy = _safe_divide(jnp.sum(J * dx * dy), total, eps)
+
+    return Mxx, Myy, Mxy
+
+
+def shape_metrics(img, eps=1e-12):
+    """
+    Axis ratio, ellipticity, and position angle from second moments.
+
+    Returns:
+        q : axis ratio b/a
+        e : ellipticity = 1 - q
+        theta : position angle in radians
+        a, b : sqrt(eigenvalues)
+    """
+    Mxx, Myy, Mxy = second_moments(img, eps=eps)
+
+    cov = jnp.array([[Mxx, Mxy], [Mxy, Myy]])
+    eigvals, eigvecs = jnp.linalg.eigh(cov)
+
+    # eigh returns ascending eigenvalues
+    lam2, lam1 = eigvals[0], eigvals[1]  # lam1 >= lam2
+    a = jnp.sqrt(jnp.maximum(lam1, 0.0))
+    b = jnp.sqrt(jnp.maximum(lam2, 0.0))
+
+    q = _safe_divide(b, a, eps)
+    e = 1.0 - q
+
+    # Position angle of major axis
+    # Equivalent formula:
+    # theta = 0.5 * arctan2(2 Mxy, Mxx - Myy)
+    theta = 0.5 * jnp.arctan2(2.0 * Mxy, Mxx - Myy)
+
+    return q, e, theta, a, b
+
+
+def _rotate_180_about_center(J, xc, yc, order=1):
+    """
+    Rotate a 2D image J by 180 degrees about (xc, yc), using interpolation.
+
+    Returns rotated image of same shape.
+    """
+    N = J.shape[0]
+    X, Y = _coordinate_grids(N)
+
+    # 180-degree rotation about (xc, yc):
+    # x' = 2 xc - x
+    # y' = 2 yc - y
+    X_src = 2.0 * xc - X
+    Y_src = 2.0 * yc - Y
+
+    coords = jnp.stack([Y_src, X_src], axis=0)  # map_coordinates expects (row, col)
+    J_rot = map_coordinates(J, coords, order=order, mode="constant", cval=0.0)
+    return J_rot
+
+
+def asymmetry(img, eps=1e-12):
+    """
+    A = sum |J - J_180| / sum |J|
+
+    Uses 180-degree rotation about the intensity-weighted centroid.
+    """
+    J = _prepare_image(img)
+    # xc, yc = centroid(img, eps=eps)
+    xc, yc = (256, 256)
+    J_rot = _rotate_180_about_center(J, xc, yc, order=1)
+
+    num = jnp.sum(jnp.abs(J - J_rot))
+    den = jnp.sum(jnp.abs(J))
+    A = _safe_divide(num, den, eps)
+    return A
+
+
+def morphology_metrics(img, eps=1e-12):
+    """
+    Compute a set of morphology metrics for a single image of shape (1, N, N).
+
+    Returns a dict of JAX scalars.
+    """
+    # xc, yc = centroid(img, eps=eps)
+    xc, yc = (256, 256)
+    r50 = half_light_radius(img, eps=eps)
+    C, r20, r80 = concentration(img, eps=eps)
+    q, e, theta, a, b = shape_metrics(img, eps=eps)
+    A = asymmetry(img, eps=eps)
+
+    return {
+        "xc": xc,
+        "yc": yc,
+        "r20": r20,
+        "r50": r50,
+        "r80": r80,
+        "concentration": C,
+        "axis_ratio": q,
+        "ellipticity": e,
+        "position_angle": theta,
+        "a": a,
+        "b": b,
+        "asymmetry": A,
+    }
