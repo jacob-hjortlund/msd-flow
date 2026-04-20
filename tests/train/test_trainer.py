@@ -1291,3 +1291,31 @@ def test_train_grad_accum_loss_equals_sum_over_effective_steps(tmp_path):
     # We can't predict the exact value, but verify it's finite and positive
     assert np.isfinite(reported_loss)
     assert reported_loss > 0
+
+
+def test_train_grad_accum_auto_steps_per_epoch(tmp_path):
+    """With num_steps_per_epoch=0, steps_per_epoch = len(dataloader) // grad_accum_steps."""
+    call_count = [0]
+
+    def counting_loss(model, x_t, u_t, t, cond, cond_mask, key):
+        call_count[0] += 1
+        return _fml(model, x_t, u_t, t, cond, cond_mask, key)
+
+    grad_accum_steps = 2
+    num_batches = 6
+    dataloader = list(_make_fake_dataloader(B=2, num_batches=num_batches))
+    val_dataloader = _fake_val_dataloader()
+    kwargs = _make_train_kwargs(num_epochs=1, num_steps_per_epoch=0)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+    kwargs["loss_fn"] = counting_loss
+    with jax.disable_jit():
+        train(
+            model=SMALL_MODEL,
+            dataloader=dataloader,
+            val_dataloader=val_dataloader,
+            grad_accum_steps=grad_accum_steps,
+            **kwargs,
+        )
+    # len(dataloader)=6, grad_accum_steps=2 → microsteps=6, steps_per_epoch=3
+    # The loop should process all 6 microbatches
+    assert call_count[0] == num_batches
