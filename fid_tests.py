@@ -408,13 +408,15 @@ def main(cfg: DictConfig):
 
     metrics_df = pd.concat(dataframes, ignore_index=True)
 
+    x0 = jnp.asarray(images[0])
+    x1 = jnp.asarray(images[100])
+    print("pre-model input difference:", float(jnp.abs(x0 - x1).mean()))
+
     zoobot = build_zoobot_nano()
+    print("post-zoobot input difference:", float(jnp.abs(x0 - x1).mean()))
+
     inception = build_headless_inceptionv3()
-
-    x0 = jnp.asarray(images[0])  # (1, H, W)
-    x1 = jnp.asarray(images[100])  # (1, H, W)
-
-    print("input difference:", float(jnp.abs(x0 - x1).mean()))
+    print("post-inception input difference:", float(jnp.abs(x0 - x1).mean()))
 
     z0, z1 = zoobot(x0), zoobot(x1)
     i0, i1 = inception(x0), inception(x1)
