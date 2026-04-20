@@ -32,7 +32,7 @@ epoch_metrics:
       stepsize_controller:
         _target_: diffrax.ConstantStepSize
     n_samples: null
-    gen_batch_size: 64
+    gen_batch_size: 128
     n_real: null
 num_train_eval_batches: 0
 optimizer:
