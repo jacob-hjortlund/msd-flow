@@ -435,11 +435,11 @@ def main(cfg: DictConfig):
     inception = build_headless_inceptionv3()
     compare_pairs("after inception")
 
-    z0, z1 = zoobot(x0), zoobot(x1)
-    i0, i1 = inception(x0), inception(x1)
+    # z0, z1 = zoobot(x0), zoobot(x1)
+    # i0, i1 = inception(x0), inception(x1)
 
-    print("zoobot   diff:", float(jnp.abs(z0 - z1).mean()), "z0[:5]:", z0[:5])
-    print("incep    diff:", float(jnp.abs(i0 - i1).mean()), "i0[:5]:", i0[:5])
+    # print("zoobot   diff:", float(jnp.abs(z0 - z1).mean()), "z0[:5]:", z0[:5])
+    # print("incep    diff:", float(jnp.abs(i0 - i1).mean()), "i0[:5]:", i0[:5])
 
     zb_acc = FIDAccumulator(zoobot)
     in_acc = FIDAccumulator(inception)
