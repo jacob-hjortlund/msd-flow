@@ -416,8 +416,8 @@ def main(cfg: DictConfig):
         for a, b in pairs:
             np_diff = np.abs(images[a] - images[b]).mean()
 
-            xa = jnp.asarray(images[a])
-            xb = jnp.asarray(images[b])
+            xa = jnp.asarray(images[a], copy=True)
+            xb = jnp.asarray(images[b], copy=True)
 
             jax_diff = jnp.abs(xa - xb).mean()
             jax_diff = float(jax.device_get(jax_diff))
