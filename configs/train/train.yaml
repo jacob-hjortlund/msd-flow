@@ -36,6 +36,7 @@ epoch_metrics: "${oc.dict.values: train._epoch_metrics_dict}"
 optimizer:
   _target_: optax.adamw
   learning_rate: 1.0e-4
+grad_accum_steps: 1
 coupling:
   _target_: msdflow.flow.independent_coupling
   _partial_: true
