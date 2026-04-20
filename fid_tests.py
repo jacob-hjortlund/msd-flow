@@ -31,20 +31,16 @@ def configure_terminal_logging(level: int = logging.INFO) -> None:
     )
 
 
-
 def banner(title: str) -> str:
     return f"\n{HEAVY}\n{title.upper():^{LINE_WIDTH}}\n{HEAVY}"
-
 
 
 def section(title: str) -> str:
     return f"\n{LIGHT}\n{title:<{LINE_WIDTH}}\n{LIGHT}"
 
 
-
 def kv(key: str, value, indent: int = 2) -> str:
     return f"{' ' * indent}{key:<24}: {value}"
-
 
 
 def format_group_summary(values, groups) -> str:
@@ -62,7 +58,6 @@ def format_group_summary(values, groups) -> str:
             ]
         )
     return "\n".join(lines).rstrip()
-
 
 
 def format_pairwise_block(
@@ -238,7 +233,7 @@ def main(cfg: DictConfig):
 
     log.info(section("Step 4 | Extract data"))
     n_batches = len(val_loader)
-    i = 0
+
     for batch, _ in tqdm(
         val_loader,
         total=n_batches,
@@ -249,9 +244,6 @@ def main(cfg: DictConfig):
         batch_metrics = metrics_fn(batch)
         dataframes.append(pd.DataFrame(batch_metrics))
         batches.append(batch)
-        i += 1
-        if i == 2:
-            break
 
     images = np.concatenate(batches)
     metrics_df = pd.concat(dataframes, ignore_index=True)
