@@ -39,6 +39,10 @@ def _reinit_jax_gpu():
     """
     os.environ.pop("JAX_PLATFORMS", None)
 
+    # The config value was cached as "cpu" at import time; update it so
+    # JAX no longer restricts platform discovery.
+    jax.config.update("jax_platforms", "")
+
     # Clear JAX's internal backend cache to force re-discovery.
     try:
         import jax._src.xla_bridge as _xb
