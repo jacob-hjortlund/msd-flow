@@ -6,8 +6,38 @@ loss_fn:
 batch_metrics:
   - _target_: msdflow.train.metrics.flow_matching_loss
     _partial_: true
-epoch_metrics:
-  - _target_: msdflow.train.metrics.FIDMetric
+# epoch_metrics:
+#   - _target_: msdflow.train.metrics.FIDMetric
+#     accumulators:
+#       fid_zoobot:
+#         _target_: msdflow.train.metrics.FIDAccumulator
+#         encoder:
+#           _target_: msdflow.model.convnext.build_zoobot_nano
+#       fid_inception:
+#         _target_: msdflow.train.metrics.FIDAccumulator
+#         encoder:
+#           _target_: msdflow.model.inceptionv3.build_headless_inceptionv3
+#     generate_fn:
+#       _target_: msdflow.flow.sample.sample
+#       _partial_: true
+#       shape:
+#         - 1
+#         - ${image_size}
+#         - ${image_size}
+#       solver:
+#         _target_: diffrax.Euler
+#       dt0: 0.01
+#       t0: 0.0
+#       t1: 1.0
+#       stepsize_controller:
+#         _target_: diffrax.ConstantStepSize
+#     n_samples: null
+#     gen_batch_size: 128
+#     n_real: null
+# num_train_eval_batches: 0
+_epoch_metrics_dict:
+  fid_metric:
+    _target_: msdflow.train.metrics.FIDMetric
     accumulators:
       fid_zoobot:
         _target_: msdflow.train.metrics.FIDAccumulator
@@ -34,7 +64,7 @@ epoch_metrics:
     n_samples: null
     gen_batch_size: 128
     n_real: null
-num_train_eval_batches: 0
+epoch_metrics: "${oc.dict.values: train._epoch_metrics_dict}"
 optimizer:
   _target_: optax.adamw
   learning_rate: 1.0e-4
