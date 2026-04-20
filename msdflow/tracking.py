@@ -47,11 +47,11 @@ def setup_task(clearml_cfg) -> Any:
         return None
 
     try:
-        Task._report_subprocess_enabled = False
+        # Task._report_subprocess_enabled = False
         return Task.init(
             project_name=clearml_cfg.project_name,
             task_name=clearml_cfg.task_name,
-            auto_resource_monitoring=True,
+            #   auto_resource_monitoring=True,
         )
     except Exception as exc:
         logger.warning(
