@@ -474,6 +474,22 @@ class TestBuildTdigest:
         np.testing.assert_allclose(digest.min(), 0.0)
         np.testing.assert_allclose(digest.max(), 3.0)
 
+    def test_serial_shows_progress_bar(self, dataset_dir, capsys):
+        """Verify sequential build_tdigest renders a tqdm progress bar to stderr."""
+        import pandas as pd
+        metadata = pd.read_csv(os.path.join(dataset_dir, "metadata.csv"))
+        filenames = metadata["filename"].tolist()
+        build_tdigest(
+            data_dir=dataset_dir,
+            filenames=filenames,
+            transforms=_identity,
+            pixel_filter=_filter_positive,
+            n_workers=0,
+        )
+        captured = capsys.readouterr()
+        assert "Building TDigest" in captured.err
+        assert "file" in captured.err
+
 
 class TestBuildTdigestSampling:
     """Tests for sampling support in build_tdigest."""
@@ -596,6 +612,22 @@ class TestBuildTdigestParallel:
         )
         np.testing.assert_allclose(serial.global_min, parallel.global_min)
         np.testing.assert_allclose(serial.global_max, parallel.global_max)
+
+    def test_parallel_shows_progress_bar(self, dataset_dir, capsys):
+        """Verify parallel build_tdigest renders a tqdm progress bar to stderr."""
+        import pandas as pd
+        metadata = pd.read_csv(os.path.join(dataset_dir, "metadata.csv"))
+        filenames = metadata["filename"].tolist()
+        build_tdigest(
+            data_dir=dataset_dir,
+            filenames=filenames,
+            transforms=_identity,
+            pixel_filter=_filter_positive,
+            n_workers=2,
+        )
+        captured = capsys.readouterr()
+        assert "Building TDigest" in captured.err
+        assert "file" in captured.err
 
 
 class TestComposeEndToEnd:

@@ -397,6 +397,7 @@ def main(cfg: DictConfig):
             break
 
     images = np.concatenate(batches)
+    print(images.shape)
 
     print("first-5 sample means:", [float(images[i].mean()) for i in range(5)])
     print("first-5 sample stds: ", [float(images[i].std()) for i in range(5)])
