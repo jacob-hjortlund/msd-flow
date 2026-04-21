@@ -1487,16 +1487,9 @@ def _make_prefetcher_dataloader(B=2, num_batches=4):
 def test_batch_prefetcher_yields_correct_count():
     """BatchPrefetcher yields exactly num_items batches."""
     dataloader = _make_prefetcher_dataloader(num_batches=4)
-    keys = jax.random.split(jax.random.PRNGKey(0), 6)
-    batch_keys = keys[:5]
     prefetcher = BatchPrefetcher(
         dataloader=dataloader,
-        keys=batch_keys,
         num_items=5,
-        coupling=independent_coupling,
-        time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
-        path_sampler=partial(sample_path),
-        p_uncond=0.0,
     )
     results = list(prefetcher)
     prefetcher.shutdown()
@@ -1504,79 +1497,55 @@ def test_batch_prefetcher_yields_correct_count():
 
 
 def test_batch_prefetcher_output_shapes():
-    """Each prefetched item has the correct tensor shapes."""
+    """Each prefetched item has the correct numpy array shapes."""
     B = 4
     dataloader = _make_prefetcher_dataloader(B=B, num_batches=3)
-    keys = jax.random.split(jax.random.PRNGKey(1), 3)
     prefetcher = BatchPrefetcher(
         dataloader=dataloader,
-        keys=keys,
         num_items=3,
-        coupling=independent_coupling,
-        time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
-        path_sampler=partial(sample_path),
-        p_uncond=0.0,
     )
-    t, x_t, u_t, cond, cond_mask, dropout_keys = next(prefetcher)
+    images_np, cond_np = next(prefetcher)
     prefetcher.shutdown()
-    assert t.shape == (B,)
-    assert x_t.shape == (B, 1, 8, 8)
-    assert u_t.shape == (B, 1, 8, 8)
-    assert cond.shape == (B, 0)
-    assert cond_mask.shape == (B,)
+    assert isinstance(images_np, np.ndarray)
+    assert isinstance(cond_np, np.ndarray)
+    assert images_np.shape == (B, 1, 8, 8)
+    assert cond_np.shape == (B, 0)
 
 
 def test_batch_prefetcher_restarts_exhausted_dataloader():
     """Prefetcher re-creates the iterator when the dataloader is exhausted."""
     dataloader = _make_prefetcher_dataloader(num_batches=2)
-    # Request 5 items from a 2-batch dataloader — needs restart
-    keys = jax.random.split(jax.random.PRNGKey(2), 5)
     prefetcher = BatchPrefetcher(
         dataloader=dataloader,
-        keys=keys,
         num_items=5,
-        coupling=independent_coupling,
-        time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
-        path_sampler=partial(sample_path),
-        p_uncond=0.0,
     )
     results = list(prefetcher)
     prefetcher.shutdown()
     assert len(results) == 5
 
 
-def test_batch_prefetcher_deterministic_with_same_keys():
-    """Same keys produce identical prepared batches."""
+def test_batch_prefetcher_deterministic_with_same_data():
+    """Same dataloader produces identical numpy arrays."""
+    np.random.seed(42)
     dataloader = _make_prefetcher_dataloader(B=2, num_batches=3)
-    keys = jax.random.split(jax.random.PRNGKey(3), 2)
 
     prefetcher1 = BatchPrefetcher(
         dataloader=dataloader,
-        keys=keys,
         num_items=2,
-        coupling=independent_coupling,
-        time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
-        path_sampler=partial(sample_path),
-        p_uncond=0.0,
     )
     results1 = list(prefetcher1)
     prefetcher1.shutdown()
 
     prefetcher2 = BatchPrefetcher(
         dataloader=dataloader,
-        keys=keys,
         num_items=2,
-        coupling=independent_coupling,
-        time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
-        path_sampler=partial(sample_path),
-        p_uncond=0.0,
     )
     results2 = list(prefetcher2)
     prefetcher2.shutdown()
 
-    for (t1, x_t1, *_), (t2, x_t2, *_) in zip(results1, results2):
-        assert jnp.allclose(t1, t2)
-        assert jnp.allclose(x_t1, x_t2)
+    for (img1, cond1), (img2, cond2) in zip(results1, results2):
+        assert np.array_equal(img1, img2)
+        assert np.array_equal(cond1, cond2)
 
 
 # --- make_prepare_batch_jax ---

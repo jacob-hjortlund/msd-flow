@@ -177,48 +177,33 @@ def make_prepare_batch_jax(
 
 
 class BatchPrefetcher:
-    """Threaded prefetcher that overlaps prepare_batch with GPU compute.
+    """Threaded prefetcher that converts PyTorch batches to numpy in the background.
 
-    Runs a daemon thread that pulls batches from the DataLoader, calls
-    ``prepare_batch`` with pre-assigned PRNG keys, and pushes ready-to-go
-    JAX tensors into a bounded queue.
+    Runs a daemon thread that pulls batches from the DataLoader, converts
+    them to numpy arrays via ``prepare_batch``, and pushes them into a
+    bounded queue for the main thread to consume.
 
     Args:
         dataloader: PyTorch DataLoader or list of batches.
-        keys: Pre-split JAX PRNG keys, one per item. Shape ``(num_items, 2)``.
         num_items: Number of prepared batches to produce.
-        coupling: Callable ``(x0_np, x1_np) -> x0_paired``.
-        time_sampler: Callable ``(key, batch_size) -> t``.
-        path_sampler: Callable ``(x0, x1, t, *, key) -> (x_t, u_t)``.
-        p_uncond: Probability of dropping the condition per sample.
         buffer_size: Maximum number of prepared batches to buffer. Defaults to 3.
     """
 
     def __init__(
         self,
         dataloader,
-        keys: jax.Array,
         num_items: int,
-        coupling: callable,
-        time_sampler: callable,
-        path_sampler: callable,
-        p_uncond: float,
         buffer_size: int = 3,
     ):
         self._dataloader = dataloader
-        self._keys = keys
         self._num_items = num_items
-        self._coupling = coupling
-        self._time_sampler = time_sampler
-        self._path_sampler = path_sampler
-        self._p_uncond = p_uncond
         self._queue = queue.Queue(maxsize=buffer_size)
         self._stop_event = threading.Event()
         self._thread = threading.Thread(target=self._fill, daemon=True)
         self._thread.start()
 
     def _fill(self):
-        """Background thread: iterate dataloader, prepare batches, enqueue."""
+        """Background thread: iterate dataloader, convert to numpy, enqueue."""
         data_iter = iter(self._dataloader)
         for i in range(self._num_items):
             if self._stop_event.is_set():
@@ -228,14 +213,7 @@ class BatchPrefetcher:
             except StopIteration:
                 data_iter = iter(self._dataloader)
                 batch = next(data_iter)
-            result = prepare_batch(
-                batch=batch,
-                key=self._keys[i],
-                coupling=self._coupling,
-                time_sampler=self._time_sampler,
-                path_sampler=self._path_sampler,
-                p_uncond=self._p_uncond,
-            )
+            result = prepare_batch(batch)
             if self._stop_event.is_set():
                 return
             while not self._stop_event.is_set():
