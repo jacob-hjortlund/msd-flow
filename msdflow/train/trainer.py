@@ -659,6 +659,8 @@ def train(
             _key = jax.random.PRNGKey(42)
             sample_keys = jax.random.split(_key, num_samples)
             images = batched_sample_fn(ema_model, sample_keys)
+            images = np.asarray(images)
+            print(images.shape, images.dtype)
             epoch_samples_dir = os.path.join(samples_dir, f"epoch_{epoch + 1}")
             if clearml_task is None:
                 os.makedirs(epoch_samples_dir, exist_ok=True)
