@@ -460,6 +460,7 @@ def train(
 
     train_step = make_train_step(optimizer, loss_fn)
     batch_metric_step = make_batch_metric_step(batch_metrics)
+    prepare_jax = make_prepare_batch_jax(coupling, time_sampler, path_sampler, p_uncond)
 
     if num_steps_per_epoch == 0:
         microsteps_per_epoch = (len(dataloader) // grad_accum_steps) * grad_accum_steps
@@ -499,19 +500,9 @@ def train(
         epoch_loss = jnp.float32(0.0)
         epoch_start_time = time.perf_counter()
 
-        # Pre-split all PRNG keys for this epoch
-        all_keys = jax.random.split(key, microsteps_per_epoch + 1)
-        batch_keys = all_keys[:microsteps_per_epoch]
-        key = all_keys[microsteps_per_epoch]
-
         prefetcher = BatchPrefetcher(
             dataloader=dataloader,
-            keys=batch_keys,
             num_items=microsteps_per_epoch,
-            coupling=coupling,
-            time_sampler=time_sampler,
-            path_sampler=path_sampler,
-            p_uncond=p_uncond,
             buffer_size=buffer_size,
         )
 
@@ -523,7 +514,11 @@ def train(
                 dynamic_ncols=True,
             )
             for microstep in pbar:
-                t, x_t, u_t, cond, cond_mask, dropout_keys = next(prefetcher)
+                images_np, cond_np = next(prefetcher)
+                step_key, key = jax.random.split(key)
+                t, x_t, u_t, cond, cond_mask, dropout_keys = prepare_jax(
+                    images_np, cond_np, step_key
+                )
 
                 state, loss = train_step(
                     state, x_t, u_t, t, cond, cond_mask, dropout_keys
@@ -549,10 +544,7 @@ def train(
                 ema_model=ema_model,
                 dataloader=val_dataloader,
                 step_fn=batch_metric_step,
-                coupling=coupling,
-                time_sampler=time_sampler,
-                path_sampler=path_sampler,
-                p_uncond=p_uncond,
+                prepare_jax=prepare_jax,
                 num_batches=num_train_eval_batches,
             )
 
@@ -561,10 +553,7 @@ def train(
                 ema_model=ema_model,
                 dataloader=dataloader,
                 step_fn=batch_metric_step,
-                coupling=coupling,
-                time_sampler=time_sampler,
-                path_sampler=path_sampler,
-                p_uncond=p_uncond,
+                prepare_jax=prepare_jax,
                 num_batches=num_train_eval_batches,
             )
 
