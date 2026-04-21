@@ -79,6 +79,7 @@ def make_train_step(optimizer: optax.GradientTransformation, loss_fn: callable):
     return train_step
 
 
+@eqx.filter_jit
 def ema_update(ema_model, new_model, decay: float):
     """Update EMA model weights using exponential moving average.
 

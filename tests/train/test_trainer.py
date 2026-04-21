@@ -180,6 +180,22 @@ def test_ema_update_blends_arrays_correctly():
     assert jnp.allclose(result.bias, expected_bias, atol=1e-6)
 
 
+def test_ema_update_is_jit_compiled():
+    """ema_update should be JIT-compiled (filter_jit decorated)."""
+    key1, key2 = jax.random.split(jax.random.PRNGKey(13))
+    ema_model = eqx.nn.Linear(4, 4, key=key1)
+    new_model = eqx.nn.Linear(4, 4, key=key2)
+    decay = 0.9
+
+    # Call twice — second call should use cached compilation
+    result1 = ema_update(ema_model, new_model, decay=decay)
+    result2 = ema_update(ema_model, new_model, decay=decay)
+
+    expected_weight = 0.9 * ema_model.weight + 0.1 * new_model.weight
+    assert jnp.allclose(result1.weight, expected_weight, atol=1e-6)
+    assert jnp.allclose(result2.weight, expected_weight, atol=1e-6)
+
+
 from msdflow.train.trainer import make_batch_metric_step
 
 
