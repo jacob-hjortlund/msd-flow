@@ -4,6 +4,7 @@ import jax.numpy as jnp
 import numpy as np
 from scipy.linalg import sqrtm
 from jax.scipy.ndimage import map_coordinates
+from tqdm import tqdm
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +224,7 @@ def compute_fid_metrics(
         for acc in accumulators.values():
             acc.reset()
         n_real_seen = 0
-        for images, _meta in val_dataloader:
+        for images, _meta in tqdm(val_dataloader, desc="FID real", leave=False, dynamic_ncols=True):
             images = images.numpy()
             images = jnp.asarray(images)
             if n_real is not None:
@@ -255,6 +256,7 @@ def compute_fid_metrics(
 
     _generate_fn = eqx.filter_jit(jax.vmap(_generate_fn))
 
+    pbar = tqdm(total=n_samples, desc="FID fake", leave=False, dynamic_ncols=True)
     while n_generated < n_samples:
         chunk_size = min(gen_batch_size, n_samples - n_generated)
         all_keys = jax.random.split(key, chunk_size + 1)
@@ -264,6 +266,8 @@ def compute_fid_metrics(
         for acc in accumulators.values():
             acc.update(fake_images)
         n_generated += chunk_size
+        pbar.update(chunk_size)
+    pbar.close()
 
     # --- Compute FID per accumulator ---
     results = {}
