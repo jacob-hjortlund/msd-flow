@@ -493,12 +493,11 @@ def test_end_to_end_conditional_training_and_sampling():
         model=trained,
         shape=(1, 8, 8),
         key=KEY,
-        solver=diffrax.Euler,
+        solver=diffrax.Euler(),
         dt0=0.1,
         t0=0.0,
         t1=1.0,
-        stepsize_controller=diffrax.ConstantStepSize,
-        stepsize_controller_cfg={},
+        stepsize_controller=diffrax.ConstantStepSize(),
     )
 
     out_uncond = sample(**sample_kwargs)
@@ -542,114 +541,6 @@ def test_prepare_batch_preserves_values():
 
     assert np.array_equal(images_np, data)
     assert np.array_equal(cond_np, np.array([[0.5], [1.0]], dtype=np.float32))
-
-
-# --- prepare_batch ---
-
-# from msdflow.train.trainer import prepare_batch
-
-
-# def test_prepare_batch_output_shapes():
-#     """prepare_batch returns tensors with correct shapes."""
-#     B = 4
-#     images = torch.from_numpy(np.random.randn(B, 1, 8, 8).astype(np.float32))
-#     meta = torch.empty(B, 0)
-#     batch = (images, meta)
-
-#     key = jax.random.PRNGKey(0)
-#     t, x_t, u_t, cond, cond_mask, _ = prepare_batch(
-#         batch=batch,
-#         key=key,
-#         coupling=independent_coupling,
-#         time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
-#         path_sampler=partial(sample_path),
-#         p_uncond=0.0,
-#     )
-
-#     assert t.shape == (B,)
-#     assert x_t.shape == (B, 1, 8, 8)
-#     assert u_t.shape == (B, 1, 8, 8)
-#     assert cond.shape == (B, 0)
-#     assert cond_mask.shape == (B,)
-
-
-# def test_prepare_batch_times_in_range():
-#     """prepare_batch samples t values in [0, 1]."""
-#     B = 8
-#     images = torch.from_numpy(np.random.randn(B, 1, 8, 8).astype(np.float32))
-#     meta = torch.empty(B, 0)
-#     batch = (images, meta)
-
-#     key = jax.random.PRNGKey(1)
-#     t, _, _, _, _, _ = prepare_batch(
-#         batch=batch,
-#         key=key,
-#         coupling=independent_coupling,
-#         time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
-#         path_sampler=partial(sample_path),
-#         p_uncond=0.0,
-#     )
-
-#     assert jnp.all(t >= 0.0) and jnp.all(t <= 1.0)
-
-
-# def test_prepare_batch_p_uncond_one_masks_all():
-#     """With p_uncond=1.0, all cond_mask values must be False."""
-#     B = 16
-#     images = torch.from_numpy(np.random.randn(B, 1, 8, 8).astype(np.float32))
-#     meta = torch.empty(B, 0)
-#     batch = (images, meta)
-
-#     key = jax.random.PRNGKey(2)
-#     _, _, _, _, cond_mask, _ = prepare_batch(
-#         batch=batch,
-#         key=key,
-#         coupling=independent_coupling,
-#         time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
-#         path_sampler=partial(sample_path),
-#         p_uncond=1.0,
-#     )
-
-#     assert jnp.all(~cond_mask)
-
-
-# def test_prepare_batch_p_uncond_zero_keeps_all():
-#     """With p_uncond=0.0, all cond_mask values must be True."""
-#     B = 16
-#     images = torch.from_numpy(np.random.randn(B, 1, 8, 8).astype(np.float32))
-#     meta = torch.empty(B, 0)
-#     batch = (images, meta)
-
-#     key = jax.random.PRNGKey(3)
-#     _, _, _, _, cond_mask, _ = prepare_batch(
-#         batch=batch,
-#         key=key,
-#         coupling=independent_coupling,
-#         time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
-#         path_sampler=partial(sample_path),
-#         p_uncond=0.0,
-#     )
-
-#     assert jnp.all(cond_mask)
-
-
-# def test_prepare_batch_different_keys_give_different_results():
-#     """Different keys must produce different x_t values."""
-#     B = 4
-#     images = torch.from_numpy(np.random.randn(B, 1, 8, 8).astype(np.float32))
-#     meta = torch.empty(B, 0)
-#     batch = (images, meta)
-
-#     kwargs = dict(
-#         batch=batch,
-#         coupling=independent_coupling,
-#         time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
-#         path_sampler=partial(sample_path),
-#         p_uncond=0.0,
-#     )
-#     _, x_t_a, _, _, _, _ = prepare_batch(key=jax.random.PRNGKey(0), **kwargs)
-#     _, x_t_b, _, _, _, _ = prepare_batch(key=jax.random.PRNGKey(1), **kwargs)
-#     assert not jnp.allclose(x_t_a, x_t_b)
 
 
 # --- batch_metric_loop ---
