@@ -442,10 +442,13 @@ def train(
     Returns:
         Trained EMA model.
     """
-    if sample_fn is not None and sample_every > 0 and samples_dir is None:
-        raise ValueError(
-            "samples_dir must be provided when sample_fn and sample_every > 0 are set"
-        )
+    if sample_fn is not None and sample_every > 0:
+        if samples_dir is None and clearml_task is None:
+            raise ValueError(
+                "samples_dir must be provided when sample_fn and sample_every > 0 are set and clearml_task is None."
+            )
+        sample_fn = lambda model, key: sample_fn(model=model, key=key)
+        sample_fn = eqx.filter_jit(eqx.filter_vmap(sample_fn, in_axes=(None, 0)))
 
     if monitor_mode not in ("min", "max"):
         raise ValueError(f"monitor_mode must be 'min' or 'max', got {monitor_mode!r}")
@@ -494,7 +497,6 @@ def train(
 
     best_metric_value = float("inf") if monitor_mode == "min" else float("-inf")
     patience_counter = 0
-    best_epoch = None
 
     for epoch in range(num_epochs):
         epoch_loss = jnp.float32(0.0)
@@ -647,12 +649,15 @@ def train(
             and sample_every > 0
             and (epoch + 1) % sample_every == 0
         ):
-            sample_key, key = jax.random.split(key)
-            images = sample_fn(ema_model, sample_key, num_samples)
+            # sample_key, key = jax.random.split(key)
+            _key = jax.random.PRNGKey(42)
+            sample_keys = jax.random.split(_key, num_samples)
+            images = sample_fn(ema_model, sample_keys)
             epoch_samples_dir = os.path.join(samples_dir, f"epoch_{epoch + 1}")
-            os.makedirs(epoch_samples_dir, exist_ok=True)
-            for i, img in enumerate(images):
-                np.save(os.path.join(epoch_samples_dir, f"sample_{i:03d}.npy"), img)
+            if clearml_task is None:
+                os.makedirs(epoch_samples_dir, exist_ok=True)
+                for i, img in enumerate(images):
+                    np.save(os.path.join(epoch_samples_dir, f"sample_{i:03d}.npy"), img)
             log_samples(clearml_task, images, epoch + 1)
 
         epoch_time = time.perf_counter() - epoch_start_time

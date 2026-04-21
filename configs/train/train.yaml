@@ -59,7 +59,7 @@ checkpoint_every: 10
 log_every: ${train.val_every}
 ema_decay: 0.9999
 sample_fn: null
-sample_every: 0
+sample_every: ${train.val_every}
 num_samples: 4
 samples_dir: ${work_dir}/samples
 monitor: fid_zoobot
