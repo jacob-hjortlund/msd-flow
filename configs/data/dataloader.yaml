@@ -1,6 +1,11 @@
 data_dir: null
 cache_dir: null
 
+num_workers: 4
+prefetch_factor: 2
+persistent_workers: true
+multiprocessing_context: spawn
+
 tdigest:
   sample_fraction: 0.1
   sample_seed: 42
@@ -110,21 +115,27 @@ train:
   dataset: ${data.dataloader.train_dataset}
   batch_size: ${data.dataloader.batch_size}
   shuffle: true
-  #num_workers: 10
-  #prefetch_factor: 2
+  num_workers: ${data.dataloader.num_workers}
+  prefetch_factor: ${data.dataloader.prefetch_factor}
+  persistent_workers: ${data.dataloader.persistent_workers}
+  multiprocessing_context: ${data.dataloader.multiprocessing_context}
 
 val:
   _target_: torch.utils.data.DataLoader
   dataset: ${data.dataloader.val_dataset}
   batch_size: ${data.dataloader.batch_size}
   shuffle: false
-  #num_workers: 10
-  #prefetch_factor: 2
+  num_workers: ${data.dataloader.num_workers}
+  prefetch_factor: ${data.dataloader.prefetch_factor}
+  persistent_workers: ${data.dataloader.persistent_workers}
+  multiprocessing_context: ${data.dataloader.multiprocessing_context}
 
 test:
   _target_: torch.utils.data.DataLoader
   dataset: ${data.dataloader.test_dataset}
   batch_size: ${data.dataloader.batch_size}
   shuffle: false
-  #num_workers: 10
-  #prefetch_factor: 2
+  num_workers: ${data.dataloader.num_workers}
+  prefetch_factor: ${data.dataloader.prefetch_factor}
+  persistent_workers: ${data.dataloader.persistent_workers}
+  multiprocessing_context: ${data.dataloader.multiprocessing_context}
