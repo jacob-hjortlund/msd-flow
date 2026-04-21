@@ -228,7 +228,11 @@ def compute_fid_metrics(
             acc.reset()
         n_real_seen = 0
         for images, _meta in tqdm(
-            val_dataloader, desc="FID real", leave=False, dynamic_ncols=True
+            val_dataloader,
+            desc="FID real",
+            leave=False,
+            dynamic_ncols=True,
+            total=n_real,
         ):
             images = images.numpy()
             images = jnp.asarray(images)
