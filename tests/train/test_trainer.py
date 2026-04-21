@@ -8,7 +8,7 @@ import pytest
 import numpy as np
 import diffrax
 from msdflow.model.unet import UNet
-from msdflow.train.trainer import TrainState, make_train_state, train
+from msdflow.train.trainer import TrainState, make_train_state, train, make_prepare_batch_jax
 from msdflow.flow.sample import sample
 from msdflow.flow.interpolate import sample_path
 
@@ -1577,3 +1577,106 @@ def test_batch_prefetcher_deterministic_with_same_keys():
     for (t1, x_t1, *_), (t2, x_t2, *_) in zip(results1, results2):
         assert jnp.allclose(t1, t2)
         assert jnp.allclose(x_t1, x_t2)
+
+
+# --- make_prepare_batch_jax ---
+
+
+def test_make_prepare_batch_jax_output_shapes():
+    """make_prepare_batch_jax returns tensors with correct shapes."""
+    B = 4
+    images_np = np.random.randn(B, 1, 8, 8).astype(np.float32)
+    cond_np = np.empty((B, 0), dtype=np.float32)
+
+    prepare_jax = make_prepare_batch_jax(
+        coupling=independent_coupling,
+        time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
+        path_sampler=partial(sample_path),
+        p_uncond=0.0,
+    )
+    key = jax.random.PRNGKey(0)
+    t, x_t, u_t, cond, cond_mask, dropout_keys = prepare_jax(images_np, cond_np, key)
+
+    assert t.shape == (B,)
+    assert x_t.shape == (B, 1, 8, 8)
+    assert u_t.shape == (B, 1, 8, 8)
+    assert cond.shape == (B, 0)
+    assert cond_mask.shape == (B,)
+    assert dropout_keys.shape[0] == B
+
+
+def test_make_prepare_batch_jax_times_in_range():
+    """make_prepare_batch_jax samples t values in [0, 1]."""
+    B = 8
+    images_np = np.random.randn(B, 1, 8, 8).astype(np.float32)
+    cond_np = np.empty((B, 0), dtype=np.float32)
+
+    prepare_jax = make_prepare_batch_jax(
+        coupling=independent_coupling,
+        time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
+        path_sampler=partial(sample_path),
+        p_uncond=0.0,
+    )
+    t, *_ = prepare_jax(images_np, cond_np, jax.random.PRNGKey(1))
+    assert jnp.all(t >= 0.0) and jnp.all(t <= 1.0)
+
+
+def test_make_prepare_batch_jax_p_uncond_one_masks_all():
+    """With p_uncond=1.0, all cond_mask values must be False."""
+    B = 16
+    images_np = np.random.randn(B, 1, 8, 8).astype(np.float32)
+    cond_np = np.empty((B, 0), dtype=np.float32)
+
+    prepare_jax = make_prepare_batch_jax(
+        coupling=independent_coupling,
+        time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
+        path_sampler=partial(sample_path),
+        p_uncond=1.0,
+    )
+    _, _, _, _, cond_mask, _ = prepare_jax(images_np, cond_np, jax.random.PRNGKey(2))
+    assert jnp.all(~cond_mask)
+
+
+def test_make_prepare_batch_jax_p_uncond_zero_keeps_all():
+    """With p_uncond=0.0, all cond_mask values must be True."""
+    B = 16
+    images_np = np.random.randn(B, 1, 8, 8).astype(np.float32)
+    cond_np = np.empty((B, 0), dtype=np.float32)
+
+    prepare_jax = make_prepare_batch_jax(
+        coupling=independent_coupling,
+        time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
+        path_sampler=partial(sample_path),
+        p_uncond=0.0,
+    )
+    _, _, _, _, cond_mask, _ = prepare_jax(images_np, cond_np, jax.random.PRNGKey(3))
+    assert jnp.all(cond_mask)
+
+
+def test_make_prepare_batch_jax_different_keys_give_different_results():
+    """Different keys must produce different x_t values."""
+    B = 4
+    images_np = np.random.randn(B, 1, 8, 8).astype(np.float32)
+    cond_np = np.empty((B, 0), dtype=np.float32)
+
+    prepare_jax = make_prepare_batch_jax(
+        coupling=independent_coupling,
+        time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
+        path_sampler=partial(sample_path),
+        p_uncond=0.0,
+    )
+    _, x_t_a, *_ = prepare_jax(images_np, cond_np, jax.random.PRNGKey(0))
+    _, x_t_b, *_ = prepare_jax(images_np, cond_np, jax.random.PRNGKey(1))
+    assert not jnp.allclose(x_t_a, x_t_b)
+
+
+def test_make_prepare_batch_jax_rejects_ot_coupling():
+    """make_prepare_batch_jax raises ValueError for ot_coupling."""
+    from msdflow.flow.coupling import ot_coupling
+    with pytest.raises(ValueError, match="ot_coupling"):
+        make_prepare_batch_jax(
+            coupling=ot_coupling,
+            time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
+            path_sampler=partial(sample_path),
+            p_uncond=0.0,
+        )

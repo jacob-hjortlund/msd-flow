@@ -106,51 +106,74 @@ def ema_update(ema_model, new_model, decay: float):
     return eqx.combine(updated, static)
 
 
-def prepare_batch(
-    batch,
-    key,
+def prepare_batch(batch) -> tuple[np.ndarray, np.ndarray]:
+    """Convert a PyTorch dataloader batch to numpy arrays.
+
+    Args:
+        batch: Tuple of (images, meta) from the dataloader.
+
+    Returns:
+        Tuple of (images_np, cond_np) as numpy arrays.
+    """
+    images, meta = batch
+    return images.numpy(), meta.numpy()
+
+
+def make_prepare_batch_jax(
     coupling: callable,
     time_sampler: callable,
     path_sampler: callable,
     p_uncond: float,
 ):
-    """Prepare a batch by sampling time steps, applying coupling, and masking conditions.
+    """Return a JIT-compiled batch preparation function.
+
+    Closes over coupling, time_sampler, path_sampler, and p_uncond as static
+    Python objects, following the ``make_train_step`` closure pattern.
 
     Args:
-        batch:          Tuple of (images, meta) from the dataloader.
-        key:            JAX PRNG key for random operations.
-        coupling:       Callable that takes (x0_np, x1_np) and returns coupled x0.
-        time_sampler:   Callable for sampling time steps.
-        path_sampler:   JIT-compiled ``sample_path`` partial.
-        p_uncond:       Probability of dropping the condition per sample.
+        coupling:     Callable ``(x0, x1) -> x0_paired``. Must be JIT-compatible
+                      (e.g. ``independent_coupling``). ``ot_coupling`` is rejected.
+        time_sampler: Callable ``(key, batch_size) -> t``.
+        path_sampler: Callable ``(x0, x1, t, *, key) -> (x_t, u_t)``.
+        p_uncond:     Probability of dropping the condition per sample.
 
     Returns:
-        Tuple of (t, x_t, u_t, cond, cond_mask, dropout_keys) ready for training step.
+        A ``jax.jit``-compiled callable with signature
+        ``(images_np, cond_np, key) -> (t, x_t, u_t, cond, cond_mask, dropout_keys)``.
+
+    Raises:
+        ValueError: If ``coupling`` is ``ot_coupling`` (not JIT-compatible).
     """
+    from msdflow.flow.coupling import ot_coupling
 
-    key_cpu, key_time, key_path, dropout_key = jax.random.split(key, 4)
+    if coupling is ot_coupling:
+        raise ValueError(
+            "ot_coupling requires scipy and is not JIT-able. "
+            "Use independent_coupling or implement a JAX-native OT coupling."
+        )
 
-    images, meta = batch
-    x1_np = images.numpy()
-    cond_np = meta.numpy()
-    B = x1_np.shape[0]
-    droupout_keys = jax.random.split(dropout_key, B)
+    @jax.jit
+    def prepare_batch_jax(
+        images_np: np.ndarray,
+        cond_np: np.ndarray,
+        key: jax.Array,
+    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
+        key_noise, key_time, key_path, key_cfg, key_dropout = jax.random.split(key, 5)
+        B = images_np.shape[0]
 
-    cpu_seed = int(jax.random.bits(key_cpu, shape=(), dtype=jnp.uint32))
-    rng = np.random.default_rng(cpu_seed)
+        x1 = jnp.array(images_np)
+        cond = jnp.array(cond_np)
 
-    x0_np = rng.standard_normal(x1_np.shape).astype(np.float32)
-    x0_paired = coupling(x0_np, x1_np)
-    t = time_sampler(key_time, B)
+        x0 = jax.random.normal(key_noise, x1.shape)
+        x0 = coupling(x0, x1)
+        t = time_sampler(key_time, B)
+        cond_mask = jax.random.bernoulli(key_cfg, 1.0 - p_uncond, shape=(B,))
+        x_t, u_t = path_sampler(x0, x1, t, key=key_path)
+        dropout_keys = jax.random.split(key_dropout, B)
 
-    # CFG: randomly drop condition per sample with probability p_uncond
-    cond_mask_np = (rng.random(B) >= p_uncond).astype(bool)
+        return t, x_t, u_t, cond, cond_mask, dropout_keys
 
-    x_t, u_t = path_sampler(jnp.array(x0_paired), jnp.array(x1_np), t, key=key_path)
-    cond = jnp.array(cond_np)
-    cond_mask = jnp.array(cond_mask_np)
-
-    return t, x_t, u_t, cond, cond_mask, droupout_keys
+    return prepare_batch_jax
 
 
 class BatchPrefetcher:
