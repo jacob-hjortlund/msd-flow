@@ -1,7 +1,7 @@
 data_dir: null
 cache_dir: null
 
-num_workers: 4
+num_workers: 8
 prefetch_factor: 2
 persistent_workers: true
 multiprocessing_context: spawn
@@ -109,7 +109,7 @@ test_dataset:
   metadata_transform: ${data.dataloader.metadata_transform}
 
 
-batch_size: 32
+batch_size: 8
 train:
   _target_: torch.utils.data.DataLoader
   dataset: ${data.dataloader.train_dataset}
