@@ -384,6 +384,7 @@ def train(
     monitor_mode: str = "min",
     early_stopping_patience: int | None = None,
     grad_accum_steps: int = 1,
+    buffer_size: int = 4,
     *args,
     **kwargs,
 ):
@@ -458,9 +459,7 @@ def train(
         raise ValueError(f"monitor_mode must be 'min' or 'max', got {monitor_mode!r}")
 
     if grad_accum_steps < 1:
-        raise ValueError(
-            f"grad_accum_steps must be >= 1, got {grad_accum_steps}"
-        )
+        raise ValueError(f"grad_accum_steps must be >= 1, got {grad_accum_steps}")
 
     if grad_accum_steps > 1:
         optimizer = optax.MultiSteps(optimizer, every_k_schedule=grad_accum_steps)
@@ -521,6 +520,7 @@ def train(
             time_sampler=time_sampler,
             path_sampler=path_sampler,
             p_uncond=p_uncond,
+            buffer_size=buffer_size,
         )
 
         with logging_redirect_tqdm():

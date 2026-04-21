@@ -65,3 +65,4 @@ samples_dir: ${work_dir}/samples
 monitor: fid_zoobot
 monitor_mode: min
 early_stopping_patience: 10
+buffer_size: 4
