@@ -484,7 +484,6 @@ def train(
         microsteps_per_epoch = steps_per_epoch * grad_accum_steps
 
     ema_model = model
-    data_iter = iter(dataloader)
 
     total_epoch_time = 0.0
     avg_epoch_time = 0.0
@@ -509,6 +508,21 @@ def train(
         epoch_loss = jnp.float32(0.0)
         epoch_start_time = time.perf_counter()
 
+        # Pre-split all PRNG keys for this epoch
+        all_keys = jax.random.split(key, microsteps_per_epoch + 1)
+        batch_keys = all_keys[:microsteps_per_epoch]
+        key = all_keys[microsteps_per_epoch]
+
+        prefetcher = BatchPrefetcher(
+            dataloader=dataloader,
+            keys=batch_keys,
+            num_items=microsteps_per_epoch,
+            coupling=coupling,
+            time_sampler=time_sampler,
+            path_sampler=path_sampler,
+            p_uncond=p_uncond,
+        )
+
         with logging_redirect_tqdm():
             pbar = tqdm(
                 range(microsteps_per_epoch),
@@ -517,22 +531,7 @@ def train(
                 dynamic_ncols=True,
             )
             for microstep in pbar:
-                try:
-                    batch = next(data_iter)
-                except StopIteration:
-                    data_iter = iter(dataloader)
-                    batch = next(data_iter)
-
-                batch_key, key = jax.random.split(key, 2)
-
-                t, x_t, u_t, cond, cond_mask, dropout_keys = prepare_batch(
-                    batch=batch,
-                    key=batch_key,
-                    coupling=coupling,
-                    time_sampler=time_sampler,
-                    path_sampler=path_sampler,
-                    p_uncond=p_uncond,
-                )
+                t, x_t, u_t, cond, cond_mask, dropout_keys = next(prefetcher)
 
                 state, loss = train_step(
                     state, x_t, u_t, t, cond, cond_mask, dropout_keys
@@ -541,6 +540,7 @@ def train(
                     ema_model = ema_update(ema_model, state.model, ema_decay)
                 epoch_loss = epoch_loss + loss
 
+        prefetcher.shutdown()
         epoch_loss = float(epoch_loss)
         ema_model = eqx.nn.inference_mode(ema_model, value=True)
         train_time = time.perf_counter() - epoch_start_time
