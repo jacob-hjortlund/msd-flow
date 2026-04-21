@@ -7,6 +7,8 @@ the main training loop with periodic checkpointing.
 from typing import Any
 
 import time
+import queue
+import threading
 import jax
 import jax.numpy as jnp
 import equinox as eqx
@@ -180,9 +182,6 @@ class BatchPrefetcher:
         p_uncond: float,
         buffer_size: int = 3,
     ):
-        import threading
-        import queue
-
         self._dataloader = dataloader
         self._keys = keys
         self._num_items = num_items
@@ -216,8 +215,19 @@ class BatchPrefetcher:
             )
             if self._stop_event.is_set():
                 return
-            self._queue.put(result)
-        self._queue.put(None)  # sentinel
+            while not self._stop_event.is_set():
+                try:
+                    self._queue.put(result, timeout=1.0)
+                    break
+                except queue.Full:
+                    continue
+        if not self._stop_event.is_set():
+            while not self._stop_event.is_set():
+                try:
+                    self._queue.put(None, timeout=1.0)  # sentinel
+                    break
+                except queue.Full:
+                    continue
 
     def __iter__(self):
         return self
@@ -229,8 +239,17 @@ class BatchPrefetcher:
         return item
 
     def shutdown(self):
-        """Signal the background thread to stop."""
+        """Signal the background thread to stop and wait for it to exit."""
         self._stop_event.set()
+        self._thread.join(timeout=5.0)
+
+    def __enter__(self):
+        """Enter context manager."""
+        return self
+
+    def __exit__(self, *exc):
+        """Exit context manager, ensuring thread cleanup."""
+        self.shutdown()
 
 
 def make_batch_metric_step(batch_metrics: list):
