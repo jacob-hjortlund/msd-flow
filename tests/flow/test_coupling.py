@@ -1,5 +1,6 @@
 """Tests for msdflow.flow.coupling."""
 
+import jax.numpy as jnp
 import numpy as np
 import pytest
 from msdflow.flow.coupling import independent_coupling, ot_coupling
@@ -49,3 +50,12 @@ def test_ot_coupling_is_permutation():
     # All matched indices must be distinct (no source row used twice)
     matched_indices = [m[0] for m in matches]
     assert len(set(matched_indices)) == len(matched_indices), "output rows must be a permutation (no duplicates)"
+
+
+def test_independent_coupling_accepts_jax_arrays():
+    """independent_coupling must work with JAX arrays."""
+    x0 = jnp.ones((2, 1, 4, 4))
+    x1 = jnp.zeros((2, 1, 4, 4))
+    result = independent_coupling(x0, x1)
+    assert isinstance(result, jnp.ndarray)
+    assert jnp.array_equal(result, x0)
