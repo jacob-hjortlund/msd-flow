@@ -1403,6 +1403,29 @@ def test_ema_update_called_per_optimizer_step_not_per_microstep(tmp_path):
     assert ema_call_count[0] == num_steps
 
 
+def test_train_loss_with_deferred_accumulation(tmp_path):
+    """train/loss should be finite and positive with deferred float() conversion."""
+    mock_task = MagicMock()
+    dataloader = list(_make_fake_dataloader(B=2, num_batches=6))
+    val_dataloader = _fake_val_dataloader()
+    kwargs = _make_train_kwargs(num_epochs=1, num_steps_per_epoch=3)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+
+    with patch("msdflow.train.trainer.log_metrics") as mock_log:
+        train(
+            model=SMALL_MODEL,
+            dataloader=dataloader,
+            val_dataloader=val_dataloader,
+            grad_accum_steps=2,
+            clearml_task=mock_task,
+            **{k: v for k, v in kwargs.items() if k not in ("clearml_task",)},
+        )
+
+    reported_loss = mock_log.call_args_list[0][0][1]["train/loss"]
+    assert np.isfinite(reported_loss)
+    assert reported_loss > 0
+
+
 def test_train_grad_accum_loss_normalized_by_microsteps(tmp_path):
     """train/loss should be epoch_loss / microsteps_per_epoch (per-microbatch average)."""
     mock_task = MagicMock()

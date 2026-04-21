@@ -405,7 +405,7 @@ def train(
     best_epoch = None
 
     for epoch in range(num_epochs):
-        epoch_loss = 0.0
+        epoch_loss = jnp.float32(0.0)
         epoch_start_time = time.perf_counter()
 
         with logging_redirect_tqdm():
@@ -438,8 +438,9 @@ def train(
                 )
                 if (microstep + 1) % grad_accum_steps == 0:
                     ema_model = ema_update(ema_model, state.model, ema_decay)
-                epoch_loss += float(loss)
+                epoch_loss = epoch_loss + loss
 
+        epoch_loss = float(epoch_loss)
         ema_model = eqx.nn.inference_mode(ema_model, value=True)
         train_time = time.perf_counter() - epoch_start_time
         total_train_time += train_time
