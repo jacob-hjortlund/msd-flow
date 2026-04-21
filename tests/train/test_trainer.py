@@ -8,22 +8,40 @@ import pytest
 import numpy as np
 import diffrax
 from msdflow.model.unet import UNet
-from msdflow.train.trainer import TrainState, make_train_state, train, make_prepare_batch_jax
+from msdflow.train.trainer import (
+    TrainState,
+    make_train_state,
+    train,
+    make_prepare_batch_jax,
+)
 from msdflow.flow.sample import sample
 from msdflow.flow.interpolate import sample_path
 
 KEY = jax.random.PRNGKey(0)
 
 SMALL_MODEL = UNet(
-    in_channels=1, out_channels=1, base_channels=4,
-    channel_multipliers=[1, 2], num_res_blocks=1, num_heads=1,
-    num_groups=2, activation=jax.nn.silu, key=KEY,
+    in_channels=1,
+    out_channels=1,
+    base_channels=4,
+    channel_multipliers=[1, 2],
+    num_res_blocks=1,
+    num_heads=1,
+    num_groups=2,
+    activation=jax.nn.silu,
+    key=KEY,
 )
 
 SMALL_MODEL_COND = UNet(
-    in_channels=1, out_channels=1, base_channels=4,
-    channel_multipliers=[1, 2], num_res_blocks=1, num_heads=1,
-    num_groups=2, activation=jax.nn.silu, cond_dim=1, key=KEY,
+    in_channels=1,
+    out_channels=1,
+    base_channels=4,
+    channel_multipliers=[1, 2],
+    num_res_blocks=1,
+    num_heads=1,
+    num_groups=2,
+    activation=jax.nn.silu,
+    cond_dim=1,
+    key=KEY,
 )
 OPTIMIZER = optax.adam(1e-3)
 
@@ -90,7 +108,9 @@ def test_train_step_returns_updated_state_and_loss():
     cond_mask = jnp.zeros(B, dtype=bool)
 
     x_t, u_t = sample_path(x0, x1, t)
-    new_state, loss = train_step(state, x_t, u_t, t, cond, cond_mask, jax.random.PRNGKey(0))
+    new_state, loss = train_step(
+        state, x_t, u_t, t, cond, cond_mask, jax.random.PRNGKey(0)
+    )
 
     assert isinstance(new_state, TrainState)
     assert loss.shape == ()
@@ -130,7 +150,9 @@ def test_train_step_updates_model_params():
     cond_mask = jnp.zeros(B, dtype=bool)
 
     x_t, u_t = sample_path(x0, x1, t)
-    new_state, _ = train_step(state, x_t, u_t, t, cond, cond_mask, jax.random.PRNGKey(0))
+    new_state, _ = train_step(
+        state, x_t, u_t, t, cond, cond_mask, jax.random.PRNGKey(0)
+    )
 
     # At least one parameter should have changed
     orig_leaves = jax.tree_util.tree_leaves(eqx.filter(state.model, eqx.is_array))
@@ -261,8 +283,11 @@ def test_make_batch_metric_step_raises_on_duplicate_names():
     def my_metric(model, x_t, u_t, t, cond, cond_mask, key):
         return jnp.array(0.0)
 
-    def my_metric_copy(model, x_t, u_t, t, cond, cond_mask, key):  # same __name__ via rename
+    def my_metric_copy(
+        model, x_t, u_t, t, cond, cond_mask, key
+    ):  # same __name__ via rename
         return jnp.array(1.0)
+
     my_metric_copy.__name__ = "my_metric"
 
     with pytest.raises(ValueError, match="duplicate metric names"):
@@ -280,9 +305,7 @@ import torch
 def _make_fake_dataloader(B=2, num_batches=3):
     """Yield fake (images, meta) tuples matching DataLoader contract."""
     for _ in range(num_batches):
-        images = torch.from_numpy(
-            np.random.randn(B, 1, 8, 8).astype(np.float32)
-        )
+        images = torch.from_numpy(np.random.randn(B, 1, 8, 8).astype(np.float32))
         meta = torch.empty(B, 0)
         yield images, meta
 
@@ -350,16 +373,19 @@ def test_train_returns_ema_model_not_live_model():
 
 def test_train_loop_completes_without_error():
     """Verify the training loop runs without error on repeated fixed batches."""
-    fixed_images = torch.from_numpy(
-        np.random.randn(4, 1, 8, 8).astype(np.float32)
-    )
+    fixed_images = torch.from_numpy(np.random.randn(4, 1, 8, 8).astype(np.float32))
     fixed_meta = torch.empty(4, 0)
     dataloader = [(fixed_images, fixed_meta) for _ in range(20)]
     val_dataloader = _fake_val_dataloader()
     big_model = UNet(
-        in_channels=1, out_channels=1, base_channels=4,
-        channel_multipliers=[1, 2], num_res_blocks=1, num_heads=1,
-        num_groups=2, activation=jax.nn.silu,
+        in_channels=1,
+        out_channels=1,
+        base_channels=4,
+        channel_multipliers=[1, 2],
+        num_res_blocks=1,
+        num_heads=1,
+        num_groups=2,
+        activation=jax.nn.silu,
         key=jax.random.PRNGKey(99),
     )
     train(
@@ -385,7 +411,9 @@ def test_train_step_with_cond():
     cond_mask = jnp.ones(B, dtype=bool)
 
     x_t, u_t = sample_path(x0, x1, t)
-    new_state, loss = train_step(state, x_t, u_t, t, cond, cond_mask, jax.random.PRNGKey(0))
+    new_state, loss = train_step(
+        state, x_t, u_t, t, cond, cond_mask, jax.random.PRNGKey(0)
+    )
     assert isinstance(new_state, TrainState)
     assert loss.shape == ()
     assert jnp.isfinite(loss)
@@ -406,7 +434,9 @@ def test_train_step_with_cond_dropped():
     cond_mask = jnp.array([True, False])
 
     x_t, u_t = sample_path(x0, x1, t)
-    new_state, loss = train_step(state, x_t, u_t, t, cond, cond_mask, jax.random.PRNGKey(0))
+    new_state, loss = train_step(
+        state, x_t, u_t, t, cond, cond_mask, jax.random.PRNGKey(0)
+    )
     assert isinstance(new_state, TrainState)
     assert loss.shape == ()
     assert jnp.isfinite(loss)
@@ -415,8 +445,7 @@ def test_train_step_with_cond_dropped():
 def test_train_loop_with_cond():
     """Verify training loop works with metadata conditioning."""
     dataloader = [
-        (torch.randn(2, 1, 8, 8), torch.tensor([[0.4], [0.8]]))
-        for _ in range(3)
+        (torch.randn(2, 1, 8, 8), torch.tensor([[0.4], [0.8]])) for _ in range(3)
     ]
     val_dataloader = [(torch.randn(2, 1, 8, 8), torch.tensor([[0.4], [0.8]]))]
     kwargs = _make_train_kwargs(p_uncond=0.2)
@@ -447,8 +476,7 @@ def test_train_num_steps_per_epoch_zero_uses_dataloader_length():
 def test_end_to_end_conditional_training_and_sampling():
     """Train a small conditional model and verify unconditional and guided sampling."""
     dataloader = [
-        (torch.randn(2, 1, 8, 8), torch.tensor([[0.4], [0.8]]))
-        for _ in range(5)
+        (torch.randn(2, 1, 8, 8), torch.tensor([[0.4], [0.8]])) for _ in range(5)
     ]
     val_dataloader = [(torch.randn(2, 1, 8, 8), torch.tensor([[0.4], [0.8]]))]
 
@@ -487,110 +515,145 @@ def test_end_to_end_conditional_training_and_sampling():
 from msdflow.train.trainer import prepare_batch
 
 
-def test_prepare_batch_output_shapes():
-    """prepare_batch returns tensors with correct shapes."""
+def test_prepare_batch_returns_numpy_arrays():
+    """prepare_batch returns numpy arrays from PyTorch tensors."""
     B = 4
     images = torch.from_numpy(np.random.randn(B, 1, 8, 8).astype(np.float32))
     meta = torch.empty(B, 0)
     batch = (images, meta)
 
-    key = jax.random.PRNGKey(0)
-    t, x_t, u_t, cond, cond_mask, _ = prepare_batch(
-        batch=batch,
-        key=key,
-        coupling=independent_coupling,
-        time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
-        path_sampler=partial(sample_path),
-        p_uncond=0.0,
-    )
+    images_np, cond_np = prepare_batch(batch)
 
-    assert t.shape == (B,)
-    assert x_t.shape == (B, 1, 8, 8)
-    assert u_t.shape == (B, 1, 8, 8)
-    assert cond.shape == (B, 0)
-    assert cond_mask.shape == (B,)
+    assert isinstance(images_np, np.ndarray)
+    assert isinstance(cond_np, np.ndarray)
+    assert images_np.shape == (B, 1, 8, 8)
+    assert cond_np.shape == (B, 0)
 
 
-def test_prepare_batch_times_in_range():
-    """prepare_batch samples t values in [0, 1]."""
-    B = 8
-    images = torch.from_numpy(np.random.randn(B, 1, 8, 8).astype(np.float32))
-    meta = torch.empty(B, 0)
+def test_prepare_batch_preserves_values():
+    """prepare_batch preserves tensor values during conversion."""
+    B = 2
+    data = np.random.randn(B, 1, 4, 4).astype(np.float32)
+    images = torch.from_numpy(data)
+    meta = torch.tensor([[0.5], [1.0]])
     batch = (images, meta)
 
-    key = jax.random.PRNGKey(1)
-    t, _, _, _, _, _ = prepare_batch(
-        batch=batch,
-        key=key,
-        coupling=independent_coupling,
-        time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
-        path_sampler=partial(sample_path),
-        p_uncond=0.0,
-    )
+    images_np, cond_np = prepare_batch(batch)
 
-    assert jnp.all(t >= 0.0) and jnp.all(t <= 1.0)
+    assert np.array_equal(images_np, data)
+    assert np.array_equal(cond_np, np.array([[0.5], [1.0]], dtype=np.float32))
 
 
-def test_prepare_batch_p_uncond_one_masks_all():
-    """With p_uncond=1.0, all cond_mask values must be False."""
-    B = 16
-    images = torch.from_numpy(np.random.randn(B, 1, 8, 8).astype(np.float32))
-    meta = torch.empty(B, 0)
-    batch = (images, meta)
+# --- prepare_batch ---
 
-    key = jax.random.PRNGKey(2)
-    _, _, _, _, cond_mask, _ = prepare_batch(
-        batch=batch,
-        key=key,
-        coupling=independent_coupling,
-        time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
-        path_sampler=partial(sample_path),
-        p_uncond=1.0,
-    )
-
-    assert jnp.all(~cond_mask)
+# from msdflow.train.trainer import prepare_batch
 
 
-def test_prepare_batch_p_uncond_zero_keeps_all():
-    """With p_uncond=0.0, all cond_mask values must be True."""
-    B = 16
-    images = torch.from_numpy(np.random.randn(B, 1, 8, 8).astype(np.float32))
-    meta = torch.empty(B, 0)
-    batch = (images, meta)
+# def test_prepare_batch_output_shapes():
+#     """prepare_batch returns tensors with correct shapes."""
+#     B = 4
+#     images = torch.from_numpy(np.random.randn(B, 1, 8, 8).astype(np.float32))
+#     meta = torch.empty(B, 0)
+#     batch = (images, meta)
 
-    key = jax.random.PRNGKey(3)
-    _, _, _, _, cond_mask, _ = prepare_batch(
-        batch=batch,
-        key=key,
-        coupling=independent_coupling,
-        time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
-        path_sampler=partial(sample_path),
-        p_uncond=0.0,
-    )
+#     key = jax.random.PRNGKey(0)
+#     t, x_t, u_t, cond, cond_mask, _ = prepare_batch(
+#         batch=batch,
+#         key=key,
+#         coupling=independent_coupling,
+#         time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
+#         path_sampler=partial(sample_path),
+#         p_uncond=0.0,
+#     )
 
-    assert jnp.all(cond_mask)
+#     assert t.shape == (B,)
+#     assert x_t.shape == (B, 1, 8, 8)
+#     assert u_t.shape == (B, 1, 8, 8)
+#     assert cond.shape == (B, 0)
+#     assert cond_mask.shape == (B,)
 
 
-def test_prepare_batch_different_keys_give_different_results():
-    """Different keys must produce different x_t values."""
-    B = 4
-    images = torch.from_numpy(np.random.randn(B, 1, 8, 8).astype(np.float32))
-    meta = torch.empty(B, 0)
-    batch = (images, meta)
+# def test_prepare_batch_times_in_range():
+#     """prepare_batch samples t values in [0, 1]."""
+#     B = 8
+#     images = torch.from_numpy(np.random.randn(B, 1, 8, 8).astype(np.float32))
+#     meta = torch.empty(B, 0)
+#     batch = (images, meta)
 
-    kwargs = dict(
-        batch=batch,
-        coupling=independent_coupling,
-        time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
-        path_sampler=partial(sample_path),
-        p_uncond=0.0,
-    )
-    _, x_t_a, _, _, _, _ = prepare_batch(key=jax.random.PRNGKey(0), **kwargs)
-    _, x_t_b, _, _, _, _ = prepare_batch(key=jax.random.PRNGKey(1), **kwargs)
-    assert not jnp.allclose(x_t_a, x_t_b)
+#     key = jax.random.PRNGKey(1)
+#     t, _, _, _, _, _ = prepare_batch(
+#         batch=batch,
+#         key=key,
+#         coupling=independent_coupling,
+#         time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
+#         path_sampler=partial(sample_path),
+#         p_uncond=0.0,
+#     )
+
+#     assert jnp.all(t >= 0.0) and jnp.all(t <= 1.0)
+
+
+# def test_prepare_batch_p_uncond_one_masks_all():
+#     """With p_uncond=1.0, all cond_mask values must be False."""
+#     B = 16
+#     images = torch.from_numpy(np.random.randn(B, 1, 8, 8).astype(np.float32))
+#     meta = torch.empty(B, 0)
+#     batch = (images, meta)
+
+#     key = jax.random.PRNGKey(2)
+#     _, _, _, _, cond_mask, _ = prepare_batch(
+#         batch=batch,
+#         key=key,
+#         coupling=independent_coupling,
+#         time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
+#         path_sampler=partial(sample_path),
+#         p_uncond=1.0,
+#     )
+
+#     assert jnp.all(~cond_mask)
+
+
+# def test_prepare_batch_p_uncond_zero_keeps_all():
+#     """With p_uncond=0.0, all cond_mask values must be True."""
+#     B = 16
+#     images = torch.from_numpy(np.random.randn(B, 1, 8, 8).astype(np.float32))
+#     meta = torch.empty(B, 0)
+#     batch = (images, meta)
+
+#     key = jax.random.PRNGKey(3)
+#     _, _, _, _, cond_mask, _ = prepare_batch(
+#         batch=batch,
+#         key=key,
+#         coupling=independent_coupling,
+#         time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
+#         path_sampler=partial(sample_path),
+#         p_uncond=0.0,
+#     )
+
+#     assert jnp.all(cond_mask)
+
+
+# def test_prepare_batch_different_keys_give_different_results():
+#     """Different keys must produce different x_t values."""
+#     B = 4
+#     images = torch.from_numpy(np.random.randn(B, 1, 8, 8).astype(np.float32))
+#     meta = torch.empty(B, 0)
+#     batch = (images, meta)
+
+#     kwargs = dict(
+#         batch=batch,
+#         coupling=independent_coupling,
+#         time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
+#         path_sampler=partial(sample_path),
+#         p_uncond=0.0,
+#     )
+#     _, x_t_a, _, _, _, _ = prepare_batch(key=jax.random.PRNGKey(0), **kwargs)
+#     _, x_t_b, _, _, _, _ = prepare_batch(key=jax.random.PRNGKey(1), **kwargs)
+#     assert not jnp.allclose(x_t_a, x_t_b)
 
 
 # --- batch_metric_loop ---
+
 
 def _make_val_dataloader(B=2, num_batches=2):
     """Return a re-iterable list of fake (images, meta) batches."""
@@ -701,7 +764,6 @@ def test_batch_metric_loop_returns_mean_not_sum():
     assert abs(result["simple_metric"] - 3.0) < 1e-5
 
 
-
 def test_train_epoch_metric_receives_val_dataloader():
     """A no-op epoch metric must receive the val_dataloader iterable."""
     received = {}
@@ -772,6 +834,7 @@ _COUPLING = lambda x0, x1: x0  # identity coupling for tests
 def _make_dataloader(batch_size=2, img_size=8, steps=2):
     """Return a tiny list-backed dataloader for trainer tests."""
     import torch
+
     images = torch.zeros(batch_size, 1, img_size, img_size)
     meta = torch.zeros(batch_size, 0)
     return [(images, meta)] * steps
@@ -779,12 +842,14 @@ def _make_dataloader(batch_size=2, img_size=8, steps=2):
 
 def _time_sampler(key, batch_size):
     import jax
+
     return jax.random.uniform(key, (batch_size,))
 
 
 def test_train_runs_with_clearml_task_none(tmp_path):
     """train() completes without error when clearml_task=None (default)."""
     import jax
+
     key = jax.random.PRNGKey(0)
     dl = _make_dataloader()
     result = train(
@@ -816,6 +881,7 @@ def test_train_raises_if_sample_fn_set_but_no_samples_dir():
     """train() raises ValueError when sample_fn is set but samples_dir is None."""
     import jax
     import pytest
+
     key = jax.random.PRNGKey(5)
     dl = _make_dataloader()
 
@@ -849,6 +915,7 @@ def test_train_raises_if_sample_fn_set_but_no_samples_dir():
 def test_train_calls_log_metrics_when_task_provided(tmp_path):
     """log_metrics is called once per log_every epoch when clearml_task is set."""
     import jax
+
     key = jax.random.PRNGKey(1)
     dl = _make_dataloader()
     mock_task = MagicMock()
@@ -884,6 +951,7 @@ def test_train_calls_log_metrics_when_task_provided(tmp_path):
 def test_train_calls_log_checkpoint_when_task_provided(tmp_path):
     """log_checkpoint is called at checkpoint_every epochs when clearml_task is set."""
     import jax
+
     key = jax.random.PRNGKey(2)
     dl = _make_dataloader()
     mock_task = MagicMock()
@@ -919,6 +987,7 @@ def test_train_calls_log_checkpoint_when_task_provided(tmp_path):
 def test_train_generates_samples_to_disk(tmp_path):
     """sample_fn is called at sample_every epochs and files are saved."""
     import jax
+
     key = jax.random.PRNGKey(3)
     dl = _make_dataloader()
 
@@ -952,6 +1021,7 @@ def test_train_generates_samples_to_disk(tmp_path):
         samples_dir=str(tmp_path / "samples"),
     )
     import glob
+
     npy_files = glob.glob(str(tmp_path / "samples" / "**" / "*.npy"), recursive=True)
     assert len(npy_files) == 4  # 2 epochs × 2 samples
 
@@ -959,6 +1029,7 @@ def test_train_generates_samples_to_disk(tmp_path):
 def test_train_skips_sampling_when_sample_every_is_zero(tmp_path):
     """No samples are generated when sample_every=0."""
     import jax
+
     key = jax.random.PRNGKey(4)
     dl = _make_dataloader()
     call_count = {"n": 0}
@@ -1338,7 +1409,10 @@ def test_train_grad_accum_truncates_non_divisible_dataloader(tmp_path, caplog):
     kwargs["checkpoint_dir"] = str(tmp_path)
     kwargs["loss_fn"] = counting_loss
 
-    with jax.disable_jit(), caplog.at_level(logging.WARNING, logger="msdflow.train.trainer"):
+    with (
+        jax.disable_jit(),
+        caplog.at_level(logging.WARNING, logger="msdflow.train.trainer"),
+    ):
         train(
             model=SMALL_MODEL,
             dataloader=dataloader,
@@ -1626,6 +1700,7 @@ def test_make_prepare_batch_jax_different_keys_give_different_results():
 def test_make_prepare_batch_jax_rejects_ot_coupling():
     """make_prepare_batch_jax raises ValueError for ot_coupling."""
     from msdflow.flow.coupling import ot_coupling
+
     with pytest.raises(ValueError, match="ot_coupling"):
         make_prepare_batch_jax(
             coupling=ot_coupling,
