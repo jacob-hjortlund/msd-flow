@@ -219,12 +219,17 @@ def compute_fid_metrics(
         Dict mapping accumulator names to FID scores.
     """
     # --- Real-image pass (skip if all accumulators have cached stats) ---
+    if (n_real == 0) or (n_real is None):
+        n_real = len(val_dataloader.dataset)
+
     all_cached = all(acc._cached_real is not None for acc in accumulators.values())
     if not all_cached:
         for acc in accumulators.values():
             acc.reset()
         n_real_seen = 0
-        for images, _meta in tqdm(val_dataloader, desc="FID real", leave=False, dynamic_ncols=True):
+        for images, _meta in tqdm(
+            val_dataloader, desc="FID real", leave=False, dynamic_ncols=True
+        ):
             images = images.numpy()
             images = jnp.asarray(images)
             if n_real is not None:
@@ -242,7 +247,7 @@ def compute_fid_metrics(
             acc.reset()
 
     # --- Determine n_samples ---
-    if n_samples is None:
+    if (n_samples == 0) or (n_samples == None):
         n_samples = max(acc._cached_real[2] for acc in accumulators.values())
 
     # --- Fake-image pass ---
