@@ -447,8 +447,14 @@ def train(
             raise ValueError(
                 "samples_dir must be provided when sample_fn and sample_every > 0 are set and clearml_task is None."
             )
-        sample_fn = lambda model, key: sample_fn(model=model, key=key)
-        sample_fn = eqx.filter_jit(eqx.filter_vmap(sample_fn, in_axes=(None, 0)))
+
+        single_sample_fn = sample_fn
+        batched_sample_fn = eqx.filter_jit(
+            eqx.filter_vmap(
+                lambda model, key: single_sample_fn(model=model, key=key),
+                in_axes=(None, 0),
+            )
+        )
 
     if monitor_mode not in ("min", "max"):
         raise ValueError(f"monitor_mode must be 'min' or 'max', got {monitor_mode!r}")
@@ -652,7 +658,7 @@ def train(
             # sample_key, key = jax.random.split(key)
             _key = jax.random.PRNGKey(42)
             sample_keys = jax.random.split(_key, num_samples)
-            images = sample_fn(ema_model, sample_keys)
+            images = batched_sample_fn(ema_model, sample_keys)
             epoch_samples_dir = os.path.join(samples_dir, f"epoch_{epoch + 1}")
             if clearml_task is None:
                 os.makedirs(epoch_samples_dir, exist_ok=True)
