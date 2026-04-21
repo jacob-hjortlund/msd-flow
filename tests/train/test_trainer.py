@@ -1371,6 +1371,38 @@ def test_train_grad_accum_truncates_non_divisible_dataloader(tmp_path, caplog):
     assert "1 batches" in warning_logs[0]
 
 
+def test_ema_update_called_per_optimizer_step_not_per_microstep(tmp_path):
+    """With grad_accum_steps=K, ema_update should be called steps_per_epoch times, not microsteps."""
+    from unittest.mock import patch
+    from msdflow.train.trainer import ema_update as original_ema_fn
+
+    ema_call_count = [0]
+
+    def counting_ema(ema_model, new_model, decay):
+        ema_call_count[0] += 1
+        return original_ema_fn(ema_model, new_model, decay)
+
+    num_steps = 3
+    grad_accum_steps = 2
+    # Need num_steps * grad_accum_steps = 6 batches
+    dataloader = list(_make_fake_dataloader(B=2, num_batches=6))
+    val_dataloader = _fake_val_dataloader()
+    kwargs = _make_train_kwargs(num_epochs=1, num_steps_per_epoch=num_steps)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+
+    with patch("msdflow.train.trainer.ema_update", side_effect=counting_ema):
+        train(
+            model=SMALL_MODEL,
+            dataloader=dataloader,
+            val_dataloader=val_dataloader,
+            grad_accum_steps=grad_accum_steps,
+            **kwargs,
+        )
+
+    # Should be called num_steps times (once per optimizer step), not num_steps * grad_accum_steps
+    assert ema_call_count[0] == num_steps
+
+
 def test_train_grad_accum_loss_normalized_by_microsteps(tmp_path):
     """train/loss should be epoch_loss / microsteps_per_epoch (per-microbatch average)."""
     mock_task = MagicMock()

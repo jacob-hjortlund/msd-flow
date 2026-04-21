@@ -415,7 +415,7 @@ def train(
                 leave=False,
                 dynamic_ncols=True,
             )
-            for _ in pbar:
+            for microstep in pbar:
                 try:
                     batch = next(data_iter)
                 except StopIteration:
@@ -436,7 +436,8 @@ def train(
                 state, loss = train_step(
                     state, x_t, u_t, t, cond, cond_mask, dropout_keys
                 )
-                ema_model = ema_update(ema_model, state.model, ema_decay)
+                if (microstep + 1) % grad_accum_steps == 0:
+                    ema_model = ema_update(ema_model, state.model, ema_decay)
                 epoch_loss += float(loss)
 
         ema_model = eqx.nn.inference_mode(ema_model, value=True)
