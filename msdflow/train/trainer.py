@@ -136,7 +136,7 @@ def prepare_batch(
     B = x1_np.shape[0]
     droupout_keys = jax.random.split(dropout_key, B)
 
-    cpu_seed = int(jax.random.randint(key_cpu, shape=(), minval=0, maxval=2**31 - 1))
+    cpu_seed = int(jax.random.bits(key_cpu, shape=(), dtype=jnp.uint32))
     rng = np.random.default_rng(cpu_seed)
 
     x0_np = rng.standard_normal(x1_np.shape).astype(np.float32)
