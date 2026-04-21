@@ -36,6 +36,10 @@ def setup_task(clearml_cfg) -> Any:
     if not clearml_cfg.enabled:
         return None
 
+    Task.set_resource_monitor_iteration_timeout(
+        wait_for_first_iteration_to_start_sec=1,  # initial fallback after 3 min
+        # max_wait_for_first_iteration_to_start_sec=7200  # allow reverting for up to 2 hours
+    )
     try:
         return Task.init(
             project_name=clearml_cfg.project_name,
