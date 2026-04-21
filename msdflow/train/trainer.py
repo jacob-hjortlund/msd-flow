@@ -225,11 +225,10 @@ def batch_metric_loop(
     """
     totals: dict = {}
     n_batches = 0
+    total = num_batches if num_batches > 0 else len(dataloader)
     data_iter = iter(dataloader)
 
-    while True:
-        if num_batches > 0 and n_batches >= num_batches:
-            break
+    for _ in tqdm(range(total), desc="Batch metrics", leave=False, dynamic_ncols=True):
         try:
             batch = next(data_iter)
         except StopIteration:
