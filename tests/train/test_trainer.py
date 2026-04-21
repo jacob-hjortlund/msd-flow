@@ -606,6 +606,16 @@ def _make_val_dataloader(B=2, num_batches=2):
 from msdflow.train.trainer import batch_metric_loop
 
 
+def _make_prepare_jax():
+    """Return a prepare_jax callable for tests."""
+    return make_prepare_batch_jax(
+        coupling=independent_coupling,
+        time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
+        path_sampler=partial(sample_path),
+        p_uncond=0.0,
+    )
+
+
 def test_batch_metric_loop_returns_dict_of_floats():
     """batch_metric_loop must return dict[str, float]."""
     step = make_batch_metric_step([_fml])
@@ -615,10 +625,7 @@ def test_batch_metric_loop_returns_dict_of_floats():
         ema_model=SMALL_MODEL,
         dataloader=val_loader,
         step_fn=step,
-        coupling=independent_coupling,
-        time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
-        path_sampler=partial(sample_path),
-        p_uncond=0.0,
+        prepare_jax=_make_prepare_jax(),
         num_batches=0,
     )
     assert isinstance(result, dict)
@@ -634,10 +641,7 @@ def test_batch_metric_loop_values_are_finite():
         ema_model=SMALL_MODEL,
         dataloader=val_loader,
         step_fn=step,
-        coupling=independent_coupling,
-        time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
-        path_sampler=partial(sample_path),
-        p_uncond=0.0,
+        prepare_jax=_make_prepare_jax(),
         num_batches=0,
     )
     assert all(np.isfinite(v) for v in result.values())
@@ -661,10 +665,7 @@ def test_batch_metric_loop_num_batches_limit():
         ema_model=SMALL_MODEL,
         dataloader=counting_loader(),
         step_fn=step,
-        coupling=independent_coupling,
-        time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
-        path_sampler=partial(sample_path),
-        p_uncond=0.0,
+        prepare_jax=_make_prepare_jax(),
         num_batches=3,
     )
     assert len(call_count) == 3
@@ -674,24 +675,15 @@ def test_batch_metric_loop_returns_mean_not_sum():
     """batch_metric_loop must return the mean, not the sum, across batches."""
 
     def simple_metric(model, x_t, u_t, t, cond, cond_mask, key):
-        """Metric that returns a simple value based on batch size."""
-        # Return batch size as the metric value
         return jnp.array(float(x_t.shape[0]))
 
     simple_metric.__name__ = "simple_metric"
 
-    # Create two dataloaders with different batch sizes
     loader1 = [
-        (
-            torch.randn(2, 1, 8, 8),
-            torch.empty(2, 0),
-        )
+        (torch.randn(2, 1, 8, 8), torch.empty(2, 0)),
     ]
     loader2 = [
-        (
-            torch.randn(4, 1, 8, 8),  # Different batch size
-            torch.empty(4, 0),
-        )
+        (torch.randn(4, 1, 8, 8), torch.empty(4, 0)),
     ]
     combined_loader = loader1 + loader2
 
@@ -701,19 +693,11 @@ def test_batch_metric_loop_returns_mean_not_sum():
         ema_model=SMALL_MODEL,
         dataloader=combined_loader,
         step_fn=step,
-        coupling=independent_coupling,
-        time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
-        path_sampler=partial(sample_path),
-        p_uncond=0.0,
+        prepare_jax=_make_prepare_jax(),
         num_batches=0,
     )
-    # Batch 1: metric returns 2.0
-    # Batch 2: metric returns 4.0
-    # batch_metric_loop should return (2.0 + 4.0) / 2 = 3.0
-    # If it was summing instead of averaging, we'd get (2.0 + 4.0) = 6.0
     assert "simple_metric" in result
     assert isinstance(result["simple_metric"], float)
-    # The result should be 3.0 (mean of 2 and 4)
     assert abs(result["simple_metric"] - 3.0) < 1e-5
 
 

@@ -301,10 +301,7 @@ def batch_metric_loop(
     ema_model,
     dataloader,
     step_fn: callable,
-    coupling: callable,
-    time_sampler: callable,
-    path_sampler: callable,
-    p_uncond: float,
+    prepare_jax: callable,
     num_batches: int = 0,
 ) -> dict:
     """Stream a dataloader through a batch metric step and return per-metric means.
@@ -312,19 +309,17 @@ def batch_metric_loop(
     Args:
         key:          JAX PRNG key (consumed internally via splitting).
         ema_model:    EMA model used for inference.
-        dataloader:   Iterable of ``(images, meta)`` batches.
+        dataloader:   Iterable of ``(images, meta)`` batches (PyTorch tensors).
         step_fn:      JIT-compiled step function from ``make_batch_metric_step()``.
-        coupling:     Callable for batch coupling.
-        time_sampler: Callable for sampling time steps.
-        path_sampler: Callable for constructing the interpolant.
-        p_uncond:     Probability of dropping the condition per sample.
+        prepare_jax:  JIT-compiled batch prep from ``make_prepare_batch_jax()``.
         num_batches:  Maximum number of batches to process. ``0`` processes the
                       full dataloader.
 
     Returns:
         ``dict[str, float]`` mapping metric name to its mean value over all
         processed batches. Batches are weighted equally regardless of size;
-        use uniform batch sizes for unbiased estimates. Returns an empty dict if the dataloader yields no batches.
+        use uniform batch sizes for unbiased estimates. Returns an empty dict
+        if the dataloader yields no batches.
     """
     totals: dict = {}
     n_batches = 0
@@ -337,13 +332,9 @@ def batch_metric_loop(
         except StopIteration:
             break
         batch_key, key = jax.random.split(key, 2)
-        t, x_t, u_t, cond, cond_mask, dropout_keys = prepare_batch(
-            batch=batch,
-            key=batch_key,
-            coupling=coupling,
-            time_sampler=time_sampler,
-            path_sampler=path_sampler,
-            p_uncond=p_uncond,
+        images_np, cond_np = prepare_batch(batch)
+        t, x_t, u_t, cond, cond_mask, dropout_keys = prepare_jax(
+            images_np, cond_np, batch_key
         )
         results = step_fn(ema_model, x_t, u_t, t, cond, cond_mask, dropout_keys)
         for k, v in results.items():
