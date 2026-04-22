@@ -202,6 +202,46 @@ class ClipAndPad:
         return img[..., cy - half : cy + half, cx - half : cx + half]
 
 
+class Downsample:
+    """Flux-conserving downsampling for square images,
+    assuming input size / target size is an integer.
+
+    Args:
+        target_size: Target side length in pixels.
+    """
+
+    def __init__(self, target_size: int = 256):
+        self.target_size = target_size
+
+    def __call__(self, img: np.ndarray) -> np.ndarray:
+        """Apply downsampling.
+
+        Args:
+            img: ``(C, N, N)`` array.
+
+        Returns:
+            Array of shape ``(C, M, M)``.
+        """
+        c, h, w = img.shape
+        if h == self.target_size:
+            return img
+
+        if h != w:
+            raise ValueError(f"Expected square image, got shape {img.shape}")
+
+        if h % self.target_size != 0:
+            raise ValueError(
+                f"Input size {h} is not divisible by target_size {self.target_size}"
+            )
+
+        factor = h // self.target_size
+        out = img.reshape(c, self.target_size, factor, self.target_size, factor).sum(
+            axis=(2, 4)
+        )
+
+        return out
+
+
 class PDFNorm:
     """Normalize image to a probability distribution (pixel sum = 1).
 
