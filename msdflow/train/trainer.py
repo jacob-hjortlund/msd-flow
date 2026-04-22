@@ -484,8 +484,6 @@ def train(
         steps_per_epoch = num_steps_per_epoch
         microsteps_per_epoch = steps_per_epoch * grad_accum_steps
 
-    ema_model = model
-
     total_epoch_time = 0.0
     avg_epoch_time = 0.0
 
@@ -503,6 +501,9 @@ def train(
 
     best_metric_value = float("inf") if monitor_mode == "min" else float("-inf")
     patience_counter = 0
+
+    ema_model = None
+    ema_initialized = False
 
     for epoch in range(num_epochs):
         epoch_loss = jnp.float32(0.0)
@@ -532,7 +533,11 @@ def train(
                     state, x_t, u_t, t, cond, cond_mask, dropout_keys
                 )
                 if (microstep + 1) % grad_accum_steps == 0:
-                    ema_model = ema_update(ema_model, state.model, ema_decay)
+                    if not ema_initialized:
+                        ema_model = state.model
+                        ema_initialized = True
+                    else:
+                        ema_model = ema_update(ema_model, state.model, ema_decay)
                 epoch_loss = epoch_loss + loss
 
         prefetcher.shutdown()
