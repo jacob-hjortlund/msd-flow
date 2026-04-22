@@ -7,11 +7,14 @@ Each transform is a callable class with ``__init__`` for parameters and
 
 import os
 import json
-from multiprocessing import Pool
+
 import numpy as np
 import pandas as pd
-from fastdigest import TDigest
+
 from tqdm import tqdm
+from fastdigest import TDigest
+from multiprocessing import Pool
+from msdflow.data.random import WorkerSeededTransform
 
 
 def _identity(x):
@@ -69,24 +72,27 @@ def build_tdigest(
     Returns:
         Fitted ``TDigest`` instance.
     """
-    args = [
-        (data_dir, fn, transforms, pixel_filter)
-        for fn in filenames
-    ]
+    args = [(data_dir, fn, transforms, pixel_filter) for fn in filenames]
 
     if n_workers <= 0:
         result = TDigest()
-        for digest in tqdm(map(_worker_single_file, args),
-                           total=len(filenames),
-                           desc="Building TDigest", unit="file"):
+        for digest in tqdm(
+            map(_worker_single_file, args),
+            total=len(filenames),
+            desc="Building TDigest",
+            unit="file",
+        ):
             result = result.merge(digest)
         return result
 
     with Pool(n_workers) as pool:
         result = TDigest()
-        for digest in tqdm(pool.imap_unordered(_worker_single_file, args),
-                           total=len(filenames),
-                           desc="Building TDigest", unit="file"):
+        for digest in tqdm(
+            pool.imap_unordered(_worker_single_file, args),
+            total=len(filenames),
+            desc="Building TDigest",
+            unit="file",
+        ):
             result = result.merge(digest)
     return result
 
@@ -294,9 +300,7 @@ class ArcsinhStretch:
         if use_percentile:
 
             suffix = _tdigest_cache_suffix(split, sample_fraction, sample_seed)
-            tdigest_path = os.path.join(
-                self.cache_dir, f"arcsinh_tdigest{suffix}.json"
-            )
+            tdigest_path = os.path.join(self.cache_dir, f"arcsinh_tdigest{suffix}.json")
 
             if os.path.isfile(tdigest_path):
                 with open(tdigest_path, "r") as fp:
@@ -325,9 +329,7 @@ class ArcsinhStretch:
         if self.split is not None:
             metadata = metadata[metadata["split"] == self.split]
         filenames = metadata["filename"].tolist()
-        filenames = _sample_filenames(
-            filenames, self.sample_fraction, self.sample_seed
-        )
+        filenames = _sample_filenames(filenames, self.sample_fraction, self.sample_seed)
 
         return build_tdigest(
             data_dir=self.data_dir,
@@ -460,9 +462,7 @@ class GlobalNorm:
         if self.split is not None:
             metadata = metadata[metadata["split"] == self.split]
         filenames = metadata["filename"].tolist()
-        filenames = _sample_filenames(
-            filenames, self.sample_fraction, self.sample_seed
-        )
+        filenames = _sample_filenames(filenames, self.sample_fraction, self.sample_seed)
 
         return build_tdigest(
             data_dir=self.data_dir,
@@ -551,80 +551,38 @@ class LinearNormalize:
         return img * (self.norm_max - self.norm_min) + self.norm_min
 
 
-class RandomHorizontalFlip:
-    """Randomly flip image horizontally.
+class RandomHorizontalFlip(WorkerSeededTransform):
+    """Randomly flip image horizontally."""
 
-    Args:
-        p: Probability of flipping.
-        seed: Random seed. Defaults to ``None`` for non-deterministic behavior.
-    """
-
-    def __init__(self, p: float = 0.5, seed: int = None):
+    def __init__(self, p: float = 0.5, seed: int | None = None):
+        super().__init__(seed=seed)
         self.p = p
-        self.seed = seed
-        self.rng = np.random.default_rng(seed)
 
     def __call__(self, img: np.ndarray) -> np.ndarray:
-        """Apply random horizontal flip along the last axis.
-
-        Args:
-            img: ``(C, H, W)`` array.
-
-        Returns:
-            Possibly flipped array, same shape as input.
-        """
-        if self.rng.random() < self.p:
-            return np.ascontiguousarray(np.flip(img, axis=-1))
+        if self._get_rng().random() < self.p:
+            return np.flip(img, axis=-1)
         return img
 
 
-class RandomVerticalFlip:
-    """Randomly flip image vertically.
+class RandomVerticalFlip(WorkerSeededTransform):
+    """Randomly flip image vertically."""
 
-    Args:
-        p: Probability of flipping.
-        seed: Random seed. Defaults to ``None`` for non-deterministic behavior.
-    """
-
-    def __init__(self, p: float = 0.5, seed: int = None):
+    def __init__(self, p: float = 0.5, seed: int | None = None):
+        super().__init__(seed=seed)
         self.p = p
-        self.seed = seed
-        self.rng = np.random.default_rng(seed)
 
     def __call__(self, img: np.ndarray) -> np.ndarray:
-        """Apply random vertical flip along the second-to-last axis.
-
-        Args:
-            img: ``(C, H, W)`` array.
-
-        Returns:
-            Possibly flipped array, same shape as input.
-        """
-        if self.rng.random() < self.p:
-            return np.ascontiguousarray(np.flip(img, axis=-2))
+        if self._get_rng().random() < self.p:
+            return np.flip(img, axis=-2)
         return img
 
 
-class RandomRotation90:
-    """Randomly apply 0, 1, 2, or 3 quarter-turns (90-degree rotations).
+class RandomRotation90(WorkerSeededTransform):
+    """Randomly apply 0, 1, 2, or 3 quarter-turns."""
 
-    All four outcomes are equally likely.
-    Args:
-        seed: Random seed. Defaults to ``None`` for non-deterministic behavior.
-    """
-
-    def __init__(self, seed: int = None):
-        self.seed = seed
-        self.rng = np.random.default_rng(seed)
+    def __init__(self, seed: int | None = None):
+        super().__init__(seed=seed)
 
     def __call__(self, img: np.ndarray) -> np.ndarray:
-        """Apply random 90-degree rotation on spatial axes.
-
-        Args:
-            img: ``(C, H, W)`` array.
-
-        Returns:
-            Rotated array, same shape as input.
-        """
-        k = self.rng.integers(4)
-        return np.ascontiguousarray(np.rot90(img, k=k, axes=(-2, -1)))
+        k = self._get_rng().integers(4)
+        return np.rot90(img, k=k, axes=(-2, -1))
