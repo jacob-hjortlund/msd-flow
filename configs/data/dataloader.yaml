@@ -60,12 +60,9 @@ augmentations:
   transforms:
     - _target_: msdflow.data.preprocess.RandomHorizontalFlip
       p: 0.5
-      seed: ${seed}
     - _target_: msdflow.data.preprocess.RandomVerticalFlip
       p: 0.5
-      seed: ${seed}
     - _target_: msdflow.data.preprocess.RandomRotation90
-      seed: ${seed}
 
 deterministic_transforms:
   _target_: torchvision.transforms.Compose
@@ -111,7 +108,6 @@ test_dataset:
 
 batch_size: 8
 train:
-  _target_: torch.utils.data.DataLoader
   dataset: ${data.dataloader.train_dataset}
   batch_size: ${data.dataloader.batch_size}
   shuffle: true
@@ -121,7 +117,6 @@ train:
   multiprocessing_context: ${data.dataloader.multiprocessing_context}
 
 val:
-  _target_: torch.utils.data.DataLoader
   dataset: ${data.dataloader.val_dataset}
   batch_size: ${data.dataloader.batch_size}
   shuffle: false
@@ -131,7 +126,6 @@ val:
   multiprocessing_context: ${data.dataloader.multiprocessing_context}
 
 test:
-  _target_: torch.utils.data.DataLoader
   dataset: ${data.dataloader.test_dataset}
   batch_size: ${data.dataloader.batch_size}
   shuffle: false

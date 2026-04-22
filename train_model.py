@@ -7,9 +7,9 @@ from hydra.utils import instantiate, call
 from omegaconf import DictConfig, OmegaConf, open_dict
 
 from msdflow.tracking import setup_task
-from msdflow.utils import register_all_resolvers
+from msdflow.data.loader import build_dataloader
 from msdflow.data.pipeline import resolve_dataset
-
+from msdflow.utils import register_all_resolvers, seed_everything
 
 register_all_resolvers()
 log = logging.getLogger(__name__)
@@ -40,18 +40,18 @@ def main(cfg: DictConfig):
         cfg.data.dataloader.cache_dir = cfg.data.dataloader.data_dir
         cfg.data.dataloader.data_dir = dataset_path
 
-    # 3. Build dataloaders
-    log.info("--- Step 3: Dataloader Initialization ---")
-    train_loader = instantiate(cfg.data.dataloader.train)
-    val_loader = instantiate(cfg.data.dataloader.val)
-    test_loader = instantiate(cfg.data.dataloader.test)
+    # 3. Seed
+    log.info("--- Step 3: Seeding ---")
+    seed = cfg.seed
+    rng_key = seed_everything(seed)
+
+    # 4. Build dataloaders
+    log.info("--- Step 4: Dataloader Initialization ---")
+    train_loader = build_dataloader(cfg.data.dataloader.train, seed=seed)
+    val_loader = build_dataloader(cfg.data.dataloader.val, seed=seed + 1)
+    test_loader = build_dataloader(cfg.data.dataloader.test, seed=seed + 2)
 
     log.info(f"Initialized train loader with {len(train_loader)} batches.")
-
-    # 4. Seed
-    log.info("--- Step 4: Seeding ---")
-    seed = cfg.seed
-    rng_key = jr.PRNGKey(seed)
 
     # 5. Build model
     log.info("--- Step 5: Model Initialization ---")
