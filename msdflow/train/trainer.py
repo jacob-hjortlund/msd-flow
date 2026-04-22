@@ -505,6 +505,8 @@ def train(
     ema_model = None
     ema_initialized = False
 
+    sampling_key, key = jax.random.split(key)
+
     for epoch in range(num_epochs):
         epoch_loss = jnp.float32(0.0)
         epoch_start_time = time.perf_counter()
@@ -660,12 +662,10 @@ def train(
             and sample_every > 0
             and (epoch + 1) % sample_every == 0
         ):
-            # sample_key, key = jax.random.split(key)
-            _key = jax.random.PRNGKey(42)
-            sample_keys = jax.random.split(_key, num_samples)
+
+            sample_keys = jax.random.split(sampling_key, num_samples)
             images = batched_sample_fn(ema_model, sample_keys)
-            images = np.asarray(images)
-            print(images.shape, images.dtype)
+            images = np.asarray(images).squeeze()
             epoch_samples_dir = os.path.join(samples_dir, f"epoch_{epoch + 1}")
             if clearml_task is None:
                 os.makedirs(epoch_samples_dir, exist_ok=True)

@@ -5,11 +5,15 @@ rest of the pipeline to call them unconditionally.
 """
 
 import os
+import math
 import logging
-from typing import Any
-from tqdm.contrib.logging import logging_redirect_tqdm
 
 import numpy as np
+import cmasher as cmr
+import matplotlib.pyplot as plt
+
+from typing import Any
+from tqdm.contrib.logging import logging_redirect_tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -286,6 +290,66 @@ def log_checkpoint(task: Any, path: str, epoch: int) -> None:
     task.upload_artifact(name=f"checkpoint_epoch_{epoch}", artifact_object=path)
 
 
+def make_image_grid(images, pad_value=0, padding=2):
+    """
+    Create a square grid from grayscale images.
+
+    Parameters
+    ----------
+    images : np.ndarray
+        Array of shape (N, H, W).
+        Can be uint8 in [0, 255], or float in [0, 1] / [-1, 1].
+    pad_value : int, optional
+        Value used for empty cells and padding, by default 0.
+    padding : int, optional
+        Number of pixels between images, by default 2.
+
+    Returns
+    -------
+    np.ndarray
+        Grid image of shape (H_grid, W_grid), dtype uint8.
+    """
+    images = np.asarray(images)
+
+    if images.ndim != 3:
+        raise ValueError(f"Expected images with shape (N, H, W), got {images.shape}")
+
+    # Convert to uint8 if needed
+    if images.dtype != np.uint8:
+        images = images.astype(np.float32)
+
+        # If values look like they are in [-1, 1], map to [0, 1]
+        if images.min() < 0:
+            images = (images + 1.0) / 2.0
+
+        images = np.clip(images, 0.0, 1.0)
+        images = (255.0 * images).round().astype(np.uint8)
+
+    n, h, w = images.shape
+
+    grid_size = math.ceil(math.sqrt(n))
+    total = grid_size * grid_size
+    missing = total - n
+
+    # Pad with blank images so grid is square
+    if missing > 0:
+        pad_imgs = np.full((missing, h, w), pad_value, dtype=np.uint8)
+        images = np.concatenate([images, pad_imgs], axis=0)
+
+    grid_h = grid_size * h + padding * (grid_size - 1)
+    grid_w = grid_size * w + padding * (grid_size - 1)
+    grid = np.full((grid_h, grid_w), pad_value, dtype=np.uint8)
+
+    for idx, img in enumerate(images):
+        row = idx // grid_size
+        col = idx % grid_size
+        y0 = row * (h + padding)
+        x0 = col * (w + padding)
+        grid[y0 : y0 + h, x0 : x0 + w] = img
+
+    return grid
+
+
 def log_samples(task: Any, images: np.ndarray, epoch: int) -> None:
     """Upload generated sample images to ClearML.
 
@@ -297,12 +361,23 @@ def log_samples(task: Any, images: np.ndarray, epoch: int) -> None:
     if task is None:
         return
     cl_logger = task.get_logger()
-    for img in images:
-        # ClearML expects (H, W, C); transpose from (C, H, W)
-        img_hwc = np.transpose(img, (1, 2, 0))
-        cl_logger.report_image(
-            title="samples",
-            series=f"epoch_{epoch}",
-            iteration=epoch,
-            image=img_hwc,
-        )
+    images = images.squeeze()
+    image_grid = make_image_grid(images, pad_value=255)
+
+    cmap = cmr.gothic
+    fig, ax = plt.subplots(figsize=(8, 8), frameon=False)
+    fig.subplots_adjust(left=0, right=1, bottom=0, top=1)
+    ax.set_position([0, 0, 1, 1])
+    ax.set_axis_off()
+    ax.imshow(image_grid, cmap=cmap, vmin=0, vmax=255)
+    fig.tight_layout()
+
+    logger.report_matplotlib_figure(
+        title="Samples",
+        series="grid",
+        iteration=epoch,
+        figure=fig,
+        report_image=True,
+    )
+
+    plt.close(fig)
