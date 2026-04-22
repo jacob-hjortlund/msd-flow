@@ -19,7 +19,7 @@ pre_arcsinh_image_transforms:
     - _target_: msdflow.data.preprocess.ClipAndPad
       n: ${clip_pad_size}
     - _target_: msdflow.data.preprocess.Downsample
-      target_size: ${target_size}
+      target_size: ${image_size}
     - _target_: msdflow.data.preprocess.PDFNorm
 
 arcsinh_transform:
