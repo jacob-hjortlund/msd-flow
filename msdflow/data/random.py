@@ -4,6 +4,7 @@ import random
 import numpy as np
 
 from collections.abc import Iterable
+from torchvision.transforms import Compose
 from torch.utils.data import get_worker_info
 
 
@@ -34,10 +35,9 @@ def _collect_seedable_transforms(transform) -> list[WorkerSeededTransform]:
         if hasattr(obj, "set_rng_seed"):
             seedable.append(obj)
 
-        # torchvision.transforms.Compose and similar containers
-        children = getattr(obj, "transforms", None)
-        if children is not None:
-            for child in children:
+        # Only recurse through actual Compose containers.
+        if isinstance(obj, Compose):
+            for child in obj.transforms:
                 visit(child)
 
     visit(transform)
