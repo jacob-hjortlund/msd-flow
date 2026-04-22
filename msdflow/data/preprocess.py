@@ -32,6 +32,15 @@ def _flatten(img: np.ndarray) -> np.ndarray:
     return img.flatten()
 
 
+def _process_single_file(data_dir, filename, transforms):
+
+    path = os.path.join(data_dir, filename)
+    img = np.load(path)
+    img = transforms(img)
+
+    return img
+
+
 def _worker_single_file(args: tuple) -> TDigest:
     """Build a TDigest from a single .npy file.
 
@@ -42,9 +51,7 @@ def _worker_single_file(args: tuple) -> TDigest:
         Fitted ``TDigest`` for this file.
     """
     data_dir, filename, transforms, pixel_filter = args
-    path = os.path.join(data_dir, filename)
-    img = np.load(path)
-    img = transforms(img)
+    img = _process_single_file(data_dir, filename, transforms)
     digest = TDigest()
     digest.batch_update(pixel_filter(img))
     return digest
@@ -98,6 +105,7 @@ def build_tdigest(
 
 
 def _tdigest_cache_suffix(
+    img_size: int,
     split: str | None,
     sample_fraction: float | None = None,
     sample_seed: int = 42,
@@ -105,6 +113,7 @@ def _tdigest_cache_suffix(
     """Build the suffix for a tdigest cache filename.
 
     Args:
+        img_size: H/W of images used.
         split: Split name (e.g. ``"train"``).
         sample_fraction: Fraction of files sampled, or ``None`` for all.
         sample_seed: RNG seed used for sampling.
@@ -112,7 +121,8 @@ def _tdigest_cache_suffix(
     Returns:
         Suffix string, e.g. ``"_train"`` or ``"_train_s0.1_seed42"``.
     """
-    suffix = f"_{split}" if split is not None else ""
+    suffix = f"_{img_size}"
+    suffix += f"_{split}" if split is not None else ""
     if sample_fraction is not None:
         suffix += f"_s{sample_fraction}_seed{sample_seed}"
     return suffix
@@ -339,7 +349,16 @@ class ArcsinhStretch:
 
         if use_percentile:
 
-            suffix = _tdigest_cache_suffix(split, sample_fraction, sample_seed)
+            csv_path = os.path.join(data_dir, "metadata.csv")
+            metadata = pd.read_csv(csv_path)
+            filename = metadata["filename"].iloc[0]
+            img_size = _process_single_file(
+                data_dir=data_dir, filename=filename, transforms=transforms
+            ).shape[-1]
+
+            suffix = _tdigest_cache_suffix(
+                img_size, split, sample_fraction, sample_seed
+            )
             tdigest_path = os.path.join(self.cache_dir, f"arcsinh_tdigest{suffix}.json")
 
             if os.path.isfile(tdigest_path):
@@ -462,7 +481,16 @@ class GlobalNorm:
 
         if global_value_not_set:
 
-            suffix = _tdigest_cache_suffix(split, sample_fraction, sample_seed)
+            csv_path = os.path.join(data_dir, "metadata.csv")
+            metadata = pd.read_csv(csv_path)
+            filename = metadata["filename"].iloc[0]
+            img_size = _process_single_file(
+                data_dir=data_dir, filename=filename, transforms=transforms
+            ).shape[-1]
+
+            suffix = _tdigest_cache_suffix(
+                img_size, split, sample_fraction, sample_seed
+            )
             tdigest_path = os.path.join(
                 self.cache_dir,
                 f"global_norm_tdigest_{int(percentile)}{suffix}.json",
