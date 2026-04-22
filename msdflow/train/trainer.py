@@ -671,7 +671,8 @@ def train(
                 os.makedirs(epoch_samples_dir, exist_ok=True)
                 for i, img in enumerate(images):
                     np.save(os.path.join(epoch_samples_dir, f"sample_{i:03d}.npy"), img)
-            log_samples(clearml_task, images, epoch + 1)
+            else:
+                log_samples(clearml_task, images, epoch + 1)
 
         epoch_time = time.perf_counter() - epoch_start_time
         total_epoch_time += epoch_time

@@ -9,8 +9,6 @@ import math
 import logging
 
 import numpy as np
-import cmasher as cmr
-import matplotlib.pyplot as plt
 
 from typing import Any
 from tqdm.contrib.logging import logging_redirect_tqdm
@@ -360,6 +358,13 @@ def log_samples(task: Any, images: np.ndarray, epoch: int) -> None:
     """
     if task is None:
         return
+
+    import matplotlib
+
+    matplotlib.use("Agg", force=True)  # safe non-interactive backend
+    import matplotlib.pyplot as plt
+    import cmasher as cmr
+
     cl_logger = task.get_logger()
     images = images.squeeze()
     image_grid = make_image_grid(images, pad_value=255)
@@ -372,7 +377,7 @@ def log_samples(task: Any, images: np.ndarray, epoch: int) -> None:
     ax.imshow(image_grid, cmap=cmap, vmin=0, vmax=255)
     fig.tight_layout()
 
-    logger.report_matplotlib_figure(
+    cl_logger.report_matplotlib_figure(
         title="Samples",
         series="grid",
         iteration=epoch,
