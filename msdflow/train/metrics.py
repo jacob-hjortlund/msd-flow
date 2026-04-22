@@ -227,24 +227,29 @@ def compute_fid_metrics(
         for acc in accumulators.values():
             acc.reset()
         n_real_seen = 0
-        for images, _meta in tqdm(
-            val_dataloader,
-            desc="FID real",
-            leave=False,
-            dynamic_ncols=True,
-            total=n_real,
-        ):
+        pbar = tqdm(
+            total=n_real, desc="FID real", leave=False, dynamic_ncols=True, unit="img"
+        )
+        n_real_seen = 0
+
+        for images, _meta in val_dataloader:
             images = images.numpy()
             images = jnp.asarray(images)
-            if n_real is not None:
-                remaining = n_real - n_real_seen
-                if remaining <= 0:
-                    break
-                if images.shape[0] > remaining:
-                    images = images[:remaining]
+
+            remaining = n_real - n_real_seen
+            if remaining <= 0:
+                break
+
+            batch_n = min(images.shape[0], remaining)
+            images = images[:batch_n]
+
             for acc in accumulators.values():
                 acc.update(images)
-            n_real_seen += images.shape[0]
+
+            n_real_seen += batch_n
+            pbar.update(batch_n)
+
+        pbar.close()
         for acc in accumulators.values():
             mu, sigma, n = acc.statistics()
             acc._cached_real = (mu, sigma, n)
