@@ -17,7 +17,9 @@ pre_arcsinh_image_transforms:
     - _target_: msdflow.data.preprocess.SurfaceBrightnessToNanomaggies
       mag_threshold: 99.0
     - _target_: msdflow.data.preprocess.ClipAndPad
-      n: ${image_size}
+      n: ${clip_pad_size}
+    - _target_: msdflow.data.preprocess.Downsample
+      target_size: ${target_size}
     - _target_: msdflow.data.preprocess.PDFNorm
 
 arcsinh_transform:
