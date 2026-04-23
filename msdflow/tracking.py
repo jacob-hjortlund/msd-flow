@@ -5,7 +5,6 @@ rest of the pipeline to call them unconditionally.
 """
 
 import os
-import math
 import logging
 
 import numpy as np
@@ -307,6 +306,8 @@ def make_image_grid(images, pad_value=0, padding=2):
     np.ndarray
         Grid image of shape (H_grid, W_grid), dtype uint8.
     """
+    import math
+
     images = np.asarray(images)
 
     if images.ndim != 3:
