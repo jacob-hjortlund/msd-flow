@@ -385,6 +385,7 @@ def log_samples(task: Any, images: np.ndarray, epoch: int, title: str) -> None:
         iteration=epoch,
         figure=fig,
         report_image=False,
+        report_interactive=False,
     )
 
     plt.close(fig)
