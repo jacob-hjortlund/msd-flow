@@ -23,14 +23,12 @@ _epoch_metrics_dict:
         - ${image_size}
         - ${image_size}
       solver:
-        _target_: diffrax.Heun
-      dt0: null
+        _target_: diffrax.Euler
+      dt0: 0.02
       t0: 0.0
       t1: 1.0
       stepsize_controller:
-        _target_: diffrax.PIDController
-        rtol: 1e-3
-        atol: 1e-6
+        _target_: diffrax.ConstantStepSize
     n_samples: null
     gen_batch_size: ${data.dataloader.batch_size}
     n_real: null
