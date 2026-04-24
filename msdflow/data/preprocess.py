@@ -92,9 +92,9 @@ def build_tdigest(
             result = result.merge(digest)
         return result
 
-    ctx = mp.get_context("spawn")
+    # ctx = mp.get_context("spawn")
 
-    with ctx.Pool(n_workers) as pool:
+    with mp.Pool(n_workers) as pool:
         result = TDigest()
         for digest in tqdm(
             pool.imap_unordered(_worker_single_file, args),
