@@ -10,10 +10,10 @@ import json
 
 import numpy as np
 import pandas as pd
+import multiprocessing as mp
 
 from tqdm import tqdm
 from fastdigest import TDigest
-from multiprocessing import Pool
 from msdflow.data.random import WorkerSeededTransform
 
 
@@ -92,7 +92,9 @@ def build_tdigest(
             result = result.merge(digest)
         return result
 
-    with Pool(n_workers) as pool:
+    ctx = mp.get_context("spawn")
+
+    with ctx.Pool(n_workers) as pool:
         result = TDigest()
         for digest in tqdm(
             pool.imap_unordered(_worker_single_file, args),
