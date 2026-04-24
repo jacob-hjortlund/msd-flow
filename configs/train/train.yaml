@@ -23,12 +23,14 @@ _epoch_metrics_dict:
         - ${image_size}
         - ${image_size}
       solver:
-        _target_: diffrax.Euler
-      dt0: 0.01
+        _target_: diffrax.Heun
+      dt0: null
       t0: 0.0
       t1: 1.0
       stepsize_controller:
-        _target_: diffrax.ConstantStepSize
+        _target_: diffrax.PIDController
+        rtol: 1e-3
+        atol: 1e-6
     n_samples: null
     gen_batch_size: ${data.dataloader.batch_size}
     n_real: null
@@ -66,12 +68,14 @@ sample_fn:
     - ${image_size}
     - ${image_size}
   solver:
-    _target_: diffrax.Euler
-  dt0: 0.01
+    _target_: diffrax.Heun
+  dt0: null
   t0: 0.0
   t1: 1.0
   stepsize_controller:
-    _target_: diffrax.ConstantStepSize
+    _target_: diffrax.PIDController
+    rtol: 1e-3
+    atol: 1e-6
 sample_every: ${train.val_every}
 num_samples: 16
 samples_dir: ${work_dir}/samples
