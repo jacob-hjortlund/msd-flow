@@ -372,7 +372,7 @@ def log_samples(task: Any, images: np.ndarray, epoch: int, title: str) -> None:
     image_grid = make_image_grid(images, pad_value=255)
 
     cmap = cmr.gothic
-    fig, ax = plt.subplots(figsize=(8, 8), frameon=False)
+    fig, ax = plt.subplots(figsize=(16, 16), frameon=False)
     fig.subplots_adjust(left=0, right=1, bottom=0, top=1)
     ax.set_position([0, 0, 1, 1])
     ax.set_axis_off()
@@ -384,7 +384,7 @@ def log_samples(task: Any, images: np.ndarray, epoch: int, title: str) -> None:
         series="grid",
         iteration=epoch,
         figure=fig,
-        report_image=True,
+        report_image=False,
     )
 
     plt.close(fig)
