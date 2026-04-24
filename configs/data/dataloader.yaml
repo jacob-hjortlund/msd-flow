@@ -22,13 +22,14 @@ pre_arcsinh_image_transforms:
       target_size: ${image_size}
     - _target_: msdflow.data.preprocess.PDFNorm
 
+arcsinh_percentile: 50
 arcsinh_transform:
   _target_: torchvision.transforms.Compose
   transforms:
     - _target_: msdflow.data.preprocess.ArcsinhStretch
       scale: null
       transforms: ${data.dataloader.pre_arcsinh_image_transforms}
-      percentile: 10
+      percentile: ${data.dataloader.arcsinh_percentile}
       data_dir: ${data.dataloader.data_dir}
       split: train
       sample_fraction: ${data.dataloader.tdigest.sample_fraction}

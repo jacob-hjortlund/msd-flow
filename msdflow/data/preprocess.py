@@ -143,7 +143,7 @@ def _sample_filenames(
     Returns:
         (Possibly subsampled) list of filenames in original order.
     """
-    if sample_fraction is None:
+    if sample_fraction is None or sample_fraction == 0:
         return filenames
     rng = np.random.default_rng(sample_seed)
     n_sample = max(1, int(len(filenames) * sample_fraction))
