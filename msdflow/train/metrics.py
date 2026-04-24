@@ -185,6 +185,11 @@ class FIDAccumulator:
         self._n = 0
 
 
+@eqx.filter_jit
+def _batched_generate(model, keys, generate_fn):
+    return jax.vmap(lambda key: generate_fn(model, key=key))(keys)
+
+
 def compute_fid_metrics(
     accumulators: dict[str, "FIDAccumulator"],
     model,
@@ -265,18 +270,13 @@ def compute_fid_metrics(
 
     n_generated = 0
 
-    def _generate_fn(key):
-        return generate_fn(model, key=key)
-
-    _generate_fn = eqx.filter_jit(jax.vmap(_generate_fn))
-
     pbar = tqdm(total=n_samples, desc="FID fake", leave=False, dynamic_ncols=True)
     while n_generated < n_samples:
         chunk_size = min(gen_batch_size, n_samples - n_generated)
         all_keys = jax.random.split(key, chunk_size + 1)
         key = all_keys[0]
         sub_keys = all_keys[1:]
-        fake_images = _generate_fn(sub_keys)
+        fake_images = _batched_generate(model, sub_keys, generate_fn)
         for acc in accumulators.values():
             acc.update(fake_images)
         n_generated += chunk_size
