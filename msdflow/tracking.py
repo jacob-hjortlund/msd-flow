@@ -349,13 +349,14 @@ def make_image_grid(images, pad_value=0, padding=2):
     return grid
 
 
-def log_samples(task: Any, images: np.ndarray, epoch: int) -> None:
+def log_samples(task: Any, images: np.ndarray, epoch: int, title: str) -> None:
     """Upload generated sample images to ClearML.
 
     Args:
         task: Active ClearML Task, or None (no-op).
         images: Array of shape ``(N, C, H, W)``.
         epoch: Current epoch number.
+        title: Name of samples being logged
     """
     if task is None:
         return
@@ -379,7 +380,7 @@ def log_samples(task: Any, images: np.ndarray, epoch: int) -> None:
     fig.tight_layout()
 
     cl_logger.report_matplotlib_figure(
-        title="Samples",
+        title=title,
         series="grid",
         iteration=epoch,
         figure=fig,

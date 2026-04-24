@@ -465,6 +465,25 @@ def train(
     if grad_accum_steps > 1:
         optimizer = optax.MultiSteps(optimizer, every_k_schedule=grad_accum_steps)
 
+    ref_images = []                                                   
+    for images_np, _ in val_dataloader:                                                        
+        ref_images.append(np.asarray(images_np))
+        if sum(len(b) for b in ref_images) >= num_samples:                                     
+            break                                                                             
+    ref_images = np.concatenate(ref_images, axis=0)[:num_samples].squeeze()
+    ref_samples_dir = os.path.join(samples_dir, f"reference")
+    if clearml_task is None:
+        os.makedirs(ref_samples_dir, exist_ok=True)
+        for i, img in enumerate(ref_images):
+            np.save(os.path.join(ref_samples_dir, f"sample_{i:03d}.npy"), img)
+    else:
+        log_samples(
+            task=clearml_task,
+            images=ref_images,
+            epoch=1,
+            title="Reference Samples"
+        )
+
     state = make_train_state(model, optimizer)
 
     train_step = make_train_step(optimizer, loss_fn)
@@ -672,7 +691,12 @@ def train(
                 for i, img in enumerate(images):
                     np.save(os.path.join(epoch_samples_dir, f"sample_{i:03d}.npy"), img)
             else:
-                log_samples(clearml_task, images, epoch + 1)
+                log_samples(
+                    task=clearml_task,
+                    images=images,
+                    epoch=epoch + 1,
+                    title="Model Samples"
+                )
 
         epoch_time = time.perf_counter() - epoch_start_time
         total_epoch_time += epoch_time
