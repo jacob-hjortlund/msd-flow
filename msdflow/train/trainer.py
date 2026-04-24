@@ -703,7 +703,7 @@ def train(
             )
             log_string = (
                 f"Epoch {epoch + 1}/{num_epochs} | "
-                + f"Train Loss: {epoch_loss / steps_per_epoch:.4g} | "
+                + f"Train Loss: {epoch_loss / microsteps_per_epoch:.4g} | "
                 + metric_str
                 + " | "
                 + f"Epoch Time: {epoch_time:.2g}s (avg {avg_epoch_time:.2g}s) | "
