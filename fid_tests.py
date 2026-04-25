@@ -9,7 +9,8 @@ from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf, open_dict
 
 from msdflow.tracking import setup_task
-from msdflow.utils import register_all_resolvers
+from msdflow.data.loader import build_dataloader
+from msdflow.utils import register_all_resolvers, seed_everything
 from msdflow.data.pipeline import resolve_dataset
 
 
@@ -221,9 +222,11 @@ def main(cfg: DictConfig):
     log.info(kv("data_dir", cfg.data.dataloader.data_dir))
 
     # 3. Build dataloaders
+    seed = cfg.seed
+    rng_key = seed_everything(seed)
     log.info(section("Step 3 | Dataloader initialization"))
-    train_loader = instantiate(cfg.data.dataloader.train)
-    val_loader = instantiate(cfg.data.dataloader.val)
+    train_loader = build_dataloader(cfg.data.dataloader.train, seed=seed)
+    val_loader = build_dataloader(cfg.data.dataloader.val, seed=seed + 1)
     log.info(kv("Train batches", len(train_loader)))
     log.info(kv("Val batches", len(val_loader)))
 
