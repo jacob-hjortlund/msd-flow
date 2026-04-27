@@ -30,7 +30,8 @@ dependencies = [
     "seaborn",
     "timm",
     "flax",
-    "cmasher"
+    "cmasher",
+    "scikit-learn"
 ]
 
 [project.optional-dependencies]
