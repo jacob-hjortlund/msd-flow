@@ -17,6 +17,7 @@ from msdflow.data.preprocess import (
     SurfaceBrightnessToNanomaggies,
     ClipAndPad,
     Downsample,
+    _sample_filenames,
 )
 
 
@@ -77,6 +78,7 @@ def main(cfg: DictConfig):
 
     metadata = metadata[metadata["split"] == "train"]
     filenames = metadata["filename"].tolist()
+    filenames = _sample_filenames(filenames, 0.25, 42)
     n = len(filenames)
 
     num_workers = min(8, os.cpu_count())
