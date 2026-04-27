@@ -24,14 +24,17 @@ from msdflow.data.preprocess import (
 mag2flux = None
 cap = None
 dwn = None
+worker_dataset_path = None
 
 
-def init_worker():
+def init_worker(dataset_path):
     """
     Runs once in each worker process.
     This avoids recreating the transform objects for every image.
     """
-    global mag2flux, cap, dwn
+    global mag2flux, cap, dwn, worker_dataset_path
+
+    worker_dataset_path = dataset_path
 
     mag2flux = SurfaceBrightnessToNanomaggies()
     cap = ClipAndPad(n=512)
@@ -40,9 +43,11 @@ def init_worker():
 
 def process_file(filename):
     """
-    Process a single .npy file and return its 99.9th percentile.
+    Process a single relative .npy filename and return its 99.9th percentile.
     """
-    img = np.load(filename)
+    path = os.path.join(worker_dataset_path, filename)
+
+    img = np.load(path)
 
     img = mag2flux(img)
     img = cap(img)
@@ -74,17 +79,16 @@ def main(cfg: DictConfig):
     filenames = metadata["filename"].tolist()
     n = len(filenames)
 
-    # Choose a sensible number for your node.
-    # For example, 8 or 16 if running on the shared A100 node.
     num_workers = min(8, os.cpu_count())
-
-    # "spawn" is safer if your broader codebase uses JAX / CUDA / fork-sensitive libraries.
     ctx = mp.get_context("spawn")
+
+    dataset_path = os.path.abspath(dataset_path)
 
     with ProcessPoolExecutor(
         max_workers=num_workers,
         mp_context=ctx,
         initializer=init_worker,
+        initargs=(dataset_path,),
     ) as executor:
         percs = list(
             tqdm(
