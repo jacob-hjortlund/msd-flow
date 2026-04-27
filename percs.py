@@ -54,7 +54,7 @@ def process_file(filename):
     img = cap(img)
     img = dwn(img)
 
-    return np.percentile(img[img > 0], 99.9)
+    return np.percentile(img, 99.9)
 
 
 @hydra.main(version_base=None, config_path="./configs", config_name="config")
@@ -100,13 +100,19 @@ def main(cfg: DictConfig):
         )
 
     percs = np.asarray(percs)
-    kmeans = KMeans(n_clusters=2, random_state=0, n_init="auto").fit(percs[:, None])
-    clip = np.sum(kmeans.cluster_centers_) / 2
+    eps = 1e-8
+    z = np.log10(percs + eps)
+    kmeans = KMeans(n_clusters=2, random_state=42)
+    kmeans.fit(z.reshape(-1, 1))
+    log_boundary = float(np.sum(kmeans.cluster_centers_) / 2)
+    boundary = 10**log_boundary - eps
 
-    fig, ax = plt.subplots()
-    ax.hist(percs, bins="doane")
-    ax.axvline(clip, c="k")
-    print(clip)
+    fig, ax = plt.subplots(ncols=2, figsize=(12, 6))
+    ax[0].hist(percs, bins="doane")
+    ax[0].axvline(boundary, c="k")
+    ax[1].hist(z, bins="doane")
+    ax[1].axvline(log_boundary, c="k")
+    fig.tight_layout()
 
     cl_logger = task.get_logger()
     cl_logger.report_matplotlib_figure(
