@@ -81,7 +81,7 @@ def main(cfg: DictConfig):
     filenames = _sample_filenames(filenames, 0.25, 42)
     n = len(filenames)
 
-    num_workers = min(8, os.cpu_count())
+    num_workers = min(32, os.cpu_count())
     ctx = mp.get_context("spawn")
 
     dataset_path = os.path.abspath(dataset_path)
