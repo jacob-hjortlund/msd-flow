@@ -54,7 +54,7 @@ def process_file(filename):
     img = cap(img)
     img = dwn(img)
 
-    return np.percentile(img, 99.9)
+    return np.percentile(img[img > 0], 99.9)
 
 
 @hydra.main(version_base=None, config_path="./configs", config_name="config")
