@@ -725,3 +725,176 @@ class TestCacheDir:
             split="train", cache_dir=cache_dir,
         )
         np.testing.assert_allclose(t1.scale, t2.scale)
+
+
+def test_cluster_clip_is_importable():
+    """ClusterClip and its helpers are exported from msdflow.data.preprocess."""
+    from msdflow.data.preprocess import (
+        ClusterClip,
+        build_image_percentiles,
+        _worker_image_percentile,
+    )
+    assert ClusterClip is not None
+    assert build_image_percentiles is not None
+    assert _worker_image_percentile is not None
+
+
+class TestWorkerImagePercentile:
+    """Tests for _worker_image_percentile."""
+
+    def test_returns_percentile_of_image(self, tmp_path):
+        """Worker returns the percentile of all pixels in the loaded image."""
+        from msdflow.data.preprocess import _worker_image_percentile, _identity
+
+        name = "galaxy_00000.npy"
+        img = np.arange(100, dtype=float).reshape(1, 10, 10)
+        np.save(tmp_path / name, img)
+
+        out = _worker_image_percentile(
+            (str(tmp_path), name, _identity, 50.0, False)
+        )
+        np.testing.assert_allclose(out, np.percentile(img, 50.0))
+
+    def test_positive_only_filters_zeros(self, tmp_path):
+        """When positive_only=True, only positive pixels contribute."""
+        from msdflow.data.preprocess import _worker_image_percentile, _identity
+
+        name = "galaxy_00000.npy"
+        # Most pixels are zero; one positive pixel
+        img = np.zeros((1, 4, 4))
+        img[0, 0, 0] = 7.0
+        np.save(tmp_path / name, img)
+
+        all_pixels = _worker_image_percentile(
+            (str(tmp_path), name, _identity, 99.0, False)
+        )
+        positive_only = _worker_image_percentile(
+            (str(tmp_path), name, _identity, 99.0, True)
+        )
+        # all-pixels: most values are 0, so 99th percentile is ~0
+        # positive-only: only one value (7.0), so 99th percentile is 7.0
+        assert all_pixels < positive_only
+        np.testing.assert_allclose(positive_only, 7.0)
+
+    def test_returns_python_float(self, tmp_path):
+        """Worker returns a builtin float (picklable across processes)."""
+        from msdflow.data.preprocess import _worker_image_percentile, _identity
+
+        name = "galaxy_00000.npy"
+        np.save(tmp_path / name, np.ones((1, 4, 4)))
+        out = _worker_image_percentile(
+            (str(tmp_path), name, _identity, 50.0, False)
+        )
+        assert type(out) is float
+
+
+class TestBuildImagePercentiles:
+    """Tests for build_image_percentiles."""
+
+    @pytest.fixture
+    def small_dataset(self, tmp_path):
+        """Create 4 .npy files with controlled per-image percentiles."""
+        names = []
+        # Each file is constant-valued so its percentile equals that value
+        for i, value in enumerate([1.0, 2.0, 3.0, 4.0]):
+            name = f"galaxy_{i:05d}.npy"
+            np.save(tmp_path / name, np.full((1, 4, 4), value))
+            names.append(name)
+        return str(tmp_path), names
+
+    def test_serial_returns_one_value_per_file(self, small_dataset):
+        """Serial path returns a 1-D array of length len(filenames)."""
+        from msdflow.data.preprocess import build_image_percentiles, _identity
+
+        data_dir, names = small_dataset
+        out = build_image_percentiles(
+            data_dir=data_dir,
+            filenames=names,
+            transforms=_identity,
+            percentile=50.0,
+            positive_only=False,
+            n_workers=0,
+        )
+        assert out.shape == (4,)
+        # Constant images: 50th percentile equals the value itself
+        np.testing.assert_allclose(sorted(out.tolist()), [1.0, 2.0, 3.0, 4.0])
+
+    def test_parallel_returns_same_set(self, small_dataset):
+        """Parallel path returns the same set of values as serial."""
+        from msdflow.data.preprocess import build_image_percentiles, _identity
+
+        data_dir, names = small_dataset
+        serial = build_image_percentiles(
+            data_dir=data_dir,
+            filenames=names,
+            transforms=_identity,
+            percentile=50.0,
+            positive_only=False,
+            n_workers=0,
+        )
+        parallel = build_image_percentiles(
+            data_dir=data_dir,
+            filenames=names,
+            transforms=_identity,
+            percentile=50.0,
+            positive_only=False,
+            n_workers=2,
+        )
+        # Order may differ under imap_unordered; compare as multisets.
+        np.testing.assert_allclose(sorted(serial.tolist()), sorted(parallel.tolist()))
+
+
+class TestClusterClipDirect:
+    """Tests for ClusterClip in direct (explicit clip) mode."""
+
+    def test_call_clips_to_zero_max(self):
+        """Default min=0; values above clip are capped, below 0 are zeroed."""
+        from msdflow.data.preprocess import ClusterClip
+
+        t = ClusterClip(clip=5.0)
+        img = np.array([[[-2.0, 0.0, 1.0, 5.0, 10.0]]])
+        out = t(img)
+        np.testing.assert_array_equal(out, [[[0.0, 0.0, 1.0, 5.0, 5.0]]])
+
+    def test_call_uses_custom_min(self):
+        """Custom min argument is honored as a_min."""
+        from msdflow.data.preprocess import ClusterClip
+
+        t = ClusterClip(clip=5.0, min=-1.0)
+        img = np.array([[[-2.0, -1.0, 0.0, 5.0, 10.0]]])
+        out = t(img)
+        np.testing.assert_array_equal(out, [[[-1.0, -1.0, 0.0, 5.0, 5.0]]])
+
+    def test_preserves_shape(self):
+        """Output shape matches input."""
+        from msdflow.data.preprocess import ClusterClip
+
+        t = ClusterClip(clip=1.0)
+        img = np.ones((3, 64, 64)) * 5.0
+        out = t(img)
+        assert out.shape == (3, 64, 64)
+        np.testing.assert_array_equal(out, np.ones((3, 64, 64)))
+
+    def test_xor_validation_both_set(self):
+        """Passing both clip and percentile raises ValueError."""
+        from msdflow.data.preprocess import ClusterClip
+
+        with pytest.raises(ValueError):
+            ClusterClip(clip=1.0, percentile=99.0, data_dir="/nonexistent")
+
+    def test_xor_validation_neither_set(self):
+        """Passing neither clip nor percentile raises ValueError."""
+        from msdflow.data.preprocess import ClusterClip
+
+        with pytest.raises(ValueError):
+            ClusterClip()
+
+    def test_clip_zero_is_valid(self):
+        """clip=0.0 is a legal direct value (not treated as 'unset')."""
+        from msdflow.data.preprocess import ClusterClip
+
+        t = ClusterClip(clip=0.0)
+        img = np.array([[[-1.0, 0.0, 1.0]]])
+        out = t(img)
+        # min=0 default and max=0 → everything collapses to 0
+        np.testing.assert_array_equal(out, [[[0.0, 0.0, 0.0]]])

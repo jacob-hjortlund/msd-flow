@@ -14,6 +14,7 @@ import multiprocessing as mp
 
 from tqdm import tqdm
 from fastdigest import TDigest
+from sklearn.cluster import KMeans
 from msdflow.data.random import WorkerSeededTransform
 
 
@@ -39,6 +40,26 @@ def _process_single_file(data_dir, filename, transforms):
     img = transforms(img)
 
     return img
+
+
+def _worker_image_percentile(args: tuple) -> float:
+    """Compute one percentile from a transformed image.
+
+    Args:
+        args: Tuple of ``(data_dir, filename, transforms, percentile,
+            positive_only)``.
+
+    Returns:
+        Percentile of pixel values in the transformed image as a builtin
+        ``float`` (picklable across multiprocessing workers). When
+        ``positive_only`` is ``True``, only strictly positive pixels are
+        considered.
+    """
+    data_dir, filename, transforms, percentile, positive_only = args
+    img = _process_single_file(data_dir, filename, transforms)
+    if positive_only:
+        img = img[img > 0]
+    return float(np.percentile(img, percentile))
 
 
 def _worker_single_file(args: tuple) -> TDigest:
@@ -104,6 +125,59 @@ def build_tdigest(
         ):
             result = result.merge(digest)
     return result
+
+
+def build_image_percentiles(
+    data_dir: str,
+    filenames: list[str],
+    transforms,
+    percentile: float,
+    positive_only: bool = False,
+    n_workers: int = 0,
+) -> np.ndarray:
+    """Compute one percentile per image across a list of ``.npy`` files.
+
+    Args:
+        data_dir: Directory containing the ``.npy`` files.
+        filenames: List of filenames (relative to ``data_dir``).
+        transforms: Preprocessing pipeline applied to each image before
+            computing the percentile.
+        percentile: Percentile in ``[0, 100]`` computed for each image.
+        positive_only: If ``True``, only strictly positive pixels of each
+            image contribute to its percentile.
+        n_workers: Number of multiprocessing workers. ``0`` means serial.
+
+    Returns:
+        1-D ``np.ndarray`` of length ``len(filenames)`` containing the
+        per-image percentile values. Order is unspecified when
+        ``n_workers > 0`` (uses ``imap_unordered``).
+    """
+    args = [
+        (data_dir, fn, transforms, percentile, positive_only) for fn in filenames
+    ]
+
+    if n_workers <= 0:
+        results = []
+        for value in tqdm(
+            map(_worker_image_percentile, args),
+            total=len(filenames),
+            desc="Computing per-image percentiles",
+            unit="file",
+        ):
+            results.append(value)
+        return np.asarray(results)
+
+    ctx = mp.get_context("spawn")
+    with ctx.Pool(n_workers) as pool:
+        results = []
+        for value in tqdm(
+            pool.imap_unordered(_worker_image_percentile, args),
+            total=len(filenames),
+            desc="Computing per-image percentiles",
+            unit="file",
+        ):
+            results.append(value)
+    return np.asarray(results)
 
 
 def _tdigest_cache_suffix(
@@ -619,6 +693,101 @@ class LinearNormalize:
             Array in ``[norm_min, norm_max]``, same shape as input.
         """
         return img * (self.norm_max - self.norm_min) + self.norm_min
+
+
+class ClusterClip:
+    """Clip image values to ``[self.min, self.max]`` with a learned ceiling.
+
+    The upper bound (``self.max``) is supplied directly via ``clip`` or
+    derived from the dataset by:
+
+      1. Computing ``percentile`` for each image after ``transforms``.
+      2. Fitting ``sklearn.cluster.KMeans(n_clusters=2)`` on the resulting
+         per-image percentile values.
+      3. Setting ``self.max = sum(kmeans.cluster_centers_) / 2`` (midpoint
+         of the two cluster centres).
+
+    The lower bound ``self.min`` is always taken from the ``min`` argument
+    (default ``0.0``). Derived clip values are cached on disk.
+
+    Args:
+        clip: Pre-computed upper clip value. Mutually exclusive with
+            ``percentile`` + ``data_dir``.
+        min: Lower clip value. Defaults to ``0.0``.
+        transforms: Pipeline applied to each image before computing its
+            percentile. Defaults to identity.
+        percentile: Percentile in ``[0, 100]`` computed per image, then
+            clustered. Requires ``data_dir``.
+        positive_only: If ``True``, only strictly positive pixels of each
+            image contribute to its percentile. Defaults to ``False``.
+        data_dir: Directory containing ``metadata.csv`` and ``.npy`` files.
+            Required when ``percentile`` is set.
+        split: Split filter for ``metadata.csv``. Defaults to ``"train"``.
+            Pass ``None`` to use all rows.
+        sample_fraction: Fraction of files used when fitting. ``None`` uses
+            all files. Defaults to ``None``.
+        sample_seed: RNG seed for sampling and ``KMeans(random_state=...)``.
+            Defaults to ``42``.
+        n_workers: Number of multiprocessing workers. ``0`` means serial.
+            Defaults to ``0``.
+        cache_dir: Directory for the cache JSON. Falls back to ``data_dir``.
+    """
+
+    def __init__(
+        self,
+        clip: float | None = None,
+        min: float = 0.0,
+        transforms=None,
+        percentile: float | None = None,
+        positive_only: bool = False,
+        data_dir: str | None = None,
+        split: str | None = "train",
+        sample_fraction: float | None = None,
+        sample_seed: int = 42,
+        n_workers: int = 0,
+        cache_dir: str | None = None,
+    ):
+        use_percentile = (percentile is not None) and (data_dir is not None)
+        use_clip = clip is not None
+
+        if (not use_percentile and not use_clip) or (use_percentile and use_clip):
+            raise ValueError(
+                "Must use either a provided clip or a provided percentile and dataset. "
+                + "You have provided:\n"
+                + f"   - clip: {clip}\n"
+                + f"   - percentile: {percentile}\n"
+                + f"   - data_dir: {data_dir}"
+            )
+
+        if transforms is None:
+            transforms = _identity
+        self.transforms = transforms
+        self.percentile = percentile
+        self.positive_only = positive_only
+        self.data_dir = data_dir
+        self.split = split
+        self.sample_fraction = sample_fraction
+        self.sample_seed = sample_seed
+        self.n_workers = n_workers
+        self.cache_dir = cache_dir if cache_dir is not None else data_dir
+
+        self.min = min
+
+        if use_clip:
+            self.max = clip
+
+        # Derived mode is implemented in the next task.
+
+    def __call__(self, img: np.ndarray) -> np.ndarray:
+        """Apply the clip.
+
+        Args:
+            img: ``(C, H, W)`` array.
+
+        Returns:
+            Array clipped to ``[self.min, self.max]``, same shape as input.
+        """
+        return np.clip(img, a_min=self.min, a_max=self.max)
 
 
 class RandomHorizontalFlip(WorkerSeededTransform):
