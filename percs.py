@@ -100,6 +100,7 @@ def main(cfg: DictConfig):
     fig, ax = plt.subplots()
     ax.hist(percs, bins="doane")
     ax.axvline(clip, c="k")
+    print(clip)
 
     cl_logger = task.get_logger()
     cl_logger.report_matplotlib_figure(
