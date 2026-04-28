@@ -898,3 +898,168 @@ class TestClusterClipDirect:
         out = t(img)
         # min=0 default and max=0 → everything collapses to 0
         np.testing.assert_array_equal(out, [[[0.0, 0.0, 0.0]]])
+
+
+class TestClusterClipDerived:
+    """Tests for ClusterClip derived (KMeans) mode."""
+
+    @pytest.fixture
+    def bimodal_dataset(self, tmp_path):
+        """Two clear clusters of per-image 99th percentiles: ~1 and ~10."""
+        import pandas as pd
+        records = []
+        # 5 "dim" train images: 99th percentile ≈ 1.0
+        for i in range(5):
+            name = f"galaxy_dim_{i:05d}.npy"
+            np.save(tmp_path / name, np.full((1, 4, 4), 1.0))
+            records.append({"filename": name, "split": "train"})
+        # 5 "bright" train images: 99th percentile ≈ 10.0
+        for i in range(5):
+            name = f"galaxy_bright_{i:05d}.npy"
+            np.save(tmp_path / name, np.full((1, 4, 4), 10.0))
+            records.append({"filename": name, "split": "train"})
+        # 1 val image (must be ignored)
+        name = "galaxy_val_00000.npy"
+        np.save(tmp_path / name, np.full((1, 4, 4), 1000.0))
+        records.append({"filename": name, "split": "val"})
+        pd.DataFrame(records).to_csv(tmp_path / "metadata.csv", index=False)
+        return str(tmp_path)
+
+    def test_derived_clip_is_midpoint_of_cluster_centres(self, bimodal_dataset):
+        """Fitted self.max is the mean of the two KMeans centroids."""
+        from msdflow.data.preprocess import ClusterClip
+
+        t = ClusterClip(
+            percentile=99.0,
+            data_dir=bimodal_dataset,
+            split="train",
+        )
+        # Two clusters at 1.0 and 10.0 → midpoint is 5.5
+        np.testing.assert_allclose(t.max, 5.5, atol=1e-6)
+
+    def test_derived_min_default_is_zero(self, bimodal_dataset):
+        """Default min stays 0.0 in derived mode."""
+        from msdflow.data.preprocess import ClusterClip
+
+        t = ClusterClip(
+            percentile=99.0,
+            data_dir=bimodal_dataset,
+            split="train",
+        )
+        assert t.min == 0.0
+
+    def test_derived_split_is_respected(self, bimodal_dataset):
+        """Val image (value 1000) does not influence the fit."""
+        from msdflow.data.preprocess import ClusterClip
+
+        t = ClusterClip(
+            percentile=99.0,
+            data_dir=bimodal_dataset,
+            split="train",
+        )
+        # If the val image had been included, midpoint would be much higher.
+        assert t.max < 100.0
+
+    def test_cache_file_is_written_and_reused(self, bimodal_dataset, tmp_path):
+        """Second construction reads the cache file (proven by removing fit data)."""
+        from msdflow.data.preprocess import ClusterClip
+        import pandas as pd
+        import shutil
+
+        t1 = ClusterClip(
+            percentile=99.0,
+            data_dir=bimodal_dataset,
+            split="train",
+        )
+        first_max = t1.max
+
+        # Move most .npy files away so KMeans cannot be refit from disk;
+        # keep ONLY the first metadata entry so the img_size probe still
+        # succeeds. If the cache is read, that one file is irrelevant; if
+        # the cache is ignored, KMeans on a single point would not produce
+        # the same midpoint, exposing a regression.
+        metadata = pd.read_csv(os.path.join(bimodal_dataset, "metadata.csv"))
+        keep = metadata["filename"].iloc[0]
+        scratch = tmp_path / "moved"
+        scratch.mkdir()
+        for entry in os.listdir(bimodal_dataset):
+            if entry.endswith(".npy") and entry != keep:
+                shutil.move(
+                    os.path.join(bimodal_dataset, entry),
+                    scratch / entry,
+                )
+
+        t2 = ClusterClip(
+            percentile=99.0,
+            data_dir=bimodal_dataset,
+            split="train",
+        )
+        assert t2.max == first_max
+
+    def test_cache_filename_encodes_percentile_and_positive_only(
+        self, bimodal_dataset
+    ):
+        """Cache filenames differ across percentile/positive_only combinations."""
+        from msdflow.data.preprocess import ClusterClip
+
+        ClusterClip(
+            percentile=99.0,
+            data_dir=bimodal_dataset,
+            split="train",
+            positive_only=False,
+        )
+        ClusterClip(
+            percentile=99.0,
+            data_dir=bimodal_dataset,
+            split="train",
+            positive_only=True,
+        )
+        files = sorted(
+            f for f in os.listdir(bimodal_dataset) if f.startswith("cluster_clip_")
+        )
+        # Two distinct cache files — one per positive_only setting.
+        assert len(files) == 2
+        assert any("_pos" in f for f in files)
+        assert any("_pos" not in f for f in files)
+
+    def test_positive_only_changes_result_when_zeros_dominate(self, tmp_path):
+        """With many zeros, positive_only=True yields a different (larger) clip."""
+        from msdflow.data.preprocess import ClusterClip
+        import pandas as pd
+
+        records = []
+        # 5 "dim" images: one positive pixel at 1.0, rest zero
+        for i in range(5):
+            name = f"galaxy_dim_{i:05d}.npy"
+            img = np.zeros((1, 4, 4))
+            img[0, 0, 0] = 1.0
+            np.save(tmp_path / name, img)
+            records.append({"filename": name, "split": "train"})
+        # 5 "bright" images: one positive pixel at 10.0, rest zero
+        for i in range(5):
+            name = f"galaxy_bright_{i:05d}.npy"
+            img = np.zeros((1, 4, 4))
+            img[0, 0, 0] = 10.0
+            np.save(tmp_path / name, img)
+            records.append({"filename": name, "split": "train"})
+        pd.DataFrame(records).to_csv(tmp_path / "metadata.csv", index=False)
+        data_dir = str(tmp_path)
+
+        # With all pixels: 99th percentile of [0,0,...,0,v] is dominated by zeros,
+        # so both clusters collapse near 0 and midpoint is small.
+        t_all = ClusterClip(
+            percentile=99.0,
+            data_dir=data_dir,
+            split="train",
+            positive_only=False,
+        )
+        # With positive_only: 99th percentile equals the single positive value,
+        # so clusters split cleanly at 1 and 10, midpoint = 5.5.
+        t_pos = ClusterClip(
+            percentile=99.0,
+            data_dir=data_dir,
+            split="train",
+            positive_only=True,
+        )
+        assert t_pos.max > t_all.max
+        np.testing.assert_allclose(t_pos.max, 5.5, atol=1e-6)
