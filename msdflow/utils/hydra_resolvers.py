@@ -1,4 +1,10 @@
+import jax.numpy as jnp
 from omegaconf import OmegaConf
+
+_SUPPORTED_JNP_DTYPES = {
+    "float32": jnp.float32,
+    "bfloat16": jnp.bfloat16,
+}
 
 
 def register_all_resolvers():
@@ -24,4 +30,19 @@ def register_all_resolvers():
         OmegaConf.register_new_resolver(
             "generate_snapshot_ids",
             generate_snapshot_ids,
+        )
+
+    if not OmegaConf.has_resolver("jnp_dtype"):
+
+        def jnp_dtype(name):
+            if name not in _SUPPORTED_JNP_DTYPES:
+                raise ValueError(
+                    f"Unsupported jnp_dtype {name!r}. "
+                    f"Supported: {sorted(_SUPPORTED_JNP_DTYPES)}."
+                )
+            return _SUPPORTED_JNP_DTYPES[name]
+
+        OmegaConf.register_new_resolver(
+            "jnp_dtype",
+            jnp_dtype,
         )

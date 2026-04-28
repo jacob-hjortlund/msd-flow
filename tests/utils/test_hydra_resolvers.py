@@ -1,5 +1,6 @@
 """Tests for msdflow.utils.hydra_resolvers."""
 
+import jax.numpy as jnp
 import pytest
 from omegaconf import OmegaConf
 
@@ -85,3 +86,30 @@ def test_generate_snapshot_ids_start_zero():
     """generate_snapshot_ids starting at 0 returns [0, 1, ..., count-1]."""
     cfg = OmegaConf.create({"ids": "${generate_snapshot_ids: 0, 4}"})
     assert list(cfg.ids) == [0, 1, 2, 3]
+
+
+# --- jnp_dtype resolver ---
+
+
+def test_jnp_dtype_resolver_is_registered():
+    """jnp_dtype must be queryable after registration."""
+    assert OmegaConf.has_resolver("jnp_dtype")
+
+
+def test_jnp_dtype_resolver_float32():
+    """jnp_dtype('float32') resolves to jnp.float32."""
+    cfg = OmegaConf.create({"d": "${jnp_dtype: float32}"})
+    assert cfg.d == jnp.float32
+
+
+def test_jnp_dtype_resolver_bfloat16():
+    """jnp_dtype('bfloat16') resolves to jnp.bfloat16."""
+    cfg = OmegaConf.create({"d": "${jnp_dtype: bfloat16}"})
+    assert cfg.d == jnp.bfloat16
+
+
+def test_jnp_dtype_resolver_invalid_raises():
+    """jnp_dtype with an unsupported name raises ValueError."""
+    cfg = OmegaConf.create({"d": "${jnp_dtype: not_a_real_dtype}"})
+    with pytest.raises(ValueError, match="Unsupported jnp_dtype"):
+        _ = cfg.d
