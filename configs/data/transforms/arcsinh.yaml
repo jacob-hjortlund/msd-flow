@@ -1,11 +1,6 @@
 # data/transforms/arcsinh.yaml
 
-tdigest:
-  sample_fraction: 0.1
-  sample_seed: 42
-  n_workers: 10
-
-pre_arcsinh_image_transforms:
+pre_arcsinh_transforms:
   _target_: torchvision.transforms.Compose
   transforms:
     - _target_: msdflow.data.preprocess.SurfaceBrightnessToNanomaggies
@@ -16,20 +11,24 @@ pre_arcsinh_image_transforms:
       target_size: ${image_size}
     - _target_: msdflow.data.preprocess.PDFNorm
 
-arcsinh_percentile: 50
+percentile: 50
+sample_fraction: 0.1
+sample_seed: 42
+n_workers: 10
+
 
 arcsinh_transform:
   _target_: torchvision.transforms.Compose
   transforms:
     - _target_: msdflow.data.preprocess.ArcsinhStretch
       scale: null
-      transforms: ${data.dataloader.transforms.pre_arcsinh_image_transforms}
-      percentile: ${data.dataloader.transforms.arcsinh_percentile}
+      transforms: ${data.dataloader.transforms.pre_arcsinh_transforms}
+      percentile: ${data.dataloader.transforms.percentile}
       data_dir: ${data.dataloader.data_dir}
       split: train
-      sample_fraction: ${data.dataloader.transforms.tdigest.sample_fraction}
-      sample_seed: ${data.dataloader.transforms.tdigest.sample_seed}
-      n_workers: ${data.dataloader.transforms.tdigest.n_workers}
+      sample_fraction: ${data.dataloader.transforms.sample_fraction}
+      sample_seed: ${data.dataloader.transforms.sample_seed}
+      n_workers: ${data.dataloader.transforms.n_workers}
       cache_dir: ${data.dataloader.cache_dir}
 
 post_arcsinh_image_transforms:
@@ -41,21 +40,21 @@ post_arcsinh_image_transforms:
       norm_min: -1.0
       norm_max: 1.0
       data_dir: ${data.dataloader.data_dir}
-      percentile: ${data.dataloader.transforms.arcsinh_transform.transforms.0.percentile}
+      percentile: ${data.dataloader.transforms.percentile}
       split: train
       transforms:
         _target_: torchvision.transforms.Compose
         transforms:
-          - ${data.dataloader.transforms.pre_arcsinh_image_transforms}
+          - ${data.dataloader.transforms.pre_arcsinh_transforms}
           - ${data.dataloader.transforms.arcsinh_transform}
-      sample_fraction: ${data.dataloader.transforms.tdigest.sample_fraction}
-      sample_seed: ${data.dataloader.transforms.tdigest.sample_seed}
-      n_workers: ${data.dataloader.transforms.tdigest.n_workers}
+      sample_fraction: ${data.dataloader.transforms.sample_fraction}
+      sample_seed: ${data.dataloader.transforms.sample_seed}
+      n_workers: ${data.dataloader.transforms.n_workers}
       cache_dir: ${data.dataloader.cache_dir}
 
 deterministic:
   _target_: torchvision.transforms.Compose
   transforms:
-    - ${data.dataloader.transforms.pre_arcsinh_image_transforms}
+    - ${data.dataloader.transforms.pre_arcsinh_transforms}
     - ${data.dataloader.transforms.arcsinh_transform}
     - ${data.dataloader.transforms.post_arcsinh_image_transforms}
