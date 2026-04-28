@@ -224,3 +224,25 @@ def test_ncsnpp_prediction_type_invalid():
     """NCSNpp raises ValueError for unknown prediction_type."""
     with pytest.raises(ValueError, match="prediction_type"):
         NCSNpp(**SMALL_CFG, key=KEY, prediction_type="score")
+
+
+def test_ncsnpp_attention_dtype_bfloat16_smoke():
+    """NCSNpp with attention_dtype=bfloat16 builds and runs; output dtype matches input."""
+    cfg = dict(SMALL_CFG)
+    cfg["attention_dtype"] = jnp.bfloat16
+    model = NCSNpp(**cfg, key=KEY)
+    k, _ = jax.random.split(KEY)
+    x = jax.random.normal(k, (1, 8, 8)).astype(jnp.float32)
+    out = model(jnp.array(0.5), x, jnp.empty(0), jnp.array(False), jax.random.PRNGKey(0))
+    assert out.shape == (1, 8, 8)
+    assert out.dtype == jnp.float32
+    assert jnp.all(jnp.isfinite(out))
+
+
+def test_ncsnpp_attention_implementation_passthrough():
+    """attention_implementation reaches every AttnBlockNCSN inside NCSNpp."""
+    cfg = dict(SMALL_CFG)
+    cfg["attention_implementation"] = "xla"
+    model = NCSNpp(**cfg, key=KEY)
+    # Bottleneck attention is the only guaranteed attention site for SMALL_CFG.
+    assert model.mid_attn.attn.implementation == "xla"

@@ -92,6 +92,8 @@ class NCSNpp(eqx.Module):
         key: jax.Array,
         cond_dim: int = 0,
         prediction_type: str = "velocity",
+        attention_dtype: jnp.dtype = jnp.float32,
+        attention_implementation: Optional[str] = None,
     ):
         """Initialise the NCSN++ architecture.
 
@@ -118,6 +120,13 @@ class NCSNpp(eqx.Module):
                 ``v_t`` directly. ``"image"`` means it predicts the target
                 image ``x_t_pred``; the caller converts to velocity via
                 ``(x_t_pred - x_t) / (1 - t)``.
+            attention_dtype: Dtype for Q/K/V projections and the attention
+                call inside every ``AttnBlockNCSN``. Output of each attention
+                block is upcast back to the input's dtype after the attention
+                call. Defaults to ``jnp.float32`` (no behavior change).
+            attention_implementation: Backend for ``jax.nn.dot_product_attention``.
+                ``None`` (default) auto-detects ``'cudnn'`` on GPU and ``'xla'``
+                on CPU. Pass ``'xla'`` or ``'cudnn'`` to override.
         """
 
         self.activation = activation
@@ -208,6 +217,8 @@ class NCSNpp(eqx.Module):
                             num_groups=num_groups,
                             skip_rescale=skip_rescale,
                             key=attn_key,
+                            attention_dtype=attention_dtype,
+                            implementation=attention_implementation,
                         )
                     )
                     enc_is_attn.append(True)
@@ -252,11 +263,13 @@ class NCSNpp(eqx.Module):
             mid1_key,
         )
         self.mid_attn = AttnBlockNCSN(
-            ch_bot,
-            num_heads,
-            num_groups,
-            skip_rescale,
-            attn_key,
+            channels=ch_bot,
+            num_heads=num_heads,
+            num_groups=num_groups,
+            skip_rescale=skip_rescale,
+            key=attn_key,
+            attention_dtype=attention_dtype,
+            implementation=attention_implementation,
         )
         self.mid_block2 = ResBlockBigGAN(
             ch_bot,
@@ -304,11 +317,13 @@ class NCSNpp(eqx.Module):
                     attn_key, key = jax.random.split(key)
                     dec_blocks.append(
                         AttnBlockNCSN(
-                            ch_out,
-                            num_heads,
-                            num_groups,
-                            skip_rescale,
+                            channels=ch_out,
+                            num_heads=num_heads,
+                            num_groups=num_groups,
+                            skip_rescale=skip_rescale,
                             key=attn_key,
+                            attention_dtype=attention_dtype,
+                            implementation=attention_implementation,
                         )
                     )
                     dec_is_attn.append(True)
