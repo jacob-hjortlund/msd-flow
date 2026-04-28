@@ -7,6 +7,7 @@ Each transform is a callable class with ``__init__`` for parameters and
 
 import os
 import json
+import torchvision
 
 import numpy as np
 import pandas as pd
@@ -152,9 +153,7 @@ def build_image_percentiles(
         per-image percentile values. Order is unspecified when
         ``n_workers > 0`` (uses ``imap_unordered``).
     """
-    args = [
-        (data_dir, fn, transforms, percentile, positive_only) for fn in filenames
-    ]
+    args = [(data_dir, fn, transforms, percentile, positive_only) for fn in filenames]
 
     if n_workers <= 0:
         results = []
@@ -180,11 +179,30 @@ def build_image_percentiles(
     return np.asarray(results)
 
 
+def parse_transform_names(
+    transform,
+):
+    """
+    Recursively extract transform class names from torchvision Compose objects
+    and transform-like objects that themselves contain a `.transforms` attribute.
+    """
+    names = []
+
+    if isinstance(transform, torchvision.transforms.Compose):
+        for t in transform.transforms:
+            names.extend(parse_transform_names(t))
+        return names
+    elif transform is not None:
+        names.append(transform.__class__.__name__)
+    return names
+
+
 def _tdigest_cache_suffix(
     img_size: int,
     split: str | None,
     sample_fraction: float | None = None,
     sample_seed: int = 42,
+    transforms=None,
 ) -> str:
     """Build the suffix for a tdigest cache filename.
 
@@ -201,6 +219,10 @@ def _tdigest_cache_suffix(
     suffix += f"_{split}" if split is not None else ""
     if sample_fraction is not None:
         suffix += f"_s{sample_fraction}_seed{sample_seed}"
+    if transforms is not None:
+        transform_names = parse_transform_names(transforms)
+        if transform_names:
+            suffix += "_" + "_".join(transform_names)
     return suffix
 
 
@@ -258,8 +280,10 @@ class ClipAndPad:
         n: Target side length in pixels.
     """
 
-    def __init__(self, n: int = 512):
+    def __init__(self, n: int = 512, mode: str = "reflect", mode_kwargs: dict = None):
         self.n = n
+        self.mode = mode
+        self.mode_kwargs = mode_kwargs if mode_kwargs is not None else {}
 
     def __call__(self, img: np.ndarray) -> np.ndarray:
         """Apply pad and crop.
@@ -281,7 +305,7 @@ class ClipAndPad:
                 (top, pad_h - top),
                 (left, pad_w - left),
             ]
-            img = np.pad(img, pad_widths, mode="constant", constant_values=0)
+            img = np.pad(img, pad_widths, mode=self.mode, **self.mode_kwargs)
 
         cy, cx = img.shape[-2] // 2, img.shape[-1] // 2
         half = n // 2
@@ -433,7 +457,7 @@ class ArcsinhStretch:
             ).shape[-1]
 
             suffix = _tdigest_cache_suffix(
-                img_size, split, sample_fraction, sample_seed
+                img_size, split, sample_fraction, sample_seed, transforms
             )
             tdigest_path = os.path.join(self.cache_dir, f"arcsinh_tdigest{suffix}.json")
 
@@ -484,6 +508,132 @@ class ArcsinhStretch:
             Stretched array, same shape as input.
         """
         return np.arcsinh(img / self.scale)
+
+
+class GlobalPercentileClip:
+    """Linearly map a dataset from a global [min, max] to [norm_min, norm_max].
+
+    This preserves relative intensity across the dataset while mapping
+    outputs to a stable range (e.g., [-1, 1]) for generative training.
+    The scale factors are global constants, so the operation is invertible.
+
+    Global bounds can be supplied directly or estimated from the dataset via
+    a TDigest. When ``split`` is set, only files whose ``split`` column
+    matches are used to build the TDigest, so statistics come from training
+    data only.
+
+    Args:
+        global_min: Lower bound of the input range. If ``None``, derived
+            from ``digest.min()`` over the dataset.
+        global_max: Upper bound of the input range. If ``None``, derived
+            from ``digest.max()`` over the dataset.
+        norm_min: Lower bound of the output range. Defaults to ``-1.0``.
+        norm_max: Upper bound of the output range. Defaults to ``1.0``.
+        transforms: Pipeline applied to each image before accumulating into
+            the TDigest. Defaults to identity.
+        percentile: Controls TDigest cache filename. Required when either
+            bound is ``None``.
+        data_dir: Directory containing ``metadata.csv`` and ``.npy`` files.
+            Required when either bound is ``None``.
+        split: Split name used to filter ``metadata.csv`` when building the
+            TDigest. Defaults to ``"train"``. Pass ``None`` to use all rows.
+        sample_fraction: Fraction of the filtered file list to use when
+            building the TDigest. ``None`` uses all files. Defaults to
+            ``None``.
+        sample_seed: RNG seed for reproducible sampling. Only used when
+            ``sample_fraction`` is set. Defaults to ``42``.
+        n_workers: Number of multiprocessing workers for TDigest
+            computation. ``0`` means serial. Defaults to ``0``.
+        cache_dir: Directory for writing/reading tdigest cache files.
+            Falls back to ``data_dir`` when ``None``. Defaults to ``None``.
+    """
+
+    def __init__(
+        self,
+        transforms=None,
+        percentile=None,
+        data_dir: str = None,
+        split: str | None = "train",
+        sample_fraction: float | None = None,
+        sample_seed: int = 42,
+        n_workers: int = 0,
+        cache_dir: str | None = None,
+    ):
+
+        if transforms is None:
+            transforms = _identity
+        self.transforms = transforms
+        self.data_dir = data_dir
+        self.split = split
+        self.sample_fraction = sample_fraction
+        self.sample_seed = sample_seed
+        self.n_workers = n_workers
+        self.cache_dir = cache_dir if cache_dir is not None else data_dir
+
+        csv_path = os.path.join(data_dir, "metadata.csv")
+        metadata = pd.read_csv(csv_path)
+        filename = metadata["filename"].iloc[0]
+        img_size = _process_single_file(
+            data_dir=data_dir, filename=filename, transforms=transforms
+        ).shape[-1]
+
+        suffix = _tdigest_cache_suffix(
+            img_size, split, sample_fraction, sample_seed, transforms
+        )
+        tdigest_path = os.path.join(
+            self.cache_dir,
+            f"global_clip_tdigest_{int(percentile)}{suffix}.json",
+        )
+
+        if os.path.isfile(tdigest_path):
+            with open(tdigest_path, "r") as fp:
+                digest_dict = json.load(fp)
+            digest = TDigest.from_dict(digest_dict)
+        else:
+            digest = self._build_tdigest()
+            digest_dict = digest.to_dict()
+            with open(tdigest_path, "w") as fp:
+                json.dump(digest_dict, fp, indent=2)
+
+        clip = digest.percentile(p=percentile)
+        self.clip = clip
+
+    def _build_tdigest(self) -> TDigest:
+        """Build a TDigest over all pixel values in the dataset.
+
+        Reads filenames from ``metadata.csv`` (filtered to ``self.split`` if
+        set), applies ``self.transforms`` to each image, and accumulates all
+        pixel values into the digest to estimate global min/max.
+
+        Returns:
+            Fitted ``TDigest`` instance.
+        """
+        csv_path = os.path.join(self.data_dir, "metadata.csv")
+        metadata = pd.read_csv(csv_path)
+        if self.split is not None:
+            metadata = metadata[metadata["split"] == self.split]
+        filenames = metadata["filename"].tolist()
+        filenames = _sample_filenames(filenames, self.sample_fraction, self.sample_seed)
+
+        return build_tdigest(
+            data_dir=self.data_dir,
+            filenames=filenames,
+            transforms=self.transforms,
+            pixel_filter=_flatten,
+            n_workers=self.n_workers,
+        )
+
+    def __call__(self, img: np.ndarray) -> np.ndarray:
+        """Apply global linear normalization.
+
+        Args:
+            img: ``(C, H, W)`` array.
+
+        Returns:
+            Array mapped to ``[norm_min, norm_max]``, same shape as input.
+        """
+
+        return np.clip(img, a_min=0, a_max=self.clip)
 
 
 class GlobalNorm:
@@ -565,7 +715,7 @@ class GlobalNorm:
             ).shape[-1]
 
             suffix = _tdigest_cache_suffix(
-                img_size, split, sample_fraction, sample_seed
+                img_size, split, sample_fraction, sample_seed, transforms
             )
             tdigest_path = os.path.join(
                 self.cache_dir,
@@ -776,7 +926,67 @@ class ClusterClip:
         if use_clip:
             self.max = clip
 
-        # Derived mode is implemented in the next task.
+        if use_percentile:
+            csv_path = os.path.join(data_dir, "metadata.csv")
+            metadata = pd.read_csv(csv_path)
+            filename = metadata["filename"].iloc[0]
+            img_size = _process_single_file(
+                data_dir=data_dir, filename=filename, transforms=transforms
+            ).shape[-1]
+
+            suffix = _tdigest_cache_suffix(
+                img_size, split, sample_fraction, sample_seed, transforms
+            )
+            pos_tag = "_pos" if positive_only else ""
+            cache_path = os.path.join(
+                self.cache_dir,
+                f"cluster_clip_p{percentile}{pos_tag}{suffix}.json",
+            )
+
+            if os.path.isfile(cache_path):
+                with open(cache_path, "r") as fp:
+                    payload = json.load(fp)
+                self.max = float(payload["clip"])
+            else:
+                self.max = self._fit_max()
+                payload = {
+                    "clip": self.max,
+                    "percentile": percentile,
+                    "positive_only": positive_only,
+                }
+                with open(cache_path, "w") as fp:
+                    json.dump(payload, fp, indent=2)
+
+    def _fit_max(self) -> float:
+        """Fit KMeans on per-image percentiles and return the midpoint.
+
+        Returns:
+            Midpoint of the two ``KMeans(n_clusters=2)`` cluster centres,
+            used as ``self.max``.
+        """
+        csv_path = os.path.join(self.data_dir, "metadata.csv")
+        metadata = pd.read_csv(csv_path)
+        if self.split is not None:
+            metadata = metadata[metadata["split"] == self.split]
+        filenames = metadata["filename"].tolist()
+        filenames = _sample_filenames(filenames, self.sample_fraction, self.sample_seed)
+
+        percentiles = build_image_percentiles(
+            data_dir=self.data_dir,
+            filenames=filenames,
+            transforms=self.transforms,
+            percentile=self.percentile,
+            positive_only=self.positive_only,
+            n_workers=self.n_workers,
+        )
+
+        eps = 1e-8
+        z = np.log10(percentiles + eps)
+        kmeans = KMeans(n_clusters=2, random_state=self.sample_seed)
+        kmeans.fit(z.reshape(-1, 1))
+        log_boundary = float(np.sum(kmeans.cluster_centers_) / 2)
+        boundary = 10**log_boundary - eps
+        return boundary
 
     def __call__(self, img: np.ndarray) -> np.ndarray:
         """Apply the clip.
