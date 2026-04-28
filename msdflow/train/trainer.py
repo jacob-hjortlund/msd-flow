@@ -702,6 +702,9 @@ def train(
                     images=images,
                     epoch=epoch + 1,
                     title="Model Samples",
+                    share_clim=samples_share_clim,
+                    plot_method=samples_plot_method,
+                    arcsinh_percentile=samples_arcsinh_percentile,
                 )
 
         epoch_time = time.perf_counter() - epoch_start_time
