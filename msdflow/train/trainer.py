@@ -371,6 +371,9 @@ def train(
     sample_fn=None,
     sample_every: int = 0,
     num_samples: int = 4,
+    samples_share_clim: bool = False,
+    samples_plot_method: str = "arcsinh",
+    samples_arcsinh_percentile: float = 10.0,
     samples_dir: str | None = None,
     monitor: str = "flow_matching_loss",
     monitor_mode: str = "min",
@@ -465,11 +468,11 @@ def train(
     if grad_accum_steps > 1:
         optimizer = optax.MultiSteps(optimizer, every_k_schedule=grad_accum_steps)
 
-    ref_images = []                                                   
-    for images_np, _ in val_dataloader:                                                        
+    ref_images = []
+    for images_np, _ in val_dataloader:
         ref_images.append(np.asarray(images_np))
-        if sum(len(b) for b in ref_images) >= num_samples:                                     
-            break                                                                             
+        if sum(len(b) for b in ref_images) >= num_samples:
+            break
     ref_images = np.concatenate(ref_images, axis=0)[:num_samples].squeeze()
     ref_samples_dir = os.path.join(samples_dir, f"reference")
     if clearml_task is None:
@@ -481,7 +484,10 @@ def train(
             task=clearml_task,
             images=ref_images,
             epoch=1,
-            title="Reference Samples"
+            title="Reference Samples",
+            share_clim=samples_share_clim,
+            plot_method=samples_plot_method,
+            arcsinh_percentile=samples_arcsinh_percentile,
         )
 
     state = make_train_state(model, optimizer)
@@ -695,7 +701,7 @@ def train(
                     task=clearml_task,
                     images=images,
                     epoch=epoch + 1,
-                    title="Model Samples"
+                    title="Model Samples",
                 )
 
         epoch_time = time.perf_counter() - epoch_start_time

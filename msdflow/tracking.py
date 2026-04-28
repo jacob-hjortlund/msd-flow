@@ -355,12 +355,12 @@ def plot_image_grid_subplots(
     arcsinh_percentile=10,
     cmap="gray",
     figsize=None,
-    share_clim=True,
+    share_clim=False,
     vmin=None,
     vmax=None,
     title=None,
-    wspace=0.02,
-    hspace=0.02,
+    wspace=0.0,
+    hspace=0.0,
 ):
     images = prepare_images_for_plotting(
         images,
@@ -423,6 +423,7 @@ def log_samples(
     title: str,
     plot_method: str = "log",
     arcsinh_percentile=10,
+    share_clim=False,
 ) -> None:
     """Upload generated sample images to ClearML.
 
@@ -433,6 +434,7 @@ def log_samples(
         title: Name of samples being logged
         plot_method: Method to use for plotting ('uint8', 'log', 'arcsinh').
         arcsinh_percentile: Percentile used as the arcsinh softening scale.
+        share_clim: Whether to use the same color limits for all images in the grid.
     """
     if task is None:
         return
@@ -442,7 +444,7 @@ def log_samples(
     fig, axes = plot_image_grid_subplots(
         images,
         plot_method=plot_method,
-        share_clim=False,
+        share_clim=share_clim,
         hspace=0,
         wspace=0,
         cmap=cmr.cosmic,
