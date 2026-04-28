@@ -7,6 +7,7 @@ import jax.numpy as jnp
 
 from msdflow.model.blocks import ResBlock
 from msdflow.model.blocks import AttentionBlock
+from msdflow.model.blocks import RALAAttentionBlock
 from msdflow.model.blocks import SinusoidalEmbedding
 from msdflow.model.blocks import Downsample, Upsample
 
@@ -180,6 +181,48 @@ def test_attention_block_bfloat16_close_to_fp32():
     out_fp32 = block_fp32(x)
     out_bf16 = block_bf16(x)
     assert jnp.allclose(out_fp32, out_bf16, atol=5e-2)
+
+
+def test_rala_attention_block_preserves_shape():
+    """Verify RALA attention output shape matches input shape."""
+    block = RALAAttentionBlock(channels=8, num_heads=2, key=KEY)
+    x = jnp.ones((8, 4, 4))
+    out = block(x)
+    assert out.shape == (8, 4, 4)
+
+
+def test_rala_attention_block_output_finite():
+    """Verify RALA attention output contains only finite values."""
+    block = RALAAttentionBlock(channels=8, num_heads=2, key=KEY)
+    k, _ = jax.random.split(KEY)
+    x = jax.random.normal(k, (8, 4, 4))
+    out = block(x)
+    assert jnp.all(jnp.isfinite(out))
+
+
+def test_rala_attention_block_invalid_num_heads_raises():
+    """channels not divisible by num_heads raises ValueError."""
+    with pytest.raises(ValueError, match="num_heads"):
+        RALAAttentionBlock(channels=8, num_heads=3, key=KEY)
+
+
+def test_rala_attention_block_invalid_rope_head_dim_raises():
+    """RALA requires head_dim divisible by 4 for 2D RoPE."""
+    with pytest.raises(ValueError, match="divisible by 4"):
+        RALAAttentionBlock(channels=12, num_heads=2, key=KEY)
+
+
+def test_rala_attention_block_bfloat16_preserves_input_dtype():
+    """attention_dtype=bfloat16 still returns output in the input dtype."""
+    block = RALAAttentionBlock(
+        channels=8, num_heads=2, key=KEY, attention_dtype=jnp.bfloat16
+    )
+    k, _ = jax.random.split(KEY)
+    x = jax.random.normal(k, (8, 4, 4)).astype(jnp.float32)
+    out = block(x)
+    assert out.shape == x.shape
+    assert out.dtype == jnp.float32
+    assert jnp.all(jnp.isfinite(out))
 
 
 from msdflow.model.blocks import GaussianFourierProjection
@@ -396,3 +439,32 @@ def test_attn_block_ncsn_implementation_passthrough():
         implementation="xla",
     )
     assert block.attn.implementation == "xla"
+
+
+def test_attn_block_ncsn_attention_type_rala():
+    """AttnBlockNCSN can wrap RALAAttentionBlock."""
+    block = AttnBlockNCSN(
+        channels=8,
+        num_heads=2,
+        num_groups=2,
+        skip_rescale=True,
+        key=KEY,
+        attention_type="rala",
+    )
+    assert isinstance(block.attn, RALAAttentionBlock)
+    x = jnp.ones((8, 4, 4))
+    out = block(x)
+    assert out.shape == x.shape
+
+
+def test_attn_block_ncsn_invalid_attention_type_raises():
+    """Unknown attention_type raises ValueError."""
+    with pytest.raises(ValueError, match="attention_type"):
+        AttnBlockNCSN(
+            channels=8,
+            num_heads=2,
+            num_groups=2,
+            skip_rescale=True,
+            key=KEY,
+            attention_type="unknown",
+        )

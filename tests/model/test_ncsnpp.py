@@ -6,6 +6,7 @@ import pytest
 import equinox as eqx
 import jax.numpy as jnp
 
+from msdflow.model.blocks import RALAAttentionBlock
 from msdflow.model.ncsnpp import NCSNpp
 
 KEY = jax.random.PRNGKey(42)
@@ -237,6 +238,44 @@ def test_ncsnpp_attention_dtype_bfloat16_smoke():
     assert out.shape == (1, 8, 8)
     assert out.dtype == jnp.float32
     assert jnp.all(jnp.isfinite(out))
+
+
+def test_ncsnpp_attention_type_rala_smoke():
+    """NCSNpp with attention_type=rala builds and returns finite float32 output."""
+    cfg = dict(SMALL_CFG)
+    cfg["attention_type"] = "rala"
+    cfg["num_heads"] = 2
+    model = NCSNpp(**cfg, key=KEY)
+    x = jnp.ones((1, 8, 8), dtype=jnp.float32)
+    out = model(jnp.array(0.5), x, jnp.empty(0), jnp.array(False), jax.random.PRNGKey(0))
+    assert out.shape == (1, 8, 8)
+    assert out.dtype == jnp.float32
+    assert jnp.all(jnp.isfinite(out))
+
+
+def test_ncsnpp_attention_type_passthrough_rala():
+    """attention_type=rala reaches every AttnBlockNCSN construction site."""
+    cfg = dict(SMALL_CFG)
+    cfg["attention_type"] = "rala"
+    cfg["num_heads"] = 2
+    model = NCSNpp(**cfg, key=KEY)
+    encoder_attn_blocks = [
+        block
+        for block, is_attn in zip(model.encoder_blocks, model.encoder_is_attn)
+        if is_attn
+    ]
+    mid_attn_blocks = [model.mid_attn]
+    decoder_attn_blocks = [
+        block
+        for block, is_attn in zip(model.decoder_blocks, model.decoder_is_attn)
+        if is_attn
+    ]
+    assert encoder_attn_blocks
+    assert mid_attn_blocks
+    assert decoder_attn_blocks
+
+    attn_blocks = encoder_attn_blocks + mid_attn_blocks + decoder_attn_blocks
+    assert all(isinstance(block.attn, RALAAttentionBlock) for block in attn_blocks)
 
 
 def test_ncsnpp_attention_implementation_passthrough():
