@@ -197,9 +197,14 @@ class AttentionBlock(eqx.Module):
     call, before the output projection.
 
     The attention backend is selected by ``implementation``: when ``None`` (the
-    default), it auto-detects ``'cudnn'`` on GPU and ``'xla'`` on CPU. Note that
-    the cuDNN flash backend imposes head-dim constraints (typically a multiple
-    of 8 and bounded above; cuDNN-version-dependent). If the configured
+    default), it auto-detects ``'cudnn'`` on GPU and ``'xla'`` on CPU. The
+    backend is resolved once at construction (via ``jax.devices()[0].platform``)
+    and stored as a static field, so it does not adapt if the model is later
+    moved between devices. If you construct on CPU and run on GPU (or vice
+    versa), pass ``implementation='cudnn'`` or ``implementation='xla'``
+    explicitly to override auto-detection. Note that the cuDNN flash backend
+    imposes head-dim constraints (typically a multiple of 8 and bounded above;
+    cuDNN-version-dependent). If the configured
     ``head_dim = channels // num_heads`` is not supported by cuDNN flash, the
     cuDNN error will surface at run time — increase ``num_heads`` to reduce
     ``head_dim``.
