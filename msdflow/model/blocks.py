@@ -187,6 +187,90 @@ def _apply_linear(linear: eqx.nn.Linear, x: jax.Array) -> jax.Array:
     return out
 
 
+def _apply_conv2d(conv: eqx.nn.Conv2d, x: jax.Array) -> jax.Array:
+    """Apply a convolution with parameter copies cast to the input dtype.
+
+    Args:
+        conv: Equinox convolution layer.
+        x: Input array of shape ``(C, H, W)``.
+
+    Returns:
+        Convolution output in ``x.dtype``.
+    """
+    weight = conv.weight.astype(x.dtype)
+    bias = None if conv.bias is None else conv.bias.astype(x.dtype)
+    cast_conv = eqx.tree_at(lambda c: (c.weight, c.bias), conv, (weight, bias))
+    return cast_conv(x)
+
+
+def _rotate_every_two(x: jax.Array) -> jax.Array:
+    """Rotate adjacent feature pairs for RALA rotary embeddings.
+
+    Args:
+        x: Input array with an even final dimension.
+
+    Returns:
+        Array with each adjacent feature pair rotated.
+    """
+    x1 = x[..., ::2]
+    x2 = x[..., 1::2]
+    return jnp.stack([-x2, x1], axis=-1).reshape(x.shape)
+
+
+def _rala_2d_rope_factors(
+    height: int,
+    width: int,
+    head_dim: int,
+    dtype: jnp.dtype,
+) -> tuple[jax.Array, jax.Array]:
+    """Build the official RALA 2D RoPE sine and cosine factors.
+
+    Args:
+        height: Spatial height.
+        width: Spatial width.
+        head_dim: Per-head channel dimension.
+        dtype: Output dtype.
+
+    Returns:
+        Tuple ``(sin, cos)`` with shape ``(height * width, head_dim)``.
+    """
+    base = jnp.linspace(0.0, 1.0, head_dim // 4, dtype=jnp.float32)
+    angle = 1.0 / (10000.0**base)
+    angle = jnp.repeat(angle[:, None], 2, axis=1).reshape(-1)
+
+    index_h = jnp.arange(height, dtype=jnp.float32)
+    index_w = jnp.arange(width, dtype=jnp.float32)
+    sin_h = jnp.sin(index_h[:, None] * angle[None, :])
+    sin_w = jnp.sin(index_w[:, None] * angle[None, :])
+    cos_h = jnp.cos(index_h[:, None] * angle[None, :])
+    cos_w = jnp.cos(index_w[:, None] * angle[None, :])
+
+    sin_h = jnp.repeat(sin_h[:, None, :], width, axis=1)
+    sin_w = jnp.repeat(sin_w[None, :, :], height, axis=0)
+    cos_h = jnp.repeat(cos_h[:, None, :], width, axis=1)
+    cos_w = jnp.repeat(cos_w[None, :, :], height, axis=0)
+
+    sin = jnp.concatenate([sin_h, sin_w], axis=-1).reshape(height * width, head_dim)
+    cos = jnp.concatenate([cos_h, cos_w], axis=-1).reshape(height * width, head_dim)
+    return sin.astype(dtype), cos.astype(dtype)
+
+
+def _theta_shift(x: jax.Array, sin: jax.Array, cos: jax.Array) -> jax.Array:
+    """Apply the official RALA rotary shift to token features.
+
+    Args:
+        x: Input array of shape ``(heads, tokens, head_dim)``.
+        sin: Sine factors of shape ``(tokens, head_dim)``.
+        cos: Cosine factors of shape ``(tokens, head_dim)``.
+
+    Returns:
+        Rotary-shifted array with the same shape as ``x``.
+    """
+    sin = sin[None, :, :]
+    cos = cos[None, :, :]
+    return (x * cos) + (_rotate_every_two(x) * sin)
+
+
 class AttentionBlock(eqx.Module):
     """Self-attention over spatial tokens using ``jax.nn.dot_product_attention``.
 
@@ -289,6 +373,122 @@ class AttentionBlock(eqx.Module):
         attn_out = attn_out.reshape(h * w, c).astype(orig_dtype)
         out = _apply_linear(self.out_proj, attn_out)  # (T, C) in orig_dtype
         return out.T.reshape(c, h, w)
+
+
+class RALAAttentionBlock(eqx.Module):
+    """Rank-Augmented Linear Attention over spatial tokens.
+
+    This ports the official RALA ``GateLinearAttentionNoSilu`` block to
+    JAX/Equinox for unbatched ``(C, H, W)`` tensors.
+
+    Attributes:
+        qkvo: Joint 1x1 convolution for query, key, value, and output gate.
+        lepe: Depthwise local positional encoding convolution over values.
+        proj: Output 1x1 projection.
+        num_heads: Number of attention heads.
+        head_dim: Per-head channel dimension.
+        attention_dtype: Dtype used for projection and attention math.
+        scale: Rank-augmentation attention scale.
+    """
+
+    qkvo: eqx.nn.Conv2d
+    lepe: eqx.nn.Conv2d
+    proj: eqx.nn.Conv2d
+    num_heads: int = eqx.field(static=True)
+    head_dim: int = eqx.field(static=True)
+    attention_dtype: jnp.dtype = eqx.field(static=True)
+    scale: float = eqx.field(static=True)
+
+    def __init__(
+        self,
+        channels: int,
+        num_heads: int,
+        key: jax.Array,
+        *,
+        attention_dtype: jnp.dtype = jnp.float32,
+    ):
+        """Initialise the RALA attention projections.
+
+        Args:
+            channels: Channel dimension.
+            num_heads: Number of attention heads. Must divide ``channels``.
+            key: JAX PRNG key.
+            attention_dtype: Dtype used for RALA projections and attention math.
+
+        Raises:
+            ValueError: If ``channels`` is not divisible by ``num_heads`` or if
+                the per-head dimension is not divisible by 4 for 2D RoPE.
+        """
+        if channels % num_heads != 0:
+            raise ValueError(
+                f"channels={channels} must be divisible by num_heads={num_heads}."
+            )
+        head_dim = channels // num_heads
+        if head_dim % 4 != 0:
+            raise ValueError(
+                f"RALA head_dim={head_dim} must be divisible by 4 for 2D RoPE."
+            )
+
+        kqkvo, klepe, kproj = jax.random.split(key, 3)
+        self.qkvo = eqx.nn.Conv2d(channels, channels * 4, 1, key=kqkvo)
+        self.lepe = eqx.nn.Conv2d(
+            channels, channels, 5, padding=2, groups=channels, key=klepe
+        )
+        self.proj = eqx.nn.Conv2d(channels, channels, 1, key=kproj)
+        self.num_heads = num_heads
+        self.head_dim = head_dim
+        self.attention_dtype = attention_dtype
+        self.scale = head_dim**-0.5
+
+    def __call__(self, x: jax.Array) -> jax.Array:
+        """Apply RALA over spatial positions.
+
+        Args:
+            x: Input array of shape ``(C, H, W)``.
+
+        Returns:
+            Attention output of shape ``(C, H, W)`` with the same dtype as ``x``.
+        """
+        channels, height, width = x.shape
+        tokens = height * width
+        orig_dtype = x.dtype
+        x_attn = x.astype(self.attention_dtype)
+
+        qkvo = _apply_conv2d(self.qkvo, x_attn)
+        qkv = qkvo[: 3 * channels]
+        gate = qkvo[3 * channels :]
+        value_map = qkv[2 * channels :]
+        lepe = _apply_conv2d(self.lepe, value_map)
+
+        q, k, v = jnp.split(qkv, 3, axis=0)
+        q = q.reshape(self.num_heads, self.head_dim, tokens).transpose(0, 2, 1)
+        k = k.reshape(self.num_heads, self.head_dim, tokens).transpose(0, 2, 1)
+        v = v.reshape(self.num_heads, self.head_dim, tokens).transpose(0, 2, 1)
+
+        q = jax.nn.elu(q) + 1.0
+        k = jax.nn.elu(k) + 1.0
+
+        q_mean = jnp.mean(q, axis=1, keepdims=True)
+        eff = self.scale * (q_mean @ jnp.swapaxes(k, -1, -2))
+        eff = jax.nn.softmax(eff, axis=-1)
+        k = k * jnp.swapaxes(eff, -1, -2) * tokens
+
+        sin, cos = _rala_2d_rope_factors(
+            height, width, self.head_dim, self.attention_dtype
+        )
+        q_rope = _theta_shift(q, sin, cos)
+        k_rope = _theta_shift(k, sin, cos)
+
+        k_mean = jnp.mean(k, axis=1, keepdims=True)
+        z = 1.0 / ((q @ jnp.swapaxes(k_mean, -1, -2)) + 1e-6)
+        token_scale = tokens**-0.5
+        kv = (jnp.swapaxes(k_rope, -1, -2) * token_scale) @ (v * token_scale)
+
+        out = (q_rope @ kv) * z
+        out = out.transpose(0, 2, 1).reshape(channels, height, width)
+        out = out + lepe
+        out = _apply_conv2d(self.proj, out * gate)
+        return out.astype(orig_dtype)
 
 
 class GaussianFourierProjection(eqx.Module):
@@ -461,12 +661,15 @@ class ResBlockBigGAN(eqx.Module):
 class AttnBlockNCSN(eqx.Module):
     """Self-attention block with GroupNorm pre-norm and skip rescaling.
 
-    Wraps :class:`AttentionBlock` with GroupNorm pre-normalization and a
-    residual connection optionally scaled by 1/sqrt(2).
+    Wraps a selected spatial attention algorithm with GroupNorm
+    pre-normalization and a residual connection optionally scaled by 1/sqrt(2).
+    ``attention_type="dot_product"`` preserves the existing
+    :class:`AttentionBlock` behavior, while ``attention_type="rala"`` uses
+    :class:`RALAAttentionBlock`.
     """
 
     norm: eqx.nn.GroupNorm
-    attn: AttentionBlock
+    attn: AttentionBlock | RALAAttentionBlock
     skip_rescale: bool = eqx.field(static=True)
 
     def __init__(
@@ -479,6 +682,7 @@ class AttnBlockNCSN(eqx.Module):
         *,
         attention_dtype: jnp.dtype = jnp.float32,
         implementation: Optional[str] = None,
+        attention_type: str = "dot_product",
     ):
         """Args:
         channels: Channel dimension.
@@ -491,16 +695,37 @@ class AttnBlockNCSN(eqx.Module):
             GroupNorm pre-norm and residual sum run in the input's dtype.
         implementation: Backend for the inner ``AttentionBlock``. ``None``
             auto-detects ``'cudnn'`` on GPU, ``'xla'`` otherwise.
+            Only used when ``attention_type`` is ``"dot_product"``.
+        attention_type: Attention algorithm selector. Choose ``"dot_product"``
+            for :class:`AttentionBlock` or ``"rala"`` for
+            :class:`RALAAttentionBlock`.
+
+        Raises:
+            ValueError: If ``attention_type`` is not ``"dot_product"`` or
+                ``"rala"``.
         """
         self.skip_rescale = skip_rescale
         self.norm = eqx.nn.GroupNorm(num_groups, channels)
-        self.attn = AttentionBlock(
-            channels=channels,
-            num_heads=num_heads,
-            key=key,
-            attention_dtype=attention_dtype,
-            implementation=implementation,
-        )
+        if attention_type == "dot_product":
+            self.attn = AttentionBlock(
+                channels=channels,
+                num_heads=num_heads,
+                key=key,
+                attention_dtype=attention_dtype,
+                implementation=implementation,
+            )
+        elif attention_type == "rala":
+            self.attn = RALAAttentionBlock(
+                channels=channels,
+                num_heads=num_heads,
+                key=key,
+                attention_dtype=attention_dtype,
+            )
+        else:
+            raise ValueError(
+                f"attention_type={attention_type!r} is not supported; "
+                "choose 'dot_product' or 'rala'."
+            )
 
     def __call__(self, x: jax.Array) -> jax.Array:
         """Apply self-attention over spatial positions.
