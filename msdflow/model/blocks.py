@@ -367,18 +367,14 @@ class ResBlockBigGAN(eqx.Module):
 
 
 class AttnBlockNCSN(eqx.Module):
-    """Self-attention block with GroupNorm and skip rescaling.
+    """Self-attention block with GroupNorm pre-norm and skip rescaling.
 
-    Projects input to Q, K, V via 1x1 convolutions (NIN), applies
-    scaled dot-product self-attention, and adds a residual connection
-    optionally scaled by 1/sqrt(2).
+    Wraps :class:`AttentionBlock` with GroupNorm pre-normalization and a
+    residual connection optionally scaled by 1/sqrt(2).
     """
 
     norm: eqx.nn.GroupNorm
-    qkv_proj: eqx.nn.Conv2d
-    out_proj: eqx.nn.Conv2d
-    channels: int = eqx.field(static=True)
-    num_heads: int = eqx.field(static=True)
+    attn: AttentionBlock
     skip_rescale: bool = eqx.field(static=True)
 
     def __init__(
@@ -396,13 +392,9 @@ class AttnBlockNCSN(eqx.Module):
         skip_rescale: If True, divide residual sum by sqrt(2).
         key: JAX PRNG key.
         """
-        k1, k2 = jax.random.split(key)
-        self.channels = channels
-        self.num_heads = num_heads
         self.skip_rescale = skip_rescale
         self.norm = eqx.nn.GroupNorm(num_groups, channels)
-        self.qkv_proj = eqx.nn.Conv2d(channels, channels * 3, 1, key=k1)
-        self.out_proj = eqx.nn.Conv2d(channels, channels, 1, key=k2)
+        self.attn = AttentionBlock(channels=channels, num_heads=num_heads, key=key)
 
     def __call__(self, x: jax.Array) -> jax.Array:
         """Apply self-attention over spatial positions.
@@ -413,29 +405,10 @@ class AttnBlockNCSN(eqx.Module):
         Returns:
             Output of shape ``(C, H, W)``.
         """
-        c, h, w = x.shape
         residual = x
-
-        x_norm = self.norm(x)
-        qkv = self.qkv_proj(x_norm)  # (3*C, H, W)
-        qkv = qkv.reshape(3, c, h * w)  # (3, C, N)
-        q, k, v = qkv[0], qkv[1], qkv[2]  # each (C, N)
-
-        head_dim = c // self.num_heads
-        scale = head_dim ** (-0.5)
-
-        q = q.reshape(self.num_heads, head_dim, h * w)
-        k = k.reshape(self.num_heads, head_dim, h * w)
-        v = v.reshape(self.num_heads, head_dim, h * w)
-
-        attn = jnp.einsum("hdn,hdm->hnm", q, k) * scale
-        attn = jax.nn.softmax(attn, axis=-1)
-
-        out = jnp.einsum("hnm,hdm->hdn", attn, v)
-        out = out.reshape(c, h, w)
-
-        out = self.out_proj(out)
-        out = out + residual
+        h = self.norm(x)
+        h = self.attn(h)
+        out = h + residual
         if self.skip_rescale:
             out = out / jnp.sqrt(2.0)
         return out
