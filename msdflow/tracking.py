@@ -5,9 +5,15 @@ rest of the pipeline to call them unconditionally.
 """
 
 import os
+import math
 import logging
+import matplotlib
+
+matplotlib.use("Agg", force=True)  # safe non-interactive backend
 
 import numpy as np
+import cmasher as cmr
+import matplotlib.pyplot as plt
 
 from typing import Any
 from tqdm.contrib.logging import logging_redirect_tqdm
@@ -287,69 +293,137 @@ def log_checkpoint(task: Any, path: str, epoch: int) -> None:
     task.upload_artifact(name=f"checkpoint_epoch_{epoch}", artifact_object=path)
 
 
-def make_image_grid(images, pad_value=0, padding=2):
+def prepare_images_for_plotting(
+    images,
+    plot_method: str = "log",
+    arcsinh_percentile=10,
+    eps=1e-8,
+):
     """
-    Create a square grid from grayscale images.
+    Prepare grayscale images before plotting.
 
     Parameters
     ----------
     images : np.ndarray
         Array of shape (N, H, W).
-        Can be uint8 in [0, 255], or float in [0, 1] / [-1, 1].
-    pad_value : int, optional
-        Value used for empty cells and padding, by default 0.
-    padding : int, optional
-        Number of pixels between images, by default 2.
+    plot_method : str
+        Method to use for plotting ('uint8', 'log' 'arcsinh').
+    arcsinh_percentile : float
+        Percentile used as the arcsinh softening scale.
+    eps : float
+        Small value to avoid division by zero.
 
     Returns
     -------
     np.ndarray
-        Grid image of shape (H_grid, W_grid), dtype uint8.
+        Prepared images of shape (N, H, W).
     """
-    import math
-
     images = np.asarray(images)
 
     if images.ndim != 3:
         raise ValueError(f"Expected images with shape (N, H, W), got {images.shape}")
 
-    # Convert to uint8 if needed
-    if images.dtype != np.uint8:
-        images = images.astype(np.float32)
+    images = images.copy()
 
-        # If values look like they are in [-1, 1], map to [0, 1]
-        if images.min() < 0:
-            images = (images + 1.0) / 2.0
+    # If values look like they are in [-1, 1], map to [0, 1]
+    if images.min() < 0:
+        images = (images + 1.0) / 2.0
 
+    if plot_method == "uint8":
         images = np.clip(images, 0.0, 1.0)
         images = (255.0 * images).round().astype(np.uint8)
 
+    elif plot_method == "log":
+        mask = images > 0
+        images[mask] = np.log10(images[mask])
+        images[~mask] = np.nan  # set non-positive values to NaN for better plotting
+
+    elif plot_method == "arcsinh":
+
+        scale = np.percentile(images, arcsinh_percentile, axis=(1, 2))
+        scale = np.maximum(scale, eps)
+
+        images = np.arcsinh(images / scale[:, None, None])
+
+    return images
+
+
+def plot_image_grid_subplots(
+    images,
+    *,
+    plot_method: str = "log",
+    arcsinh_percentile=10,
+    cmap="gray",
+    figsize=None,
+    share_clim=True,
+    vmin=None,
+    vmax=None,
+    title=None,
+    wspace=0.02,
+    hspace=0.02,
+):
+    images = prepare_images_for_plotting(
+        images,
+        plot_method=plot_method,
+        arcsinh_percentile=arcsinh_percentile,
+    )
+
     n, h, w = images.shape
-
     grid_size = math.ceil(math.sqrt(n))
-    total = grid_size * grid_size
-    missing = total - n
 
-    # Pad with blank images so grid is square
-    if missing > 0:
-        pad_imgs = np.full((missing, h, w), pad_value, dtype=np.uint8)
-        images = np.concatenate([images, pad_imgs], axis=0)
+    if figsize is None:
+        figsize = (2.0 * grid_size, 2.0 * grid_size)
 
-    grid_h = grid_size * h + padding * (grid_size - 1)
-    grid_w = grid_size * w + padding * (grid_size - 1)
-    grid = np.full((grid_h, grid_w), pad_value, dtype=np.uint8)
+    fig, axes = plt.subplots(
+        grid_size,
+        grid_size,
+        figsize=figsize,
+        squeeze=False,
+    )
 
-    for idx, img in enumerate(images):
-        row = idx // grid_size
-        col = idx % grid_size
-        y0 = row * (h + padding)
-        x0 = col * (w + padding)
-        grid[y0 : y0 + h, x0 : x0 + w] = img
+    if share_clim:
+        if vmin is None:
+            vmin = np.nanmin(images)
+        if vmax is None:
+            vmax = np.nanmax(images)
 
-    return grid
+    for idx, ax in enumerate(axes.flat):
+        ax.set_axis_off()
+
+        if idx >= n:
+            continue
+
+        ax.imshow(
+            images[idx],
+            cmap=cmap,
+            vmin=vmin,
+            vmax=vmax,
+            aspect="equal",
+        )
+
+    if title is not None:
+        fig.suptitle(title)
+
+    fig.subplots_adjust(
+        left=0,
+        right=1,
+        bottom=0,
+        top=1,
+        wspace=wspace,
+        hspace=hspace,
+    )
+    fig.patch.set_visible(False)
+    return fig, axes
 
 
-def log_samples(task: Any, images: np.ndarray, epoch: int, title: str) -> None:
+def log_samples(
+    task: Any,
+    images: np.ndarray,
+    epoch: int,
+    title: str,
+    plot_method: str = "log",
+    arcsinh_percentile=10,
+) -> None:
     """Upload generated sample images to ClearML.
 
     Args:
@@ -357,27 +431,23 @@ def log_samples(task: Any, images: np.ndarray, epoch: int, title: str) -> None:
         images: Array of shape ``(N, C, H, W)``.
         epoch: Current epoch number.
         title: Name of samples being logged
+        plot_method: Method to use for plotting ('uint8', 'log', 'arcsinh').
+        arcsinh_percentile: Percentile used as the arcsinh softening scale.
     """
     if task is None:
         return
 
-    import matplotlib
-
-    matplotlib.use("Agg", force=True)  # safe non-interactive backend
-    import matplotlib.pyplot as plt
-    import cmasher as cmr
-
     cl_logger = task.get_logger()
     images = images.squeeze()
-    image_grid = make_image_grid(images, pad_value=255)
-
-    cmap = cmr.gothic
-    fig, ax = plt.subplots(figsize=(16, 16), frameon=False)
-    fig.subplots_adjust(left=0, right=1, bottom=0, top=1)
-    ax.set_position([0, 0, 1, 1])
-    ax.set_axis_off()
-    ax.imshow(image_grid, cmap=cmap, vmin=0, vmax=255)
-    fig.tight_layout()
+    fig, axes = plot_image_grid_subplots(
+        images,
+        plot_method=plot_method,
+        share_clim=False,
+        hspace=0,
+        wspace=0,
+        cmap=cmr.cosmic,
+        arcsinh_percentile=arcsinh_percentile,
+    )
 
     cl_logger.report_matplotlib_figure(
         title=title,
