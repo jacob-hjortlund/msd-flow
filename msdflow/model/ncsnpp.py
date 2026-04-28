@@ -94,6 +94,7 @@ class NCSNpp(eqx.Module):
         prediction_type: str = "velocity",
         attention_dtype: jnp.dtype = jnp.float32,
         attention_implementation: Optional[str] = None,
+        attention_type: str = "dot_product",
     ):
         """Initialise the NCSN++ architecture.
 
@@ -127,6 +128,9 @@ class NCSNpp(eqx.Module):
             attention_implementation: Backend for ``jax.nn.dot_product_attention``.
                 ``None`` (default) auto-detects ``'cudnn'`` on GPU and ``'xla'``
                 on CPU. Pass ``'xla'`` or ``'cudnn'`` to override.
+            attention_type: Attention algorithm selector for every
+                ``AttnBlockNCSN``. ``"dot_product"`` preserves existing
+                behavior; ``"rala"`` uses Rank-Augmented Linear Attention.
         """
 
         self.activation = activation
@@ -219,6 +223,7 @@ class NCSNpp(eqx.Module):
                             key=attn_key,
                             attention_dtype=attention_dtype,
                             implementation=attention_implementation,
+                            attention_type=attention_type,
                         )
                     )
                     enc_is_attn.append(True)
@@ -270,6 +275,7 @@ class NCSNpp(eqx.Module):
             key=attn_key,
             attention_dtype=attention_dtype,
             implementation=attention_implementation,
+            attention_type=attention_type,
         )
         self.mid_block2 = ResBlockBigGAN(
             ch_bot,
@@ -324,6 +330,7 @@ class NCSNpp(eqx.Module):
                             key=attn_key,
                             attention_dtype=attention_dtype,
                             implementation=attention_implementation,
+                            attention_type=attention_type,
                         )
                     )
                     dec_is_attn.append(True)
