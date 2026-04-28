@@ -136,6 +136,52 @@ def test_attention_block_output_finite():
     assert jnp.all(jnp.isfinite(out))
 
 
+def test_attention_block_invalid_num_heads_raises():
+    """channels not divisible by num_heads raises ValueError."""
+    with pytest.raises(ValueError, match="num_heads"):
+        AttentionBlock(channels=8, num_heads=3, key=KEY)
+
+
+def test_attention_block_default_implementation_is_xla_on_cpu():
+    """On a CPU-only test runner, auto-detection resolves to 'xla'."""
+    block = AttentionBlock(channels=8, num_heads=2, key=KEY)
+    assert block.implementation == "xla"
+
+
+def test_attention_block_explicit_implementation_xla():
+    """Explicit implementation='xla' is stored as-is."""
+    block = AttentionBlock(channels=8, num_heads=2, key=KEY, implementation="xla")
+    assert block.implementation == "xla"
+
+
+def test_attention_block_bfloat16_preserves_input_dtype():
+    """attention_dtype=bfloat16 still returns output in the input dtype."""
+    block = AttentionBlock(
+        channels=8, num_heads=2, key=KEY, attention_dtype=jnp.bfloat16
+    )
+    k, _ = jax.random.split(KEY)
+    x = jax.random.normal(k, (8, 4, 4)).astype(jnp.float32)
+    out = block(x)
+    assert out.shape == x.shape
+    assert out.dtype == jnp.float32
+    assert jnp.all(jnp.isfinite(out))
+
+
+def test_attention_block_bfloat16_close_to_fp32():
+    """bf16 attention output is close to fp32 attention output."""
+    block_fp32 = AttentionBlock(
+        channels=8, num_heads=2, key=KEY, attention_dtype=jnp.float32
+    )
+    block_bf16 = AttentionBlock(
+        channels=8, num_heads=2, key=KEY, attention_dtype=jnp.bfloat16
+    )
+    k, _ = jax.random.split(KEY)
+    x = jax.random.normal(k, (8, 4, 4)).astype(jnp.float32)
+    out_fp32 = block_fp32(x)
+    out_bf16 = block_bf16(x)
+    assert jnp.allclose(out_fp32, out_bf16, atol=5e-2)
+
+
 from msdflow.model.blocks import GaussianFourierProjection
 
 

@@ -169,20 +169,90 @@ class ResBlock(eqx.Module):
         return h + skip
 
 
+def _apply_linear(linear: eqx.nn.Linear, x: jax.Array) -> jax.Array:
+    """Apply ``eqx.nn.Linear`` to a batch of vectors with weights cast to ``x.dtype``.
+
+    Args:
+        linear: Equinox Linear layer with weight shape ``(out_features, in_features)``.
+        x: Input array of shape ``(T, in_features)``.
+
+    Returns:
+        Output array of shape ``(T, out_features)`` in ``x.dtype``.
+    """
+    weight = linear.weight.astype(x.dtype)
+    out = x @ weight.T
+    if linear.use_bias:
+        bias = linear.bias.astype(x.dtype)
+        out = out + bias
+    return out
+
+
 class AttentionBlock(eqx.Module):
-    """Self-attention over spatial tokens."""
+    """Self-attention over spatial tokens using ``jax.nn.dot_product_attention``.
 
-    attn: eqx.nn.MultiheadAttention
+    Q, K, V, and output projections are explicit ``eqx.nn.Linear`` layers stored
+    in fp32. When ``attention_dtype`` is bfloat16, activations and weight copies
+    are cast to bfloat16 for the Q/K/V projections and the attention call; the
+    result is upcast back to the input's dtype immediately after the attention
+    call, before the output projection.
 
-    def __init__(self, channels: int, num_heads: int, key: jax.Array):
+    The attention backend is selected by ``implementation``: when ``None`` (the
+    default), it auto-detects ``'cudnn'`` on GPU and ``'xla'`` on CPU. Note that
+    the cuDNN flash backend imposes head-dim constraints (typically a multiple
+    of 8 and bounded above; cuDNN-version-dependent). If the configured
+    ``head_dim = channels // num_heads`` is not supported by cuDNN flash, the
+    cuDNN error will surface at run time — increase ``num_heads`` to reduce
+    ``head_dim``.
+    """
+
+    q_proj: eqx.nn.Linear
+    k_proj: eqx.nn.Linear
+    v_proj: eqx.nn.Linear
+    out_proj: eqx.nn.Linear
+    num_heads: int = eqx.field(static=True)
+    head_dim: int = eqx.field(static=True)
+    attention_dtype: jnp.dtype = eqx.field(static=True)
+    implementation: str = eqx.field(static=True)
+
+    def __init__(
+        self,
+        channels: int,
+        num_heads: int,
+        key: jax.Array,
+        *,
+        attention_dtype: jnp.dtype = jnp.float32,
+        implementation: Optional[str] = None,
+    ):
         """Args:
-        channels: Channel dimension (used as query size).
-        num_heads: Number of attention heads.
+        channels: Channel dimension (also used as query/key/value/output size).
+        num_heads: Number of attention heads. Must divide ``channels``.
         key: JAX PRNG key.
+        attention_dtype: Dtype used for Q/K/V projections and the attention
+            call. Output is upcast back to the input's dtype after attention.
+        implementation: Backend for ``jax.nn.dot_product_attention``. ``None``
+            auto-detects ``'cudnn'`` on GPU, ``'xla'`` otherwise. Pass
+            ``'xla'`` or ``'cudnn'`` to override.
         """
-        self.attn = eqx.nn.MultiheadAttention(
-            num_heads=num_heads, query_size=channels, key=key
-        )
+        if channels % num_heads != 0:
+            raise ValueError(
+                f"channels={channels} must be divisible by num_heads={num_heads}."
+            )
+
+        kq, kk, kv, ko = jax.random.split(key, 4)
+        self.q_proj = eqx.nn.Linear(channels, channels, key=kq)
+        self.k_proj = eqx.nn.Linear(channels, channels, key=kk)
+        self.v_proj = eqx.nn.Linear(channels, channels, key=kv)
+        self.out_proj = eqx.nn.Linear(channels, channels, key=ko)
+
+        self.num_heads = num_heads
+        self.head_dim = channels // num_heads
+        self.attention_dtype = attention_dtype
+
+        if implementation is None:
+            implementation = (
+                "cudnn" if jax.devices()[0].platform == "gpu" else "xla"
+            )
+        self.implementation = implementation
 
     def __call__(self, x: jax.Array) -> jax.Array:
         """Apply multi-head self-attention over spatial positions.
@@ -191,12 +261,29 @@ class AttentionBlock(eqx.Module):
             x: Input array of shape ``(C, H, W)``.
 
         Returns:
-            Attention output of shape ``(C, H, W)``.
+            Attention output of shape ``(C, H, W)`` with the same dtype as ``x``.
         """
         c, h, w = x.shape
-        tokens = x.reshape(h * w, c)
-        out = self.attn(query=tokens, key_=tokens, value=tokens)
-        return out.reshape(c, h, w)
+        orig_dtype = x.dtype
+
+        tokens = x.reshape(c, h * w).T  # (T, C)
+        tokens_attn = tokens.astype(self.attention_dtype)
+
+        q = _apply_linear(self.q_proj, tokens_attn)
+        k = _apply_linear(self.k_proj, tokens_attn)
+        v = _apply_linear(self.v_proj, tokens_attn)
+
+        q = q.reshape(h * w, self.num_heads, self.head_dim)
+        k = k.reshape(h * w, self.num_heads, self.head_dim)
+        v = v.reshape(h * w, self.num_heads, self.head_dim)
+
+        attn_out = jax.nn.dot_product_attention(
+            q, k, v, implementation=self.implementation
+        )  # (T, num_heads, head_dim)
+
+        attn_out = attn_out.reshape(h * w, c).astype(orig_dtype)
+        out = _apply_linear(self.out_proj, attn_out)  # (T, C) in orig_dtype
+        return out.T.reshape(c, h, w)
 
 
 class GaussianFourierProjection(eqx.Module):
