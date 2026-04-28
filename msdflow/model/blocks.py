@@ -476,6 +476,9 @@ class AttnBlockNCSN(eqx.Module):
         num_groups: int,
         skip_rescale: bool,
         key: jax.Array,
+        *,
+        attention_dtype: jnp.dtype = jnp.float32,
+        implementation: Optional[str] = None,
     ):
         """Args:
         channels: Channel dimension.
@@ -483,10 +486,21 @@ class AttnBlockNCSN(eqx.Module):
         num_groups: Groups for GroupNorm.
         skip_rescale: If True, divide residual sum by sqrt(2).
         key: JAX PRNG key.
+        attention_dtype: Dtype for Q/K/V projections and the attention call.
+            Output is upcast back to the input's dtype after attention. The
+            GroupNorm pre-norm and residual sum run in the input's dtype.
+        implementation: Backend for the inner ``AttentionBlock``. ``None``
+            auto-detects ``'cudnn'`` on GPU, ``'xla'`` otherwise.
         """
         self.skip_rescale = skip_rescale
         self.norm = eqx.nn.GroupNorm(num_groups, channels)
-        self.attn = AttentionBlock(channels=channels, num_heads=num_heads, key=key)
+        self.attn = AttentionBlock(
+            channels=channels,
+            num_heads=num_heads,
+            key=key,
+            attention_dtype=attention_dtype,
+            implementation=implementation,
+        )
 
     def __call__(self, x: jax.Array) -> jax.Array:
         """Apply self-attention over spatial positions.

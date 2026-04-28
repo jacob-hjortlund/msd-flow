@@ -365,3 +365,34 @@ def test_attn_block_ncsn_skip_rescale():
     out_rescale = block_rescale(x)
     out_no_rescale = block_no_rescale(x)
     assert not jnp.allclose(out_rescale, out_no_rescale)
+
+
+def test_attn_block_ncsn_bfloat16_preserves_input_dtype():
+    """AttnBlockNCSN with attention_dtype=bfloat16 returns output in input dtype."""
+    block = AttnBlockNCSN(
+        channels=8,
+        num_heads=2,
+        num_groups=2,
+        skip_rescale=True,
+        key=KEY,
+        attention_dtype=jnp.bfloat16,
+    )
+    k, _ = jax.random.split(KEY)
+    x = jax.random.normal(k, (8, 4, 4)).astype(jnp.float32)
+    out = block(x)
+    assert out.shape == x.shape
+    assert out.dtype == jnp.float32
+    assert jnp.all(jnp.isfinite(out))
+
+
+def test_attn_block_ncsn_implementation_passthrough():
+    """AttnBlockNCSN forwards implementation kwarg to inner AttentionBlock."""
+    block = AttnBlockNCSN(
+        channels=8,
+        num_heads=2,
+        num_groups=2,
+        skip_rescale=True,
+        key=KEY,
+        implementation="xla",
+    )
+    assert block.attn.implementation == "xla"
