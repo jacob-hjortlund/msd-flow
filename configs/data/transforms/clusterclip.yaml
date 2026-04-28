@@ -1,0 +1,60 @@
+# data/transforms/clusterclip.yaml
+
+pre_clusterclip_transforms:
+  _target_: torchvision.transforms.Compose
+  transforms:
+    - _target_: msdflow.data.preprocess.SurfaceBrightnessToNanomaggies
+      mag_threshold: 99.0
+    - _target_: msdflow.data.preprocess.ClipAndPad
+      n: ${clip_pad_size}
+    - _target_: msdflow.data.preprocess.Downsample
+      target_size: ${image_size}
+
+clusterclip:
+  n_workers: 10
+  sample_seed: 42
+  sample_fraction: 0.25
+  percentile: 99.9
+
+clusterclip_transform:
+  _target_: torchvision.transforms.Compose
+  transforms:
+    - _target_: msdflow.data.preprocess.ClusterClip
+      transforms: ${data.dataloader.transforms.pre_clusterclip_transforms}
+      percentile: ${data.dataloader.transforms.clusterclip.percentile}
+      data_dir: ${data.dataloader.data_dir}
+      split: train
+      sample_fraction: ${data.dataloader.transforms.clusterclip.sample_fraction}
+      sample_seed: ${data.dataloader.transforms.clusterclip.sample_seed}
+      n_workers: ${data.dataloader.transforms.clusterclip.n_workers}
+      cache_dir: ${data.dataloader.cache_dir}
+
+post_clusterclip_transforms:
+  _target_: torchvision.transforms.Compose
+  transforms:
+    - _target_: msdflow.data.preprocess.GlobalNorm
+      global_min: 0.0
+      global_max: null
+      norm_min: -1.0
+      norm_max: 1.0
+      data_dir: ${data.dataloader.data_dir}
+      percentile: ${data.dataloader.transforms.clusterclip.percentile}
+      split: train
+      transforms:
+        _target_: torchvision.transforms.Compose
+        transforms:
+          - ${data.dataloader.transforms.pre_clusterclip_transforms}
+          - ${data.dataloader.transforms.clusterclip_transform}
+      sample_fraction: ${data.dataloader.transforms.clusterclip.sample_fraction}
+      sample_seed: ${data.dataloader.transforms.clusterclip.sample_seed}
+      n_workers: ${data.dataloader.transforms.clusterclip.n_workers}
+      cache_dir: ${data.dataloader.cache_dir}
+
+
+
+deterministic:
+  _target_: torchvision.transforms.Compose
+  transforms:
+    - ${data.dataloader.transforms.pre_clusterclip_transforms}
+    - ${data.dataloader.transforms.clusterclip_transform}
+    - ${data.dataloader.transforms.post_clusterclip_transforms}
