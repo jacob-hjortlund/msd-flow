@@ -125,24 +125,25 @@ def test_log_samples_noop_when_task_is_none():
     from msdflow.tracking import log_samples
 
     images = np.zeros((4, 1, 8, 8), dtype=np.float32)
-    log_samples(None, images, epoch=1)
+    log_samples(None, images, epoch=1, title="samples")
 
 
-def test_log_samples_calls_report_image_per_sample():
+def test_log_samples_calls_report_matplotlib_figure():
+    """log_samples renders one matplotlib figure per call via report_matplotlib_figure."""
     from msdflow.tracking import log_samples
 
     mock_task = MagicMock()
     images = np.zeros((3, 1, 8, 8), dtype=np.float32)
-    log_samples(mock_task, images, epoch=3)
+    log_samples(mock_task, images, epoch=3, title="samples")
     logger = mock_task.get_logger.return_value
-    assert logger.report_image.call_count == 3
-    calls = logger.report_image.call_args_list
-    for i in range(3):
-        kw = calls[i][1]  # kwargs of i-th call
-        assert kw["title"] == "samples"
-        assert kw["series"] == "epoch_3"
-        assert kw["iteration"] == 3
-        assert np.array_equal(kw["image"], np.transpose(images[i], (1, 2, 0)))
+    assert logger.report_matplotlib_figure.call_count == 1
+    kwargs = logger.report_matplotlib_figure.call_args.kwargs
+    assert kwargs["title"] == "samples"
+    assert kwargs["series"] == "grid"
+    assert kwargs["iteration"] == 3
+    assert kwargs["figure"] is not None
+    # report_image must NOT be called - the implementation now uses figures only.
+    assert logger.report_image.call_count == 0
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +172,7 @@ def test_get_dataset_id_queries_with_splits_tag():
         dataset_name="TNG50",
         dataset_project="msd-flow",
         dataset_tags=["splits:abc123"],
+        alias="raw_data",
     )
 
 
@@ -209,7 +211,7 @@ def test_get_base_dataset_id_returns_latest_by_created():
         result = get_base_dataset_id(mock_task, "TNG50", "dl_hash")
     assert result == "new-id"
     MockDataset.list_datasets.assert_called_once_with(
-        dataset_name="TNG50",
+        partial_name="TNG50",
         dataset_project="msd-flow",
         tags=["download:dl_hash"],
     )
