@@ -9,10 +9,14 @@ import numpy as np
 import diffrax
 from msdflow.model.unet import UNet
 from msdflow.train.trainer import (
+    DataParallelConfig,
     TrainState,
+    make_data_parallel_config,
     make_train_state,
-    train,
     make_prepare_batch_jax,
+    resolve_data_parallel_config,
+    shard_batch,
+    train,
 )
 from msdflow.flow.sample import sample
 from msdflow.flow.interpolate import sample_path
@@ -101,6 +105,166 @@ def test_make_train_state_opt_state_matches_model_params():
     assert state.opt_state is not None
 
 
+def test_make_data_parallel_config_disabled_has_no_shardings():
+    """Disabled data parallel config should not create mesh shardings."""
+    cfg = make_data_parallel_config(enabled=False)
+
+    assert isinstance(cfg, DataParallelConfig)
+    assert cfg.enabled is False
+    assert cfg.num_devices == 1
+    assert cfg.data_sharding is None
+    assert cfg.model_sharding is None
+
+
+def test_make_data_parallel_config_rejects_min_devices_below_one():
+    """Data parallel config requires min_devices >= 1."""
+    with pytest.raises(ValueError, match="min_devices"):
+        make_data_parallel_config(enabled=False, min_devices=0)
+
+
+def test_make_data_parallel_config_enabled_requires_available_devices():
+    """Enabled data parallel config rejects unavailable local device counts."""
+    unavailable = len(jax.local_devices()) + 1
+
+    with pytest.raises(ValueError, match="data parallel"):
+        make_data_parallel_config(enabled=True, min_devices=unavailable)
+
+
+def test_make_data_parallel_config_enabled_min_one_creates_shardings():
+    """min_devices=1 exercises the sharding path on CPU-only machines."""
+    cfg = make_data_parallel_config(enabled=True, min_devices=1)
+
+    assert cfg.enabled is True
+    assert cfg.num_devices == len(jax.local_devices())
+    assert cfg.data_sharding is not None
+    assert cfg.model_sharding is not None
+
+
+def test_resolve_data_parallel_config_accepts_mapping():
+    """Hydra-style mappings should resolve into a runtime data parallel config."""
+    cfg = resolve_data_parallel_config(
+        {"enabled": False, "axis_name": "sample", "min_devices": 3}
+    )
+
+    assert cfg.enabled is False
+    assert cfg.axis_name == "sample"
+    assert cfg.min_devices == 3
+
+
+def test_resolve_data_parallel_config_parses_false_string_mapping():
+    """String false values in direct mappings should not enable sharding."""
+    cfg = resolve_data_parallel_config({"enabled": "false"})
+
+    assert cfg.enabled is False
+
+
+def test_resolve_data_parallel_config_rejects_malformed_enabled_config():
+    """Enabled caller-provided configs must include valid sharding invariants."""
+    cfg = DataParallelConfig(
+        enabled=True,
+        axis_name="batch",
+        min_devices=2,
+        num_devices=1,
+        data_sharding=None,
+        model_sharding=None,
+    )
+
+    with pytest.raises(ValueError, match="num_devices.*min_devices"):
+        resolve_data_parallel_config(cfg)
+
+
+def test_shard_batch_noops_when_data_parallel_disabled():
+    """shard_batch should return the original tuple when disabled."""
+    cfg = make_data_parallel_config(enabled=False)
+    batch = (
+        jnp.ones((2, 1, 4, 4)),
+        jnp.ones((2, 1, 4, 4)),
+        jnp.ones((2,)),
+        jnp.ones((2, 0)),
+        jnp.ones((2,), dtype=bool),
+        jax.random.split(jax.random.PRNGKey(0), 2),
+    )
+
+    result = shard_batch(batch, cfg)
+
+    assert result is batch
+
+
+def test_shard_batch_enabled_min_one_applies_data_sharding():
+    """Enabled shard_batch should place every array on the data sharding."""
+    cfg = make_data_parallel_config(enabled=True, min_devices=1)
+    batch_size = cfg.num_devices * 2
+    batch = (
+        jnp.ones((batch_size, 1, 4, 4)),
+        jnp.ones((batch_size, 1, 4, 4)),
+        jnp.ones((batch_size,)),
+        jnp.ones((batch_size, 0)),
+        jnp.ones((batch_size,), dtype=bool),
+        jax.random.split(jax.random.PRNGKey(0), batch_size),
+    )
+
+    result = shard_batch(batch, cfg)
+
+    assert all(array.sharding == cfg.data_sharding for array in result)
+
+
+def test_shard_batch_enabled_rejects_scalar_arrays():
+    """Data-parallel batches require arrays with a leading batch dimension."""
+    cfg = make_data_parallel_config(enabled=True, min_devices=1)
+    batch_size = cfg.num_devices
+    batch = (
+        jnp.ones((batch_size, 1, 4, 4)),
+        jnp.ones((batch_size, 1, 4, 4)),
+        jnp.array(0.5),
+        jnp.ones((batch_size, 0)),
+        jnp.ones((batch_size,), dtype=bool),
+        jax.random.split(jax.random.PRNGKey(0), batch_size),
+    )
+
+    with pytest.raises(ValueError, match="leading batch dimension"):
+        shard_batch(batch, cfg)
+
+
+def test_shard_batch_enabled_rejects_inconsistent_leading_dimensions():
+    """All data-parallel batch arrays must share one leading dimension."""
+    cfg = make_data_parallel_config(enabled=True, min_devices=1)
+    batch_size = cfg.num_devices * 2
+    batch = (
+        jnp.ones((batch_size, 1, 4, 4)),
+        jnp.ones((batch_size + 1, 1, 4, 4)),
+        jnp.ones((batch_size,)),
+        jnp.ones((batch_size, 0)),
+        jnp.ones((batch_size,), dtype=bool),
+        jax.random.split(jax.random.PRNGKey(0), batch_size),
+    )
+
+    with pytest.raises(ValueError, match="same leading dimension"):
+        shard_batch(batch, cfg)
+
+
+def test_shard_batch_rejects_nondivisible_batch_axis():
+    """Data-parallel batches must divide evenly across selected devices."""
+    cfg = DataParallelConfig(
+        enabled=True,
+        axis_name="batch",
+        min_devices=2,
+        num_devices=2,
+        data_sharding=None,
+        model_sharding=None,
+    )
+    batch = (
+        jnp.ones((3, 1, 4, 4)),
+        jnp.ones((3, 1, 4, 4)),
+        jnp.ones((3,)),
+        jnp.ones((3, 0)),
+        jnp.ones((3,), dtype=bool),
+        jax.random.split(jax.random.PRNGKey(0), 3),
+    )
+
+    with pytest.raises(ValueError, match="divisible"):
+        shard_batch(batch, cfg)
+
+
 from msdflow.train.trainer import make_train_step
 from msdflow.train.metrics import flow_matching_loss as _fml
 
@@ -145,6 +309,31 @@ def test_train_step_returns_updated_state_and_loss():
     cond_mask = jnp.zeros(B, dtype=bool)
 
     x_t, u_t = sample_path(x0, x1, t)
+    new_state, loss = train_step(
+        state, x_t, u_t, t, cond, cond_mask, jax.random.PRNGKey(0)
+    )
+
+    assert isinstance(new_state, TrainState)
+    assert loss.shape == ()
+
+
+def test_make_train_step_accepts_data_parallel_disabled():
+    """make_train_step should keep working with an explicit disabled config."""
+    optimizer = optax.adam(1e-3)
+    model = _make_small_model()
+    state = make_train_state(model, optimizer)
+    cfg = make_data_parallel_config(enabled=False)
+    train_step = make_train_step(optimizer, _fml, data_parallel=cfg)
+
+    B = 2
+    k1, k2 = jax.random.split(KEY)
+    x0 = jax.random.normal(k1, (B, 1, 8, 8))
+    x1 = jax.random.normal(k2, (B, 1, 8, 8))
+    t = jnp.array([0.3, 0.7])
+    cond = jnp.empty((B, 0))
+    cond_mask = jnp.zeros(B, dtype=bool)
+    x_t, u_t = sample_path(x0, x1, t)
+
     new_state, loss = train_step(
         state, x_t, u_t, t, cond, cond_mask, jax.random.PRNGKey(0)
     )
@@ -279,6 +468,25 @@ def test_make_batch_metric_step_returns_dict_keyed_by_fn_name():
     assert "flow_matching_loss" in result
 
 
+def test_make_batch_metric_step_accepts_data_parallel_disabled():
+    """make_batch_metric_step should work with an explicit disabled config."""
+    cfg = make_data_parallel_config(enabled=False)
+    step = make_batch_metric_step([_fml], data_parallel=cfg)
+    model = _make_small_model()
+    B = 2
+    k1, k2 = jax.random.split(KEY)
+    x0 = jax.random.normal(k1, (B, 1, 8, 8))
+    x1 = jax.random.normal(k2, (B, 1, 8, 8))
+    t = jnp.array([0.3, 0.7])
+    cond = jnp.empty((B, 0))
+    cond_mask = jnp.zeros(B, dtype=bool)
+    x_t, u_t = sample_path(x0, x1, t)
+
+    result = step(model, x_t, u_t, t, cond, cond_mask, jax.random.PRNGKey(0))
+
+    assert "flow_matching_loss" in result
+
+
 def test_make_batch_metric_step_values_are_scalar_jax_arrays():
     """All values returned by make_batch_metric_step must be scalar JAX arrays."""
     step = make_batch_metric_step([_fml])
@@ -395,6 +603,48 @@ def test_train_runs_and_returns_model():
         **_make_train_kwargs(),
     )
     assert trained_model is not None
+
+
+def test_train_runs_with_data_parallel_enabled_min_one(tmp_path):
+    """train() should execute the data-parallel path when min_devices=1."""
+    dataloader = list(_make_fake_dataloader(B=2, num_batches=2))
+    val_dataloader = _fake_val_dataloader(B=2)
+    kwargs = _make_train_kwargs(num_epochs=1, num_steps_per_epoch=1)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+    model = _make_small_model()
+
+    trained_model = train(
+        model=model,
+        dataloader=dataloader,
+        val_dataloader=val_dataloader,
+        data_parallel={"enabled": True, "axis_name": "batch", "min_devices": 1},
+        **kwargs,
+    )
+
+    assert trained_model is not None
+
+
+def test_train_data_parallel_requires_available_devices(tmp_path):
+    """train() should resolve data_parallel and reject unavailable devices."""
+    dataloader = list(_make_fake_dataloader(B=2, num_batches=2))
+    val_dataloader = _fake_val_dataloader(B=2)
+    kwargs = _make_train_kwargs(num_epochs=1, num_steps_per_epoch=1)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+    model = _make_small_model()
+    unavailable = len(jax.local_devices()) + 1
+
+    with pytest.raises(ValueError, match="data parallel"):
+        train(
+            model=model,
+            dataloader=dataloader,
+            val_dataloader=val_dataloader,
+            data_parallel={
+                "enabled": True,
+                "axis_name": "batch",
+                "min_devices": unavailable,
+            },
+            **kwargs,
+        )
 
 
 def test_train_returns_ema_model_not_live_model():
