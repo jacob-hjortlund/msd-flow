@@ -1060,7 +1060,8 @@ class TestClusterClipDerived:
             positive_only=False,
         )
         # With positive_only: 99th percentile equals the single positive value,
-        # so clusters split cleanly at 1 and 10, midpoint = 5.5.
+        # so clusters split cleanly at 1 and 10, boundary = sqrt(10)
+        # (geometric mean from log10-space midpoint).
         t_pos = ClusterClip(
             percentile=99.0,
             data_dir=data_dir,
