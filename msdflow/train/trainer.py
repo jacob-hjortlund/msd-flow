@@ -452,8 +452,8 @@ def make_prepare_batch_jax(
         key_noise, key_time, key_path, key_cfg, key_dropout = jax.random.split(key, 5)
         B = images_np.shape[0]
 
-        x1 = jnp.array(images_np)
-        cond = jnp.array(cond_np)
+        x1 = jnp.asarray(images_np)
+        cond = jnp.asarray(cond_np)
 
         x0 = jax.random.normal(key_noise, x1.shape)
         x0 = coupling(x0, x1)
