@@ -8,6 +8,7 @@ import pytest
 import numpy as np
 import diffrax
 from msdflow.model.unet import UNet
+import msdflow.train.parallel as train_parallel
 from msdflow.train.trainer import (
     DataParallelConfig,
     TrainState,
@@ -96,6 +97,19 @@ def test_train_state_has_model_and_opt_state():
     state = make_train_state(SMALL_MODEL, OPTIMIZER)
     assert hasattr(state, "model")
     assert hasattr(state, "opt_state")
+
+
+def test_trainer_reexports_parallel_helpers():
+    """trainer keeps the old sharding-helper import path working."""
+    from msdflow.train import trainer as trainer_module
+
+    assert trainer_module.DataParallelConfig is train_parallel.DataParallelConfig
+    assert trainer_module.make_data_parallel_config is train_parallel.make_data_parallel_config
+    assert (
+        trainer_module.resolve_data_parallel_config
+        is train_parallel.resolve_data_parallel_config
+    )
+    assert trainer_module.shard_batch is train_parallel.shard_batch
 
 
 def test_make_train_state_opt_state_matches_model_params():
