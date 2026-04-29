@@ -12,6 +12,7 @@ import msdflow.train.parallel as train_parallel
 from msdflow.train.trainer import (
     DataParallelConfig,
     TrainState,
+    _call_epoch_metric,
     make_data_parallel_config,
     make_train_state,
     make_prepare_batch_jax,
@@ -988,6 +989,65 @@ def test_batch_metric_loop_returns_mean_not_sum():
     assert abs(result["simple_metric"] - 3.0) < 1e-5
 
 
+def test_call_epoch_metric_passes_data_parallel_when_supported():
+    """Epoch metrics that accept data_parallel receive the resolved config."""
+    received = {}
+    cfg = make_data_parallel_config(enabled=True, min_devices=1)
+
+    def metric(model, val_dataloader, key, *, data_parallel=None):
+        received["data_parallel"] = data_parallel
+        return {"metric": 1.0}
+
+    result = _call_epoch_metric(
+        metric,
+        model=None,
+        val_dataloader=[],
+        key=jax.random.PRNGKey(0),
+        data_parallel=cfg,
+    )
+
+    assert result == {"metric": 1.0}
+    assert received["data_parallel"] is cfg
+
+
+def test_call_epoch_metric_keeps_three_argument_metrics_working():
+    """Existing epoch metrics without data_parallel keep their old signature."""
+    received = {}
+    cfg = make_data_parallel_config(enabled=True, min_devices=1)
+
+    def metric(model, val_dataloader, key):
+        received["called"] = True
+        return jnp.array(2.0)
+
+    result = _call_epoch_metric(
+        metric,
+        model=None,
+        val_dataloader=[],
+        key=jax.random.PRNGKey(0),
+        data_parallel=cfg,
+    )
+
+    assert received["called"] is True
+    assert float(result) == pytest.approx(2.0)
+
+
+def test_call_epoch_metric_does_not_swallow_metric_type_errors():
+    """Real TypeError exceptions raised inside a metric must propagate."""
+    cfg = make_data_parallel_config(enabled=False)
+
+    def metric(model, val_dataloader, key, data_parallel=None):
+        raise TypeError("metric internal failure")
+
+    with pytest.raises(TypeError, match="metric internal failure"):
+        _call_epoch_metric(
+            metric,
+            model=None,
+            val_dataloader=[],
+            key=jax.random.PRNGKey(0),
+            data_parallel=cfg,
+        )
+
+
 def test_train_epoch_metric_receives_val_dataloader():
     """A no-op epoch metric must receive the val_dataloader iterable."""
     received = {}
@@ -1016,6 +1076,36 @@ def test_train_epoch_metric_receives_val_dataloader():
 
     assert "val_dataloader" in received
     assert received["val_dataloader"] is val_dataloader
+
+
+def test_train_epoch_metric_receives_resolved_data_parallel_config(tmp_path):
+    """The trainer passes resolved DataParallelConfig to aware epoch metrics."""
+    received = {}
+
+    class DataParallelAwareMetric:
+        def __call__(self, model, val_dataloader, key, data_parallel=None):
+            received["data_parallel"] = data_parallel
+            return {"aware_metric": 0.0}
+
+    dataloader = list(_make_fake_dataloader(B=2, num_batches=2))
+    val_dataloader = _fake_val_dataloader(B=2)
+    kwargs = _make_train_kwargs(num_epochs=1, num_steps_per_epoch=1)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+    kwargs["batch_metrics"] = [_fml]
+    kwargs["epoch_metrics"] = [DataParallelAwareMetric()]
+    kwargs["num_train_eval_batches"] = 0
+    model = _make_small_model()
+
+    train(
+        model=model,
+        dataloader=dataloader,
+        val_dataloader=val_dataloader,
+        data_parallel={"enabled": True, "axis_name": "batch", "min_devices": 1},
+        **kwargs,
+    )
+
+    assert received["data_parallel"].enabled is True
+    assert received["data_parallel"].min_devices == 1
 
 
 def test_train_epoch_metric_callable_object():

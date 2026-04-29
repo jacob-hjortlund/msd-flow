@@ -6,6 +6,7 @@ the main training loop with periodic checkpointing.
 
 from typing import Any
 
+import inspect
 import time
 import queue
 import threading
@@ -392,6 +393,46 @@ def batch_metric_loop(
     return {k: v / n_batches for k, v in totals.items()}
 
 
+def _call_epoch_metric(
+    metric: callable,
+    model,
+    val_dataloader,
+    key: jax.Array,
+    data_parallel: DataParallelConfig,
+):
+    """Call an epoch metric with optional data-parallel context.
+
+    Args:
+        metric: Epoch metric callable.
+        model: EMA model passed to the metric.
+        val_dataloader: Validation dataloader passed to the metric.
+        key: JAX PRNG key passed to the metric.
+        data_parallel: Resolved trainer data-parallel configuration.
+
+    Returns:
+        Metric result.
+    """
+    try:
+        signature = inspect.signature(metric)
+    except (TypeError, ValueError):
+        return metric(model, val_dataloader, key)
+
+    parameters = tuple(signature.parameters.values())
+    accepts_data_parallel_keyword = any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        or parameter.name == "data_parallel"
+        for parameter in parameters
+    )
+    accepts_data_parallel_positional = any(
+        parameter.kind is inspect.Parameter.VAR_POSITIONAL for parameter in parameters
+    )
+    if accepts_data_parallel_keyword:
+        return metric(model, val_dataloader, key, data_parallel=data_parallel)
+    if accepts_data_parallel_positional:
+        return metric(model, val_dataloader, key, data_parallel)
+    return metric(model, val_dataloader, key)
+
+
 def train(
     key,
     model,
@@ -668,7 +709,13 @@ def train(
             epoch_metric_results = {}
             if epoch_metrics:
                 for fn in epoch_metrics:
-                    result = fn(ema_model, val_dataloader, key_epoch)
+                    result = _call_epoch_metric(
+                        fn,
+                        ema_model,
+                        val_dataloader,
+                        key_epoch,
+                        data_parallel_config,
+                    )
                     if isinstance(result, dict):
                         epoch_metric_results.update(result)
                     else:
