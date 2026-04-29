@@ -1,5 +1,4 @@
 import logging
-import math
 from collections.abc import Mapping
 from typing import Any
 
@@ -246,6 +245,7 @@ def _resolve_fid_parallel_generation_config(
     inherited = resolve_data_parallel_config(data_parallel)
     enabled = inherited.enabled
     min_devices = inherited.min_devices
+    raw_min_devices = min_devices
 
     if parallel_generation is not None:
         if not (
@@ -256,21 +256,22 @@ def _resolve_fid_parallel_generation_config(
                 "fid_metric.parallel_generation must be None or mapping-like; "
                 f"got {type(parallel_generation).__name__}"
             )
-        enabled = _parse_parallel_generation_enabled(
-            parallel_generation.get("enabled", enabled)
-        )
-        min_devices = int(parallel_generation.get("min_devices", min_devices))
-
     try:
+        if parallel_generation is not None:
+            enabled = _parse_parallel_generation_enabled(
+                parallel_generation.get("enabled", enabled)
+            )
+            raw_min_devices = parallel_generation.get("min_devices", min_devices)
+            min_devices = int(raw_min_devices)
         return make_data_parallel_config(
             enabled=enabled,
             axis_name=_FID_PARALLEL_AXIS_NAME,
             min_devices=min_devices,
         )
-    except ValueError as exc:
+    except (TypeError, ValueError) as exc:
         raise ValueError(
             "fid_metric.parallel_generation is invalid: "
-            f"enabled={enabled}, min_devices={min_devices}: {exc}"
+            f"enabled={enabled}, min_devices={raw_min_devices!r}: {exc}"
         ) from exc
 
 
@@ -302,7 +303,7 @@ def _effective_parallel_gen_batch_size(
             "fid_metric.parallel_generation requires num_devices >= 1; "
             f"got num_devices={num_devices}"
         )
-    return int(math.ceil(gen_batch_size / num_devices) * num_devices)
+    return ((gen_batch_size + num_devices - 1) // num_devices) * num_devices
 
 
 def _log_parallel_gen_batch_size_adjustment(

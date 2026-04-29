@@ -177,6 +177,16 @@ def test_resolve_fid_parallel_generation_rejects_unavailable_devices():
         )
 
 
+@pytest.mark.parametrize("min_devices", ["two", None])
+def test_resolve_fid_parallel_generation_wraps_malformed_min_devices(min_devices):
+    """Malformed FID min_devices errors include FID config context."""
+    with pytest.raises(ValueError, match="fid_metric.parallel_generation"):
+        _resolve_fid_parallel_generation_config(
+            parallel_generation={"enabled": True, "min_devices": min_devices},
+            data_parallel=None,
+        )
+
+
 def test_effective_parallel_gen_batch_size_rounds_up():
     """Parallel FID generation rounds global chunk size up to a device multiple."""
     effective = _effective_parallel_gen_batch_size(
@@ -185,6 +195,20 @@ def test_effective_parallel_gen_batch_size_rounds_up():
     )
 
     assert effective == 64
+
+
+def test_effective_parallel_gen_batch_size_rounds_large_ints_without_float():
+    """Parallel FID generation rounds huge integers without float conversion."""
+    gen_batch_size = 10**400 + 1
+    num_devices = 3
+    effective = _effective_parallel_gen_batch_size(
+        gen_batch_size=gen_batch_size,
+        num_devices=num_devices,
+    )
+
+    assert effective == (
+        (gen_batch_size + num_devices - 1) // num_devices
+    ) * num_devices
 
 
 def test_effective_parallel_gen_batch_size_rejects_invalid_values():
@@ -203,6 +227,17 @@ def test_log_parallel_gen_batch_size_adjustment_warns(caplog):
 
     assert "fid_metric.parallel_generation" in caplog.text
     assert "from 3 to 4" in caplog.text
+
+
+def test_log_parallel_gen_batch_size_adjustment_noops_when_unchanged(caplog):
+    """FID generation does not log when the global chunk size is unchanged."""
+    _log_parallel_gen_batch_size_adjustment(
+        gen_batch_size=4,
+        effective_gen_batch_size=4,
+        num_devices=2,
+    )
+
+    assert caplog.text == ""
 
 
 def test_compute_fid_metrics_returns_dict_with_correct_keys():
