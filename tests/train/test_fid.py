@@ -6,6 +6,8 @@ import numpy as np
 import pytest
 import jax
 import jax.numpy as jnp
+import torch
+from torch.utils.data import DataLoader, TensorDataset
 
 from msdflow.train.metrics import _frechet_distance
 from msdflow.train.metrics import compute_fid_metrics
@@ -101,14 +103,31 @@ def test_accumulator_single_image():
 
 
 def _make_dummy_dataloader(n_batches, batch_size, shape=(1, 2, 2), seed=0):
-    """Return a list of (images_tensor, meta_tensor) tuples usable as a dataloader."""
+    """Return a torch DataLoader yielding (images, meta) tuples.
+
+    compute_fid_metrics queries .dataset (for length) and calls .numpy() on
+    each batch's images tensor; both require a real DataLoader over torch
+    tensors.
+    """
     rng = np.random.default_rng(seed)
-    batches = []
-    for _ in range(n_batches):
-        images = jnp.array(rng.standard_normal((batch_size, *shape)).astype(np.float32))
-        meta = jnp.empty((batch_size, 0))
-        batches.append((images, meta))
-    return batches
+    n_total = n_batches * batch_size
+    images = torch.from_numpy(
+        rng.standard_normal((n_total, *shape)).astype(np.float32)
+    )
+    meta = torch.empty(n_total, 0)
+    dataset = TensorDataset(images, meta)
+    return DataLoader(dataset, batch_size=batch_size, shuffle=False)
+
+
+def _make_empty_dataloader(shape=(1, 2, 2)):
+    """Return a torch DataLoader over a zero-length TensorDataset.
+
+    Used to verify the cached real-stats short-circuit on second call.
+    """
+    images = torch.empty(0, *shape, dtype=torch.float32)
+    meta = torch.empty(0, 0, dtype=torch.float32)
+    dataset = TensorDataset(images, meta)
+    return DataLoader(dataset, batch_size=1, shuffle=False)
 
 
 def _dummy_generate_fn(model, key):
@@ -170,8 +189,9 @@ def test_compute_fid_metrics_real_stats_cached_across_calls():
         gen_batch_size=4,
         key=key1,
     )
-    # Mutate dataloader to prove it's not re-read on second call
-    dataloader_empty = []
+    # Use an empty DataLoader to prove the second call hits the cache and
+    # never iterates the real-image loop.
+    dataloader_empty = _make_empty_dataloader()
     result2 = compute_fid_metrics(
         accumulators=accumulators,
         model=None,
@@ -298,8 +318,8 @@ def test_fid_metric_caches_real_stats_across_calls():
     key1, key2 = jax.random.split(jax.random.PRNGKey(11))
 
     result1 = metric(model=None, val_dataloader=dataloader, key=key1)
-    # Second call with empty dataloader — should still work via cache
-    result2 = metric(model=None, val_dataloader=[], key=key2)
+    # Second call with empty DataLoader should still work via cache.
+    result2 = metric(model=None, val_dataloader=_make_empty_dataloader(), key=key2)
 
     assert np.isfinite(result1["fid"])
     assert np.isfinite(result2["fid"])
