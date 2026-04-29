@@ -29,12 +29,11 @@ def test_sample_output_shape():
         model=SMALL_MODEL,
         shape=(1, 8, 8),
         key=KEY,
-        solver=diffrax.Euler,
+        solver=diffrax.Euler(),
         dt0=0.1,
         t0=0.0,
         t1=1.0,
-        stepsize_controller=diffrax.ConstantStepSize,
-        stepsize_controller_cfg={},
+        stepsize_controller=diffrax.ConstantStepSize(),
     )
     assert out.shape == (1, 8, 8)
 
@@ -45,12 +44,11 @@ def test_sample_output_finite():
         model=SMALL_MODEL,
         shape=(1, 8, 8),
         key=KEY,
-        solver=diffrax.Euler,
+        solver=diffrax.Euler(),
         dt0=0.1,
         t0=0.0,
         t1=1.0,
-        stepsize_controller=diffrax.ConstantStepSize,
-        stepsize_controller_cfg={},
+        stepsize_controller=diffrax.ConstantStepSize(),
     )
     assert jnp.all(jnp.isfinite(out))
 
@@ -58,10 +56,12 @@ def test_sample_output_finite():
 def test_sample_batched_via_vmap():
     """Verify batched sampling via vmap produces correct batch shape."""
     keys = jax.random.split(KEY, 3)
+    solver = diffrax.Euler()
+    controller = diffrax.ConstantStepSize()
     batched_sample = jax.vmap(
         lambda k: sample(
             SMALL_MODEL, (1, 8, 8), k,
-            diffrax.Euler, 0.1, 0.0, 1.0, diffrax.ConstantStepSize, {},
+            solver, 0.1, 0.0, 1.0, controller,
         )
     )
     outs = batched_sample(keys)
@@ -74,12 +74,11 @@ def test_sample_conditional():
         model=SMALL_MODEL_COND,
         shape=(1, 8, 8),
         key=KEY,
-        solver=diffrax.Euler,
+        solver=diffrax.Euler(),
         dt0=0.1,
         t0=0.0,
         t1=1.0,
-        stepsize_controller=diffrax.ConstantStepSize,
-        stepsize_controller_cfg={},
+        stepsize_controller=diffrax.ConstantStepSize(),
         cond=jnp.array([0.4]),
     )
     assert out.shape == (1, 8, 8)
@@ -92,12 +91,11 @@ def test_sample_guided():
         model=SMALL_MODEL_COND,
         shape=(1, 8, 8),
         key=KEY,
-        solver=diffrax.Euler,
+        solver=diffrax.Euler(),
         dt0=0.1,
         t0=0.0,
         t1=1.0,
-        stepsize_controller=diffrax.ConstantStepSize,
-        stepsize_controller_cfg={},
+        stepsize_controller=diffrax.ConstantStepSize(),
         cond=jnp.array([0.4]),
         guidance_scale=2.0,
     )
@@ -111,12 +109,11 @@ def test_sample_guided_differs_from_unguided():
         model=SMALL_MODEL_COND,
         shape=(1, 8, 8),
         key=KEY,
-        solver=diffrax.Euler,
+        solver=diffrax.Euler(),
         dt0=0.1,
         t0=0.0,
         t1=1.0,
-        stepsize_controller=diffrax.ConstantStepSize,
-        stepsize_controller_cfg={},
+        stepsize_controller=diffrax.ConstantStepSize(),
         cond=jnp.array([0.4]),
     )
     out_unguided = sample(**kwargs, guidance_scale=1.0)
@@ -145,12 +142,11 @@ def test_sample_image_prediction_shape():
         model=_SMALL_IMG,
         shape=(1, 8, 8),
         key=KEY,
-        solver=diffrax.Euler,
+        solver=diffrax.Euler(),
         dt0=0.1,
         t0=0.0,
         t1=0.9,  # Stop before t=1 to avoid (1-t)->0 singularity in _to_velocity
-        stepsize_controller=diffrax.ConstantStepSize,
-        stepsize_controller_cfg={},
+        stepsize_controller=diffrax.ConstantStepSize(),
     )
     assert out.shape == (1, 8, 8)
 
@@ -161,12 +157,11 @@ def test_sample_image_prediction_finite():
         model=_SMALL_IMG,
         shape=(1, 8, 8),
         key=KEY,
-        solver=diffrax.Euler,
+        solver=diffrax.Euler(),
         dt0=0.1,
         t0=0.0,
         t1=0.9,  # Stop before t=1 to avoid (1-t)->0 singularity in _to_velocity
-        stepsize_controller=diffrax.ConstantStepSize,
-        stepsize_controller_cfg={},
+        stepsize_controller=diffrax.ConstantStepSize(),
     )
     assert jnp.all(jnp.isfinite(out))
 
@@ -177,12 +172,11 @@ def test_sample_image_prediction_guided_shape():
         model=_SMALL_IMG_COND,
         shape=(1, 8, 8),
         key=KEY,
-        solver=diffrax.Euler,
+        solver=diffrax.Euler(),
         dt0=0.1,
         t0=0.0,
         t1=0.9,  # Stop before t=1 to avoid (1-t)->0 singularity in _to_velocity
-        stepsize_controller=diffrax.ConstantStepSize,
-        stepsize_controller_cfg={},
+        stepsize_controller=diffrax.ConstantStepSize(),
         cond=jnp.array([0.4]),
         guidance_scale=2.0,
     )
