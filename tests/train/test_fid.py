@@ -1,7 +1,10 @@
 """Tests for FID metric components in msdflow.train.metrics."""
 
+import functools
 import inspect
 
+import diffrax
+import equinox as eqx
 import numpy as np
 import pytest
 import jax
@@ -9,6 +12,7 @@ import jax.numpy as jnp
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
+from msdflow.flow.sample import sample
 from msdflow.train.metrics import _frechet_distance
 from msdflow.train.metrics import _effective_parallel_gen_batch_size
 from msdflow.train.metrics import _log_parallel_gen_batch_size_adjustment
@@ -17,6 +21,7 @@ from msdflow.train.metrics import compute_fid_metrics
 from msdflow.train.metrics import FIDAccumulator
 from msdflow.train.metrics import FIDMetric
 from msdflow.train.parallel import make_data_parallel_config
+from msdflow.train.parallel import shard_model
 from msdflow.train.trainer import train
 
 
@@ -430,6 +435,51 @@ def _model_generate_fn(model, key):
     """Generate an image from a model array without mutating the model."""
     noise = jax.random.normal(key, model.shape)
     return model + jnp.zeros_like(noise)
+
+
+class _TinyVelocityModel(eqx.Module):
+    """Minimal velocity model for exercising the sampling code path."""
+
+    weight: jax.Array
+    prediction_type: str = eqx.field(static=True, default="velocity")
+
+    def __call__(self, t, y, cond, cond_mask, key):
+        """Return a simple velocity field with the expected model signature."""
+        return y * self.weight
+
+
+def test_parallel_generation_accepts_training_sharded_sample_model():
+    """FID generation supports a model already sharded for data-parallel training."""
+    if len(jax.local_devices()) < 2:
+        pytest.skip("requires at least two visible JAX devices")
+
+    data_parallel = make_data_parallel_config(enabled=True, min_devices=2)
+    model = _TinyVelocityModel(weight=jnp.asarray(0.1, dtype=jnp.float32))
+    model = shard_model(model, data_parallel)
+    dataloader = _make_dummy_dataloader(n_batches=2, batch_size=2)
+    generate_fn = functools.partial(
+        sample,
+        shape=(1, 2, 2),
+        solver=diffrax.Euler(),
+        dt0=0.5,
+        t0=0.0,
+        t1=1.0,
+        stepsize_controller=diffrax.ConstantStepSize(),
+    )
+
+    result = compute_fid_metrics(
+        accumulators={"fid": FIDAccumulator(encoder=_identity_encoder)},
+        model=model,
+        val_dataloader=dataloader,
+        generate_fn=generate_fn,
+        n_samples=4,
+        gen_batch_size=2,
+        key=jax.random.PRNGKey(25),
+        parallel_generation={"enabled": True, "min_devices": 2},
+        data_parallel=data_parallel,
+    )
+
+    assert np.isfinite(result["fid"])
 
 
 def test_parallel_generation_does_not_donate_model_argument():

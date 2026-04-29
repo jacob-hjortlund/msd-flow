@@ -355,6 +355,25 @@ def _parallel_batched_generate(model, keys, generate_fn):
     return jax.vmap(lambda key: generate_fn(model, key=key))(keys)
 
 
+def _device_put_array_leaves(pytree: Any, sharding: Any | None) -> Any:
+    """Place every array leaf in a pytree onto a target sharding.
+
+    Args:
+        pytree: Model or model-like pytree that may contain JAX array leaves.
+        sharding: Target sharding for array leaves. ``None`` returns the input
+            unchanged.
+
+    Returns:
+        Pytree with array leaves explicitly placed on ``sharding``.
+    """
+    if sharding is None:
+        return pytree
+    return jax.tree_util.tree_map(
+        lambda leaf: jax.device_put(leaf, sharding) if eqx.is_array(leaf) else leaf,
+        pytree,
+    )
+
+
 def _generate_fake_images(
     model,
     keys: jax.Array,
@@ -375,9 +394,8 @@ def _generate_fake_images(
     if not fid_parallel.enabled:
         return _batched_generate(model, keys, generate_fn)
 
-    sharded_model = eqx.filter_shard(model, fid_parallel.model_sharding)
     sharded_keys = jax.device_put(keys, fid_parallel.data_sharding)
-    fake_images = _parallel_batched_generate(sharded_model, sharded_keys, generate_fn)
+    fake_images = _parallel_batched_generate(model, sharded_keys, generate_fn)
     return jnp.asarray(jax.device_get(fake_images))
 
 
@@ -486,6 +504,10 @@ def compute_fid_metrics(
     for acc in accumulators.values():
         acc.reset()
 
+    generation_model = model
+    if fid_parallel.enabled:
+        generation_model = _device_put_array_leaves(model, fid_parallel.model_sharding)
+
     n_generated = 0
 
     pbar = tqdm(total=n_samples, desc="FID fake", leave=False, dynamic_ncols=True)
@@ -500,7 +522,7 @@ def compute_fid_metrics(
         key = all_keys[0]
         sub_keys = all_keys[1:]
         fake_images = _generate_fake_images(
-            model=model,
+            model=generation_model,
             keys=sub_keys,
             generate_fn=generate_fn,
             fid_parallel=fid_parallel,
