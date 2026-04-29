@@ -693,8 +693,8 @@ def train(
             sample_keys = jax.random.split(sampling_key, num_samples)
             images = batched_sample_fn(ema_model, sample_keys)
             images = np.asarray(images).squeeze()
-            epoch_samples_dir = os.path.join(samples_dir, f"epoch_{epoch + 1}")
             if clearml_task is None:
+                epoch_samples_dir = os.path.join(samples_dir, f"epoch_{epoch + 1}")
                 os.makedirs(epoch_samples_dir, exist_ok=True)
                 for i, img in enumerate(images):
                     np.save(os.path.join(epoch_samples_dir, f"sample_{i:03d}.npy"), img)

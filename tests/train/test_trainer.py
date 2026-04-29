@@ -983,6 +983,49 @@ def test_train_generates_samples_to_disk(tmp_path):
     assert len(npy_files) == 4  # 2 epochs x 2 samples (reference samples excluded)
 
 
+def test_train_logs_samples_to_clearml_without_samples_dir(tmp_path):
+    """ClearML sample logging does not require a disk samples_dir."""
+    import jax
+
+    key = jax.random.PRNGKey(6)
+    dl = _make_dataloader()
+    model = _make_small_model()
+    mock_task = MagicMock()
+
+    def fake_sample_fn(model, key):
+        return jnp.zeros((1, 8, 8), dtype=jnp.float32)
+
+    with patch("msdflow.train.trainer.log_samples") as mock_log_samples:
+        train(
+            key=key,
+            model=model,
+            dataloader=dl,
+            val_dataloader=dl,
+            optimizer=OPTIMIZER,
+            loss_fn=lambda model, x_t, u_t, t, cond, cond_mask, key: jnp.mean(x_t),
+            batch_metrics=[],
+            epoch_metrics=[],
+            coupling=_COUPLING,
+            time_sampler=_time_sampler,
+            path_sampler=_PATH_SAMPLER,
+            num_epochs=1,
+            num_steps_per_epoch=1,
+            p_uncond=1.0,
+            ema_decay=0.999,
+            log_every=1,
+            val_every=1,
+            checkpoint_every=10,
+            checkpoint_dir=str(tmp_path / "ckpt"),
+            clearml_task=mock_task,
+            sample_fn=fake_sample_fn,
+            sample_every=1,
+            num_samples=2,
+            samples_dir=None,
+        )
+
+    assert mock_log_samples.call_count == 2
+
+
 def test_train_skips_sampling_when_sample_every_is_zero(tmp_path):
     """No samples are generated when sample_every=0."""
     import jax
