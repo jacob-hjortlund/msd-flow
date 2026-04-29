@@ -207,12 +207,14 @@ class TestArcsinhStretchSplit:
         np.testing.assert_allclose(t.scale, 2.0)
 
     def test_tdigest_cache_includes_split(self, split_dataset):
-        """Verify TDigest cache file includes split name."""
+        """Verify TDigest cache file includes split name and image size."""
         ArcsinhStretch(
             scale=None, percentile=50, data_dir=split_dataset, split="train"
         )
         import os
-        assert os.path.isfile(os.path.join(split_dataset, "arcsinh_tdigest_train.json"))
+        assert os.path.isfile(
+            os.path.join(split_dataset, "arcsinh_tdigest_4_train_function.json")
+        )
 
     def test_explicit_scale_ignores_split(self):
         """Verify explicit scale doesn't require split parameter."""
@@ -251,14 +253,14 @@ class TestGlobalNormSplit:
         np.testing.assert_allclose(t.global_max, 1.0)
 
     def test_tdigest_cache_includes_split(self, split_dataset):
-        """Verify TDigest cache file includes split name."""
+        """Verify TDigest cache file includes split name and image size."""
         GlobalNorm(
             global_min=None, global_max=None,
             data_dir=split_dataset, percentile=50, split="train"
         )
         import os
         assert os.path.isfile(
-            os.path.join(split_dataset, "global_norm_tdigest_50_train.json")
+            os.path.join(split_dataset, "global_norm_tdigest_50_4_train_function.json")
         )
 
     def test_explicit_bounds_ignores_split(self):
@@ -532,26 +534,28 @@ class TestBuildTdigestSampling:
         np.testing.assert_allclose(t1.scale, t2.scale)
 
     def test_sampling_cache_filename_encodes_params(self, large_dataset):
-        """Verify cache filename includes sample_fraction and sample_seed."""
+        """Verify cache filename includes image size, sample_fraction and sample_seed."""
         ArcsinhStretch(
             scale=None, percentile=50, data_dir=large_dataset, split="train",
             sample_fraction=0.1, sample_seed=99,
         )
         assert os.path.isfile(
-            os.path.join(large_dataset, "arcsinh_tdigest_train_s0.1_seed99.json")
+            os.path.join(
+                large_dataset, "arcsinh_tdigest_4_train_s0.1_seed99_function.json"
+            )
         )
 
     def test_no_sampling_cache_filename_unchanged(self, large_dataset):
-        """Verify no sampling produces the original cache filename."""
+        """Verify no sampling produces the cache filename without sampling suffix."""
         ArcsinhStretch(
             scale=None, percentile=50, data_dir=large_dataset, split="train",
         )
         assert os.path.isfile(
-            os.path.join(large_dataset, "arcsinh_tdigest_train.json")
+            os.path.join(large_dataset, "arcsinh_tdigest_4_train_function.json")
         )
 
     def test_global_norm_sampling_cache_filename(self, large_dataset):
-        """Verify GlobalNorm cache filename encodes sampling params."""
+        """Verify GlobalNorm cache filename encodes image size and sampling params."""
         GlobalNorm(
             global_min=None, global_max=None,
             data_dir=large_dataset, percentile=50, split="train",
@@ -559,7 +563,8 @@ class TestBuildTdigestSampling:
         )
         assert os.path.isfile(
             os.path.join(
-                large_dataset, "global_norm_tdigest_50_train_s0.2_seed7.json"
+                large_dataset,
+                "global_norm_tdigest_50_4_train_s0.2_seed7_function.json",
             )
         )
 
@@ -681,10 +686,10 @@ class TestCacheDir:
             split="train", cache_dir=cache_dir,
         )
         assert os.path.isfile(
-            os.path.join(cache_dir, "arcsinh_tdigest_train.json")
+            os.path.join(cache_dir, "arcsinh_tdigest_4_train_function.json")
         )
         assert not os.path.isfile(
-            os.path.join(data_dir, "arcsinh_tdigest_train.json")
+            os.path.join(data_dir, "arcsinh_tdigest_4_train_function.json")
         )
 
     def test_global_norm_writes_cache_to_cache_dir(self, split_dirs):
@@ -696,10 +701,10 @@ class TestCacheDir:
             split="train", cache_dir=cache_dir,
         )
         assert os.path.isfile(
-            os.path.join(cache_dir, "global_norm_tdigest_50_train.json")
+            os.path.join(cache_dir, "global_norm_tdigest_50_4_train_function.json")
         )
         assert not os.path.isfile(
-            os.path.join(data_dir, "global_norm_tdigest_50_train.json")
+            os.path.join(data_dir, "global_norm_tdigest_50_4_train_function.json")
         )
 
     def test_cache_dir_none_falls_back_to_data_dir(self, split_dirs):
@@ -710,7 +715,7 @@ class TestCacheDir:
             split="train", cache_dir=None,
         )
         assert os.path.isfile(
-            os.path.join(data_dir, "arcsinh_tdigest_train.json")
+            os.path.join(data_dir, "arcsinh_tdigest_4_train_function.json")
         )
 
     def test_cache_dir_reads_existing_cache(self, split_dirs):
@@ -934,8 +939,9 @@ class TestClusterClipDerived:
             data_dir=bimodal_dataset,
             split="train",
         )
-        # Two clusters at 1.0 and 10.0 → midpoint is 5.5
-        np.testing.assert_allclose(t.max, 5.5, atol=1e-6)
+        # Clustering happens in log10 space, so the boundary in linear space
+        # is sqrt(10) (geometric mean of 1.0 and 10.0).
+        np.testing.assert_allclose(t.max, np.sqrt(10.0), rtol=1e-3)
 
     def test_derived_min_default_is_zero(self, bimodal_dataset):
         """Default min stays 0.0 in derived mode."""
@@ -1062,4 +1068,4 @@ class TestClusterClipDerived:
             positive_only=True,
         )
         assert t_pos.max > t_all.max
-        np.testing.assert_allclose(t_pos.max, 5.5, atol=1e-6)
+        np.testing.assert_allclose(t_pos.max, np.sqrt(10.0), rtol=1e-3)
