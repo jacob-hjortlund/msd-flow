@@ -420,7 +420,10 @@ def _call_epoch_metric(
     parameters = tuple(signature.parameters.values())
     accepts_data_parallel_keyword = any(
         parameter.kind is inspect.Parameter.VAR_KEYWORD
-        or parameter.name == "data_parallel"
+        or (
+            parameter.name == "data_parallel"
+            and parameter.kind is not inspect.Parameter.POSITIONAL_ONLY
+        )
         for parameter in parameters
     )
     accepts_data_parallel_positional = any(
@@ -491,8 +494,9 @@ def train(
         epoch_metrics:          List of callables with signature
                                 ``(model, val_dataloader, key) -> scalar | dict``.
                                 Evaluated every ``val_every`` epochs. Receives
-                                the val dataloader iterable directly. Extra
-                                dependencies must be baked in via partial.
+                                the val dataloader iterable directly. Metrics
+                                that accept a ``data_parallel`` keyword receive
+                                the resolved DataParallelConfig.
                                 If a metric returns a dict, its entries are
                                 merged into epoch_metric_results directly.
         coupling:               Callable ``(x0_np, x1_np) -> x0_paired``.

@@ -1010,6 +1010,27 @@ def test_call_epoch_metric_passes_data_parallel_when_supported():
     assert received["data_parallel"] is cfg
 
 
+def test_call_epoch_metric_ignores_positional_only_data_parallel_parameter():
+    """Positional-only data_parallel does not trigger unsupported keyword dispatch."""
+    received = {}
+    cfg = make_data_parallel_config(enabled=True, min_devices=1)
+
+    def metric(model, val_dataloader, key, data_parallel=None, /):
+        received["data_parallel"] = data_parallel
+        return {"metric": 1.0}
+
+    result = _call_epoch_metric(
+        metric,
+        model=None,
+        val_dataloader=[],
+        key=jax.random.PRNGKey(0),
+        data_parallel=cfg,
+    )
+
+    assert result == {"metric": 1.0}
+    assert received["data_parallel"] is None
+
+
 def test_call_epoch_metric_keeps_three_argument_metrics_working():
     """Existing epoch metrics without data_parallel keep their old signature."""
     received = {}
