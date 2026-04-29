@@ -561,7 +561,9 @@ def train(
                 )
                 if (microstep + 1) % grad_accum_steps == 0:
                     if not ema_initialized:
-                        ema_model = state.model
+                        ema_model = jax.tree_util.tree_map(
+                            lambda x: jnp.copy(x) if eqx.is_array(x) else x, state.model
+                        )
                         ema_initialized = True
                     else:
                         ema_model = ema_update(ema_model, state.model, ema_decay)
