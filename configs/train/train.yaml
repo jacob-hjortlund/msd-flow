@@ -37,6 +37,10 @@ optimizer:
   _target_: optax.adamw
   learning_rate: 1.0e-4
 grad_accum_steps: 1
+data_parallel:
+  enabled: false
+  axis_name: batch
+  min_devices: 2
 coupling:
   _target_: msdflow.flow.independent_coupling
   _partial_: true
