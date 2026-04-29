@@ -1031,6 +1031,29 @@ def test_call_epoch_metric_passes_positional_only_data_parallel_parameter():
     assert received["data_parallel"] is cfg
 
 
+def test_call_epoch_metric_prioritizes_positional_only_data_parallel_over_kwargs():
+    """A positional-only data_parallel is filled positionally despite **kwargs."""
+    received = {}
+    cfg = make_data_parallel_config(enabled=True, min_devices=1)
+
+    def metric(model, val_dataloader, key, data_parallel, /, **kwargs):
+        received["data_parallel"] = data_parallel
+        received["kwargs"] = kwargs
+        return {"metric": 1.0}
+
+    result = _call_epoch_metric(
+        metric,
+        model=None,
+        val_dataloader=[],
+        key=jax.random.PRNGKey(0),
+        data_parallel=cfg,
+    )
+
+    assert result == {"metric": 1.0}
+    assert received["data_parallel"] is cfg
+    assert received["kwargs"] == {}
+
+
 def test_call_epoch_metric_keeps_three_argument_metrics_working():
     """Existing epoch metrics without data_parallel keep their old signature."""
     received = {}

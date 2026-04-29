@@ -418,6 +418,11 @@ def _call_epoch_metric(
         return metric(model, val_dataloader, key)
 
     parameters = tuple(signature.parameters.values())
+    has_positional_only_data_parallel = (
+        len(parameters) >= 4
+        and parameters[3].name == "data_parallel"
+        and parameters[3].kind is inspect.Parameter.POSITIONAL_ONLY
+    )
     accepts_data_parallel_keyword = any(
         parameter.kind is inspect.Parameter.VAR_KEYWORD
         or (
@@ -428,11 +433,9 @@ def _call_epoch_metric(
     )
     accepts_data_parallel_positional = any(
         parameter.kind is inspect.Parameter.VAR_POSITIONAL for parameter in parameters
-    ) or (
-        len(parameters) >= 4
-        and parameters[3].name == "data_parallel"
-        and parameters[3].kind is inspect.Parameter.POSITIONAL_ONLY
     )
+    if has_positional_only_data_parallel:
+        return metric(model, val_dataloader, key, data_parallel)
     if accepts_data_parallel_keyword:
         return metric(model, val_dataloader, key, data_parallel=data_parallel)
     if accepts_data_parallel_positional:
