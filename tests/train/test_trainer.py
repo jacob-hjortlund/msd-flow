@@ -833,11 +833,12 @@ def test_train_raises_if_sample_fn_set_but_no_samples_dir():
 
     key = jax.random.PRNGKey(5)
     dl = _make_dataloader()
+    model = _make_small_model()
 
     with pytest.raises(ValueError, match="samples_dir"):
         train(
             key=key,
-            model=SMALL_MODEL,
+            model=model,
             dataloader=dl,
             val_dataloader=dl,
             optimizer=OPTIMIZER,
@@ -1030,9 +1031,10 @@ def test_train_invalid_monitor_mode_raises(tmp_path):
     kwargs = _make_train_kwargs(num_epochs=1)
     kwargs["checkpoint_dir"] = str(tmp_path)
     kwargs["monitor_mode"] = "diagonal"
+    model = _make_small_model()
     with pytest.raises(ValueError, match="monitor_mode"):
         train(
-            model=SMALL_MODEL,
+            model=model,
             dataloader=dataloader,
             val_dataloader=val_dataloader,
             **kwargs,
@@ -1243,9 +1245,10 @@ def test_train_rejects_grad_accum_steps_below_one(tmp_path):
     val_dataloader = _fake_val_dataloader()
     kwargs = _make_train_kwargs(num_epochs=1)
     kwargs["checkpoint_dir"] = str(tmp_path)
+    model = _make_small_model()
     with pytest.raises(ValueError, match="grad_accum_steps"):
         train(
-            model=SMALL_MODEL,
+            model=model,
             dataloader=dataloader,
             val_dataloader=val_dataloader,
             grad_accum_steps=0,
