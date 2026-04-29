@@ -378,6 +378,107 @@ def test_compute_fid_metrics_n_real_none_uses_full_dataset():
     assert n == 12
 
 
+def test_compute_fid_metrics_parallel_generation_min_one_runs():
+    """min_devices=1 exercises the parallel generation path on CPU-only CI."""
+    acc = FIDAccumulator(encoder=_identity_encoder)
+    dataloader = _make_dummy_dataloader(n_batches=2, batch_size=4)
+
+    result = compute_fid_metrics(
+        accumulators={"fid": acc},
+        model=None,
+        val_dataloader=dataloader,
+        generate_fn=_dummy_generate_fn,
+        n_samples=8,
+        gen_batch_size=4,
+        key=jax.random.PRNGKey(20),
+        parallel_generation={"enabled": True, "min_devices": 1},
+    )
+
+    assert np.isfinite(result["fid"])
+    _, _, n_fake = acc.statistics()
+    assert n_fake == 8
+
+
+def test_compute_fid_metrics_parallel_generation_preserves_exact_n_samples():
+    """Extra internally generated final-chunk images must not enter statistics."""
+    acc = FIDAccumulator(encoder=_identity_encoder)
+    dataloader = _make_dummy_dataloader(n_batches=2, batch_size=4)
+
+    result = compute_fid_metrics(
+        accumulators={"fid": acc},
+        model=None,
+        val_dataloader=dataloader,
+        generate_fn=_dummy_generate_fn,
+        n_samples=6,
+        gen_batch_size=4,
+        key=jax.random.PRNGKey(21),
+        parallel_generation={"enabled": True, "min_devices": 1},
+    )
+
+    assert np.isfinite(result["fid"])
+    _, _, n_fake = acc.statistics()
+    assert n_fake == 6
+
+
+def _model_generate_fn(model, key):
+    """Generate an image from a model array without mutating the model."""
+    noise = jax.random.normal(key, model.shape)
+    return model + jnp.zeros_like(noise)
+
+
+def test_parallel_generation_does_not_donate_model_argument():
+    """FID parallel generation must leave the model reusable after a call."""
+    model = jnp.ones((1, 2, 2), dtype=jnp.float32)
+    acc = FIDAccumulator(encoder=_identity_encoder)
+    dataloader = _make_dummy_dataloader(n_batches=2, batch_size=4)
+
+    compute_fid_metrics(
+        accumulators={"fid": acc},
+        model=model,
+        val_dataloader=dataloader,
+        generate_fn=_model_generate_fn,
+        n_samples=4,
+        gen_batch_size=4,
+        key=jax.random.PRNGKey(22),
+        parallel_generation={"enabled": True, "min_devices": 1},
+    )
+
+    np.testing.assert_allclose(np.asarray(model), np.ones((1, 2, 2), dtype=np.float32))
+
+    compute_fid_metrics(
+        accumulators={"fid": acc},
+        model=model,
+        val_dataloader=_make_empty_dataloader(),
+        generate_fn=_model_generate_fn,
+        n_samples=4,
+        gen_batch_size=4,
+        key=jax.random.PRNGKey(23),
+        parallel_generation={"enabled": True, "min_devices": 1},
+    )
+
+
+def test_fid_metric_accepts_parallel_generation_config():
+    """FIDMetric forwards parallel_generation and data_parallel to compute."""
+    metric = FIDMetric(
+        accumulators={"fid": FIDAccumulator(encoder=_identity_encoder)},
+        generate_fn=_dummy_generate_fn,
+        n_samples=4,
+        gen_batch_size=4,
+        parallel_generation={"enabled": True, "min_devices": 1},
+    )
+    dataloader = _make_dummy_dataloader(n_batches=2, batch_size=4)
+    data_parallel = make_data_parallel_config(enabled=True, min_devices=1)
+
+    result = metric(
+        model=None,
+        val_dataloader=dataloader,
+        key=jax.random.PRNGKey(24),
+        data_parallel=data_parallel,
+    )
+
+    assert np.isfinite(result["fid"])
+
+
 def test_train_has_no_num_val_eval_batches_param():
     """The num_val_eval_batches parameter must be removed from train()."""
     sig = inspect.signature(train)

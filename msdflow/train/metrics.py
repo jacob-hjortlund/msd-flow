@@ -334,6 +334,47 @@ def _batched_generate(model, keys, generate_fn):
     return jax.vmap(lambda key: generate_fn(model, key=key))(keys)
 
 
+@eqx.filter_jit
+def _parallel_batched_generate(model, keys, generate_fn):
+    """Generate a sharded fake-image batch without donating the model.
+
+    Args:
+        model: Generative model or model-like pytree passed to generate_fn.
+        keys: Device-sharded PRNG keys with leading sample dimension.
+        generate_fn: Callable ``(model, key=...) -> image``.
+
+    Returns:
+        Generated image batch.
+    """
+    return jax.vmap(lambda key: generate_fn(model, key=key))(keys)
+
+
+def _generate_fake_images(
+    model,
+    keys: jax.Array,
+    generate_fn: callable,
+    fid_parallel: DataParallelConfig,
+) -> jax.Array:
+    """Generate fake images through the selected FID generation path.
+
+    Args:
+        model: Generative model passed to generate_fn.
+        keys: PRNG keys for fake-image generation.
+        generate_fn: Callable ``(model, key=...) -> image``.
+        fid_parallel: Resolved FID parallel-generation config.
+
+    Returns:
+        Generated image batch as a normal JAX array.
+    """
+    if not fid_parallel.enabled:
+        return _batched_generate(model, keys, generate_fn)
+
+    sharded_model = eqx.filter_shard(model, fid_parallel.model_sharding)
+    sharded_keys = jax.device_put(keys, fid_parallel.data_sharding)
+    fake_images = _parallel_batched_generate(sharded_model, sharded_keys, generate_fn)
+    return jnp.asarray(jax.device_get(fake_images))
+
+
 def compute_fid_metrics(
     accumulators: dict[str, "FIDAccumulator"],
     model,
@@ -343,6 +384,8 @@ def compute_fid_metrics(
     gen_batch_size: int,
     key: jax.Array,
     n_real: int | None = None,
+    parallel_generation: Any = None,
+    data_parallel: DataParallelConfig | None = None,
 ) -> dict[str, float]:
     """Compute FID scores for one or more encoders.
 
@@ -363,10 +406,35 @@ def compute_fid_metrics(
         key:             PRNG key for generation.
         n_real:          Maximum number of real images to use from
             ``val_dataloader``. ``None`` (default) uses the full dataset.
+        parallel_generation: Optional FID-specific parallel generation config.
+        data_parallel: Optional resolved trainer data-parallel config used for
+            parallel_generation defaults.
 
     Returns:
         Dict mapping accumulator names to FID scores.
     """
+    fid_parallel = _resolve_fid_parallel_generation_config(
+        parallel_generation=parallel_generation,
+        data_parallel=data_parallel,
+    )
+    effective_gen_batch_size = int(gen_batch_size)
+    if fid_parallel.enabled:
+        effective_gen_batch_size = _effective_parallel_gen_batch_size(
+            gen_batch_size=gen_batch_size,
+            num_devices=fid_parallel.num_devices,
+        )
+        if effective_gen_batch_size != int(gen_batch_size):
+            _log_parallel_gen_batch_size_adjustment(
+                gen_batch_size,
+                effective_gen_batch_size,
+                fid_parallel.num_devices,
+            )
+    elif int(gen_batch_size) < 1:
+        raise ValueError(
+            "fid_metric.gen_batch_size must be >= 1; "
+            f"got gen_batch_size={gen_batch_size}"
+        )
+
     # --- Real-image pass (skip if all accumulators have cached stats) ---
     if (n_real == 0) or (n_real is None):
         n_real = len(val_dataloader.dataset)
@@ -416,15 +484,27 @@ def compute_fid_metrics(
 
     pbar = tqdm(total=n_samples, desc="FID fake", leave=False, dynamic_ncols=True)
     while n_generated < n_samples:
-        chunk_size = min(gen_batch_size, n_samples - n_generated)
+        remaining = n_samples - n_generated
+        chunk_size = (
+            effective_gen_batch_size
+            if fid_parallel.enabled
+            else min(effective_gen_batch_size, remaining)
+        )
         all_keys = jax.random.split(key, chunk_size + 1)
         key = all_keys[0]
         sub_keys = all_keys[1:]
-        fake_images = _batched_generate(model, sub_keys, generate_fn)
+        fake_images = _generate_fake_images(
+            model=model,
+            keys=sub_keys,
+            generate_fn=generate_fn,
+            fid_parallel=fid_parallel,
+        )
+        consume_n = min(remaining, fake_images.shape[0])
+        fake_images = fake_images[:consume_n]
         for acc in accumulators.values():
             acc.update(fake_images)
-        n_generated += chunk_size
-        pbar.update(chunk_size)
+        n_generated += consume_n
+        pbar.update(consume_n)
     pbar.close()
 
     # --- Compute FID per accumulator ---
@@ -455,6 +535,7 @@ class FIDMetric:
         gen_batch_size: Images generated and encoded per chunk.
         n_real:         Maximum real images from val_dataloader. ``None``
             uses the full dataset.
+        parallel_generation: Optional FID-specific parallel generation config.
     """
 
     def __init__(
@@ -464,20 +545,30 @@ class FIDMetric:
         n_samples: int | None = None,
         gen_batch_size: int = 64,
         n_real: int | None = None,
+        parallel_generation: Any = None,
     ):
         self.accumulators = accumulators
         self.generate_fn = generate_fn
         self.n_samples = n_samples
         self.gen_batch_size = gen_batch_size
         self.n_real = n_real
+        self.parallel_generation = parallel_generation
 
-    def __call__(self, model, val_dataloader, key: jax.Array) -> dict[str, float]:
+    def __call__(
+        self,
+        model,
+        val_dataloader,
+        key: jax.Array,
+        data_parallel: DataParallelConfig | None = None,
+    ) -> dict[str, float]:
         """Compute FID scores for all accumulators.
 
         Args:
             model:          Generative model passed to ``generate_fn``.
             val_dataloader: Iterable yielding ``(images, meta)`` tuples.
             key:            PRNG key for generation.
+            data_parallel:  Optional resolved trainer data-parallel config used
+                for parallel_generation defaults.
 
         Returns:
             Dict mapping accumulator names to FID scores.
@@ -491,6 +582,8 @@ class FIDMetric:
             gen_batch_size=self.gen_batch_size,
             key=key,
             n_real=self.n_real,
+            parallel_generation=self.parallel_generation,
+            data_parallel=data_parallel,
         )
 
 
