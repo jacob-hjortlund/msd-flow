@@ -32,6 +32,9 @@ _epoch_metrics_dict:
     n_samples: null
     gen_batch_size: ${data.dataloader.batch_size}
     n_real: null
+    parallel_generation:
+      enabled: ${train.data_parallel.enabled}
+      min_devices: ${train.data_parallel.min_devices}
 epoch_metrics: "${oc.dict.values: train._epoch_metrics_dict}"
 optimizer:
   _target_: optax.adamw
