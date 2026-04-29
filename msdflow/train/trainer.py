@@ -459,6 +459,28 @@ def train(
             )
         )
 
+        ref_images = []
+        for images_np, _ in val_dataloader:
+            ref_images.append(np.asarray(images_np))
+            if sum(len(b) for b in ref_images) >= num_samples:
+                break
+        ref_images = np.concatenate(ref_images, axis=0)[:num_samples].squeeze()
+        if clearml_task is None:
+            ref_samples_dir = os.path.join(samples_dir, f"reference")
+            os.makedirs(ref_samples_dir, exist_ok=True)
+            for i, img in enumerate(ref_images):
+                np.save(os.path.join(ref_samples_dir, f"sample_{i:03d}.npy"), img)
+        else:
+            log_samples(
+                task=clearml_task,
+                images=ref_images,
+                epoch=1,
+                title="Reference Samples",
+                share_clim=samples_share_clim,
+                plot_method=samples_plot_method,
+                arcsinh_percentile=samples_arcsinh_percentile,
+            )
+
     if monitor_mode not in ("min", "max"):
         raise ValueError(f"monitor_mode must be 'min' or 'max', got {monitor_mode!r}")
 
@@ -467,28 +489,6 @@ def train(
 
     if grad_accum_steps > 1:
         optimizer = optax.MultiSteps(optimizer, every_k_schedule=grad_accum_steps)
-
-    ref_images = []
-    for images_np, _ in val_dataloader:
-        ref_images.append(np.asarray(images_np))
-        if sum(len(b) for b in ref_images) >= num_samples:
-            break
-    ref_images = np.concatenate(ref_images, axis=0)[:num_samples].squeeze()
-    ref_samples_dir = os.path.join(samples_dir, f"reference")
-    if clearml_task is None:
-        os.makedirs(ref_samples_dir, exist_ok=True)
-        for i, img in enumerate(ref_images):
-            np.save(os.path.join(ref_samples_dir, f"sample_{i:03d}.npy"), img)
-    else:
-        log_samples(
-            task=clearml_task,
-            images=ref_images,
-            epoch=1,
-            title="Reference Samples",
-            share_clim=samples_share_clim,
-            plot_method=samples_plot_method,
-            arcsinh_percentile=samples_arcsinh_percentile,
-        )
 
     state = make_train_state(model, optimizer)
 
