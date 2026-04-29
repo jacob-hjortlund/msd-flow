@@ -263,6 +263,12 @@ def _resolve_fid_parallel_generation_config(
             )
             raw_min_devices = parallel_generation.get("min_devices", min_devices)
             min_devices = int(raw_min_devices)
+        if enabled and len(jax.local_devices()) < min_devices:
+            return make_data_parallel_config(
+                enabled=False,
+                axis_name=_FID_PARALLEL_AXIS_NAME,
+                min_devices=min_devices,
+            )
         return make_data_parallel_config(
             enabled=enabled,
             axis_name=_FID_PARALLEL_AXIS_NAME,

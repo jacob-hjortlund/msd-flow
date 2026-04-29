@@ -166,15 +166,21 @@ def test_resolve_fid_parallel_generation_can_disable_inherited_enabled():
     assert fid_cfg.axis_name == "fid_sample"
 
 
-def test_resolve_fid_parallel_generation_rejects_unavailable_devices():
-    """Enabled FID parallel generation requires enough visible local devices."""
+def test_resolve_fid_parallel_generation_falls_back_when_devices_unavailable():
+    """Enabled FID parallel generation falls back when devices are unavailable."""
     unavailable = len(jax.local_devices()) + 1
 
-    with pytest.raises(ValueError, match="fid_metric.parallel_generation"):
-        _resolve_fid_parallel_generation_config(
-            parallel_generation={"enabled": True, "min_devices": unavailable},
-            data_parallel=None,
-        )
+    fid_cfg = _resolve_fid_parallel_generation_config(
+        parallel_generation={"enabled": True, "min_devices": unavailable},
+        data_parallel=None,
+    )
+
+    assert fid_cfg.enabled is False
+    assert fid_cfg.axis_name == "fid_sample"
+    assert fid_cfg.min_devices == unavailable
+    assert fid_cfg.num_devices == 1
+    assert fid_cfg.data_sharding is None
+    assert fid_cfg.model_sharding is None
 
 
 @pytest.mark.parametrize("min_devices", ["two", None])
