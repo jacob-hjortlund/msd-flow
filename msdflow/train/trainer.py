@@ -59,7 +59,7 @@ def make_train_step(optimizer: optax.GradientTransformation, loss_fn: callable):
                    ``(model, x_t, u_t, t, cond, cond_mask, key) -> scalar``.
     """
 
-    @eqx.filter_jit
+    @eqx.filter_jit(donate="all")
     def train_step(
         state: TrainState,
         x_t: jax.Array,
@@ -278,7 +278,7 @@ def make_batch_metric_step(batch_metrics: list):
             "Each metric must have a unique __name__."
         )
 
-    @eqx.filter_jit
+    @eqx.filter_jit(donate="all-except-first")
     def batch_metric_step(
         model,
         x_t: jax.Array,

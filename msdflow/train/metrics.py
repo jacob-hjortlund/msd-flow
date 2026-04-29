@@ -185,7 +185,7 @@ class FIDAccumulator:
         self._n = 0
 
 
-@eqx.filter_jit
+@eqx.filter_jit(donate="all-except-first")
 def _batched_generate(model, keys, generate_fn):
     return jax.vmap(lambda key: generate_fn(model, key=key))(keys)
 
