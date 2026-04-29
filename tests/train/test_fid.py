@@ -10,9 +10,13 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 
 from msdflow.train.metrics import _frechet_distance
+from msdflow.train.metrics import _effective_parallel_gen_batch_size
+from msdflow.train.metrics import _log_parallel_gen_batch_size_adjustment
+from msdflow.train.metrics import _resolve_fid_parallel_generation_config
 from msdflow.train.metrics import compute_fid_metrics
 from msdflow.train.metrics import FIDAccumulator
 from msdflow.train.metrics import FIDMetric
+from msdflow.train.parallel import make_data_parallel_config
 from msdflow.train.trainer import train
 
 
@@ -133,6 +137,72 @@ def _make_empty_dataloader(shape=(1, 2, 2)):
 def _dummy_generate_fn(model, key):
     """Generate a single fake image of shape (1, 2, 2) from random noise."""
     return jax.random.normal(key, (1, 2, 2))
+
+
+def test_resolve_fid_parallel_generation_inherits_trainer_config():
+    """FID parallel generation inherits enabled and min_devices by default."""
+    trainer_cfg = make_data_parallel_config(enabled=True, min_devices=1)
+
+    fid_cfg = _resolve_fid_parallel_generation_config(
+        parallel_generation=None,
+        data_parallel=trainer_cfg,
+    )
+
+    assert fid_cfg.enabled is True
+    assert fid_cfg.min_devices == 1
+    assert fid_cfg.axis_name == "fid_sample"
+
+
+def test_resolve_fid_parallel_generation_can_disable_inherited_enabled():
+    """FID parallel generation can be disabled even when training is enabled."""
+    trainer_cfg = make_data_parallel_config(enabled=True, min_devices=1)
+
+    fid_cfg = _resolve_fid_parallel_generation_config(
+        parallel_generation={"enabled": False},
+        data_parallel=trainer_cfg,
+    )
+
+    assert fid_cfg.enabled is False
+    assert fid_cfg.axis_name == "fid_sample"
+
+
+def test_resolve_fid_parallel_generation_rejects_unavailable_devices():
+    """Enabled FID parallel generation requires enough visible local devices."""
+    unavailable = len(jax.local_devices()) + 1
+
+    with pytest.raises(ValueError, match="fid_metric.parallel_generation"):
+        _resolve_fid_parallel_generation_config(
+            parallel_generation={"enabled": True, "min_devices": unavailable},
+            data_parallel=None,
+        )
+
+
+def test_effective_parallel_gen_batch_size_rounds_up():
+    """Parallel FID generation rounds global chunk size up to a device multiple."""
+    effective = _effective_parallel_gen_batch_size(
+        gen_batch_size=63,
+        num_devices=2,
+    )
+
+    assert effective == 64
+
+
+def test_effective_parallel_gen_batch_size_rejects_invalid_values():
+    """FID generation requires a positive global generation batch size."""
+    with pytest.raises(ValueError, match="gen_batch_size"):
+        _effective_parallel_gen_batch_size(gen_batch_size=0, num_devices=2)
+
+
+def test_log_parallel_gen_batch_size_adjustment_warns(caplog):
+    """FID generation logs when the effective global chunk size changes."""
+    _log_parallel_gen_batch_size_adjustment(
+        gen_batch_size=3,
+        effective_gen_batch_size=4,
+        num_devices=2,
+    )
+
+    assert "fid_metric.parallel_generation" in caplog.text
+    assert "from 3 to 4" in caplog.text
 
 
 def test_compute_fid_metrics_returns_dict_with_correct_keys():

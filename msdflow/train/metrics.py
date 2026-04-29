@@ -1,3 +1,8 @@
+import logging
+import math
+from collections.abc import Mapping
+from typing import Any
+
 import jax
 import equinox as eqx
 import jax.numpy as jnp
@@ -5,6 +10,14 @@ import numpy as np
 from scipy.linalg import sqrtm
 from jax.scipy.ndimage import map_coordinates
 from tqdm import tqdm
+
+from msdflow.train.parallel import DataParallelConfig
+from msdflow.train.parallel import make_data_parallel_config
+from msdflow.train.parallel import resolve_data_parallel_config
+
+
+logger = logging.getLogger(__name__)
+_FID_PARALLEL_AXIS_NAME = "fid_sample"
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +196,136 @@ class FIDAccumulator:
         self._sum_features = None
         self._sum_outer = None
         self._n = 0
+
+
+def _parse_parallel_generation_enabled(value: Any) -> bool:
+    """Parse a FID parallel-generation enabled flag.
+
+    Args:
+        value: Boolean-like value from direct mappings or Hydra config.
+
+    Returns:
+        Parsed boolean.
+
+    Raises:
+        ValueError: If value is not a supported boolean representation.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "y", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "n", "off"}:
+            return False
+    raise ValueError(
+        "fid_metric.parallel_generation.enabled must be a boolean or one of "
+        "'true', 'false', '1', '0', 'yes', 'no', 'on', or 'off'; "
+        f"got {value!r}"
+    )
+
+
+def _resolve_fid_parallel_generation_config(
+    parallel_generation: Any = None,
+    data_parallel: DataParallelConfig | None = None,
+) -> DataParallelConfig:
+    """Resolve FID fake-image parallel generation settings.
+
+    Args:
+        parallel_generation: None or a mapping-like object with enabled and
+            min_devices keys.
+        data_parallel: Resolved trainer data-parallel config used for defaults.
+
+    Returns:
+        DataParallelConfig using the internal FID sample-axis name.
+
+    Raises:
+        TypeError: If parallel_generation is not a supported config object.
+        ValueError: If enabled settings are invalid.
+    """
+    inherited = resolve_data_parallel_config(data_parallel)
+    enabled = inherited.enabled
+    min_devices = inherited.min_devices
+
+    if parallel_generation is not None:
+        if not (
+            isinstance(parallel_generation, Mapping)
+            or hasattr(parallel_generation, "get")
+        ):
+            raise TypeError(
+                "fid_metric.parallel_generation must be None or mapping-like; "
+                f"got {type(parallel_generation).__name__}"
+            )
+        enabled = _parse_parallel_generation_enabled(
+            parallel_generation.get("enabled", enabled)
+        )
+        min_devices = int(parallel_generation.get("min_devices", min_devices))
+
+    try:
+        return make_data_parallel_config(
+            enabled=enabled,
+            axis_name=_FID_PARALLEL_AXIS_NAME,
+            min_devices=min_devices,
+        )
+    except ValueError as exc:
+        raise ValueError(
+            "fid_metric.parallel_generation is invalid: "
+            f"enabled={enabled}, min_devices={min_devices}: {exc}"
+        ) from exc
+
+
+def _effective_parallel_gen_batch_size(
+    gen_batch_size: int,
+    num_devices: int,
+) -> int:
+    """Return a device-divisible global generation chunk size.
+
+    Args:
+        gen_batch_size: Configured global FID generation chunk size.
+        num_devices: Number of devices in the FID sample mesh.
+
+    Returns:
+        Effective global chunk size divisible by num_devices.
+
+    Raises:
+        ValueError: If gen_batch_size or num_devices is less than one.
+    """
+    gen_batch_size = int(gen_batch_size)
+    num_devices = int(num_devices)
+    if gen_batch_size < 1:
+        raise ValueError(
+            "fid_metric.gen_batch_size must be >= 1; "
+            f"got gen_batch_size={gen_batch_size}"
+        )
+    if num_devices < 1:
+        raise ValueError(
+            "fid_metric.parallel_generation requires num_devices >= 1; "
+            f"got num_devices={num_devices}"
+        )
+    return int(math.ceil(gen_batch_size / num_devices) * num_devices)
+
+
+def _log_parallel_gen_batch_size_adjustment(
+    gen_batch_size: int,
+    effective_gen_batch_size: int,
+    num_devices: int,
+) -> None:
+    """Warn when FID parallel generation adjusts the global chunk size.
+
+    Args:
+        gen_batch_size: Configured global generation chunk size.
+        effective_gen_batch_size: Device-divisible chunk size that will run.
+        num_devices: Number of local devices in the FID sample mesh.
+    """
+    if int(effective_gen_batch_size) == int(gen_batch_size):
+        return
+    logger.warning(
+        "fid_metric.parallel_generation adjusted gen_batch_size "
+        "from %s to %s for %s local device(s)",
+        gen_batch_size,
+        effective_gen_batch_size,
+        num_devices,
+    )
 
 
 @eqx.filter_jit(donate="all-except-first")
