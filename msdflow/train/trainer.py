@@ -25,6 +25,9 @@ from tqdm.contrib.logging import logging_redirect_tqdm
 from msdflow.tracking import log_metrics, log_checkpoint, log_samples
 from msdflow.train.parallel import (
     DataParallelConfig,
+    _parse_data_parallel_enabled,
+    _validate_batch_for_data_parallel,
+    _validate_data_parallel_config,
     make_data_parallel_config,
     resolve_data_parallel_config,
     shard_batch,

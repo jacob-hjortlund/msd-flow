@@ -104,10 +104,24 @@ def test_trainer_reexports_parallel_helpers():
     from msdflow.train import trainer as trainer_module
 
     assert trainer_module.DataParallelConfig is train_parallel.DataParallelConfig
+    assert (
+        trainer_module._parse_data_parallel_enabled
+        is train_parallel._parse_data_parallel_enabled
+    )
+    assert (
+        trainer_module._validate_data_parallel_config
+        is train_parallel._validate_data_parallel_config
+    )
     assert trainer_module.make_data_parallel_config is train_parallel.make_data_parallel_config
     assert (
         trainer_module.resolve_data_parallel_config
         is train_parallel.resolve_data_parallel_config
+    )
+    assert trainer_module.shard_train_state is train_parallel.shard_train_state
+    assert trainer_module.shard_model is train_parallel.shard_model
+    assert (
+        trainer_module._validate_batch_for_data_parallel
+        is train_parallel._validate_batch_for_data_parallel
     )
     assert trainer_module.shard_batch is train_parallel.shard_batch
 
