@@ -1010,12 +1010,12 @@ def test_call_epoch_metric_passes_data_parallel_when_supported():
     assert received["data_parallel"] is cfg
 
 
-def test_call_epoch_metric_ignores_positional_only_data_parallel_parameter():
-    """Positional-only data_parallel does not trigger unsupported keyword dispatch."""
+def test_call_epoch_metric_passes_positional_only_data_parallel_parameter():
+    """Positional-only data_parallel receives the resolved config positionally."""
     received = {}
     cfg = make_data_parallel_config(enabled=True, min_devices=1)
 
-    def metric(model, val_dataloader, key, data_parallel=None, /):
+    def metric(model, val_dataloader, key, data_parallel, /):
         received["data_parallel"] = data_parallel
         return {"metric": 1.0}
 
@@ -1028,7 +1028,7 @@ def test_call_epoch_metric_ignores_positional_only_data_parallel_parameter():
     )
 
     assert result == {"metric": 1.0}
-    assert received["data_parallel"] is None
+    assert received["data_parallel"] is cfg
 
 
 def test_call_epoch_metric_keeps_three_argument_metrics_working():
