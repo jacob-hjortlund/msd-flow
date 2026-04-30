@@ -1,5 +1,7 @@
 """Tests for msdflow.train.trainer."""
 
+import json
+
 import jax
 import jax.numpy as jnp
 import equinox as eqx
@@ -20,6 +22,7 @@ from msdflow.train.trainer import (
     shard_batch,
     train,
 )
+from msdflow.train.checkpointing import TrainingCheckpoint, load_training_checkpoint
 from msdflow.flow.sample import sample
 from msdflow.flow.interpolate import sample_path
 
@@ -620,6 +623,40 @@ def _make_train_kwargs(num_epochs=1, num_steps_per_epoch=3, p_uncond=0.0):
     )
 
 
+class ScalarLogTask:
+    """Collect scalar metrics passed through ClearML-style logging."""
+
+    def __init__(self):
+        """Initialize an empty scalar call list."""
+        self.scalars = []
+
+    class Logger:
+        """Minimal ClearML logger facade used by log_metrics()."""
+
+        def __init__(self, owner):
+            """Store the parent collector."""
+            self.owner = owner
+
+        def report_scalar(self, title, series, value, iteration):
+            """Record scalar reports for assertions."""
+            self.owner.scalars.append((title, series, value, iteration))
+
+    def get_logger(self):
+        """Return a logger facade."""
+        return self.Logger(self)
+
+
+def constant_zero_metric(model, x_t, u_t, t, cond, cond_mask, key):
+    """Return a constant zero metric."""
+    return jnp.array(0.0)
+
+
+def constant_one_loss(model, x_t, u_t, t, cond, cond_mask, key):
+    """Return a differentiable constant loss for resume accounting tests."""
+    leaves = jax.tree_util.tree_leaves(eqx.filter(model, eqx.is_array))
+    return jnp.sum(leaves[0]) * 0.0 + jnp.array(1.0)
+
+
 def test_train_runs_and_returns_model():
     """Verify the full training loop completes and returns a model."""
     dataloader = list(_make_fake_dataloader(B=2, num_batches=3))
@@ -632,6 +669,160 @@ def test_train_runs_and_returns_model():
         **_make_train_kwargs(),
     )
     assert trained_model is not None
+
+
+def test_train_saves_full_state_periodic_checkpoint(tmp_path):
+    """Periodic checkpointing must save a resumable full-state checkpoint."""
+    dataloader = list(_make_fake_dataloader(B=2, num_batches=2))
+    val_dataloader = _fake_val_dataloader(B=2)
+    kwargs = _make_train_kwargs(num_epochs=1, num_steps_per_epoch=1)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+    kwargs["checkpoint_every"] = 1
+    kwargs["checkpoint_hash"] = "hash123"
+    kwargs["hash_payload"] = {"model": {"base_channels": 4}}
+    kwargs["latest_filename"] = "latest.json"
+    model = _make_small_model()
+
+    train(
+        model=model,
+        dataloader=dataloader,
+        val_dataloader=val_dataloader,
+        **kwargs,
+    )
+
+    pointer = json.loads((tmp_path / "latest.json").read_text())
+    metadata = json.loads(open(pointer["metadata_path"]).read())
+    assert metadata["checkpoint_kind"] == "periodic"
+    assert metadata["stable_hash"] == "hash123"
+    assert metadata["epoch"] == 1
+    assert metadata["completed_microsteps"] == 0
+    assert (tmp_path / "model_epoch1_raw.eqx").exists()
+    assert (tmp_path / "model_epoch1_ema.eqx").exists()
+
+    like_model = _make_small_model()
+    like_state = make_train_state(like_model, kwargs["optimizer"])
+    like_checkpoint = TrainingCheckpoint(
+        state=like_state,
+        ema_model=like_model,
+        ema_initialized=True,
+        key=jax.random.PRNGKey(0),
+        sampling_key=jax.random.PRNGKey(1),
+        epoch=0,
+        completed_microsteps=0,
+        epoch_loss=0.0,
+        best_metric_value=float("inf"),
+        best_epoch=None,
+        patience_counter=0,
+        total_epoch_time=0.0,
+        total_train_time=0.0,
+        total_val_time=0.0,
+        val_runs=0,
+        val_time=float("nan"),
+        val_metrics={},
+        train_metrics={},
+        epoch_metric_results={},
+    )
+    checkpoint = load_training_checkpoint(metadata["payload_path"], like_checkpoint)
+    assert checkpoint.epoch == 1
+    assert checkpoint.completed_microsteps == 0
+
+
+def test_train_resumes_mid_epoch_and_normalizes_loss_with_saved_microsteps(tmp_path):
+    """Mid-epoch resume should replay epoch and include saved loss denominator."""
+    dataloader = list(_make_fake_dataloader(B=2, num_batches=3))
+    val_dataloader = _fake_val_dataloader(B=2)
+    kwargs = _make_train_kwargs(num_epochs=1, num_steps_per_epoch=1)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+    kwargs["checkpoint_every"] = 100
+    kwargs["batch_metrics"] = [constant_zero_metric]
+    kwargs["loss_fn"] = constant_one_loss
+    kwargs["clearml_task"] = ScalarLogTask()
+    kwargs["val_every"] = 100
+    model = _make_small_model()
+    state = make_train_state(model, kwargs["optimizer"])
+    resume_payload = TrainingCheckpoint(
+        state=state,
+        ema_model=model,
+        ema_initialized=True,
+        key=jax.random.PRNGKey(5),
+        sampling_key=jax.random.PRNGKey(6),
+        epoch=0,
+        completed_microsteps=2,
+        epoch_loss=8.0,
+        best_metric_value=float("inf"),
+        best_epoch=None,
+        patience_counter=0,
+        total_epoch_time=0.0,
+        total_train_time=0.0,
+        total_val_time=0.0,
+        val_runs=0,
+        val_time=float("nan"),
+        val_metrics={},
+        train_metrics={},
+        epoch_metric_results={},
+    )
+
+    train(
+        model=model,
+        dataloader=dataloader,
+        val_dataloader=val_dataloader,
+        resume_checkpoint=resume_payload,
+        resume_metadata={
+            "metadata_path": str(tmp_path / "checkpoint.json"),
+            "checkpoint_kind": "sigterm",
+        },
+        **kwargs,
+    )
+
+    loss_scalars = [
+        scalar
+        for scalar in kwargs["clearml_task"].scalars
+        if scalar[0] == "train/loss"
+    ]
+    assert loss_scalars
+    assert loss_scalars[-1][3] == 1
+    assert loss_scalars[-1][2] == pytest.approx(3.0)
+
+
+def test_train_sigterm_flag_saves_checkpoint_and_stops(tmp_path):
+    """A requested SIGTERM flag should save full state and return cleanly."""
+    dataloader = list(_make_fake_dataloader(B=2, num_batches=4))
+    val_dataloader = _fake_val_dataloader(B=2)
+    kwargs = _make_train_kwargs(num_epochs=3, num_steps_per_epoch=2)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+    kwargs["checkpoint_hash"] = "hash123"
+    kwargs["latest_filename"] = "latest.json"
+    kwargs["save_on_sigterm"] = True
+    model = _make_small_model()
+
+    class RequestedFlag:
+        """Context manager whose requested flag is already set."""
+
+        def __init__(self):
+            """Set the request flag."""
+            self.requested = True
+
+        def __enter__(self):
+            """Return this requested flag."""
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            """Leave the fake signal context."""
+            return None
+
+    train(
+        model=model,
+        dataloader=dataloader,
+        val_dataloader=val_dataloader,
+        sigterm_flag_factory=lambda enabled: RequestedFlag(),
+        **kwargs,
+    )
+
+    pointer = json.loads((tmp_path / "latest.json").read_text())
+    metadata = json.loads(open(pointer["metadata_path"]).read())
+    assert metadata["checkpoint_kind"] == "sigterm"
+    assert metadata["epoch"] == 0
+    assert metadata["completed_microsteps"] == 1
 
 
 def test_train_runs_with_data_parallel_enabled_min_one(tmp_path):
