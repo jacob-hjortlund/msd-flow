@@ -45,6 +45,34 @@ def test_setup_task_calls_task_init_when_enabled():
     assert result is mock_task
 
 
+def test_setup_task_continues_resume_task_id():
+    """setup_task should continue the checkpoint task id when provided."""
+    mock_task = MagicMock()
+    mock_task.id = "resume-task"
+    with patch("msdflow.tracking.Task") as MockTask:
+        MockTask.init.return_value = mock_task
+        from msdflow.tracking import setup_task
+
+        result = setup_task(_cfg(enabled=True), resume_task_id="resume-task")
+
+    MockTask.init.assert_called_once_with(
+        project_name="msd-flow",
+        task_name="train",
+        reuse_last_task_id="resume-task",
+        continue_last_task=True,
+    )
+    assert result is mock_task
+
+
+def test_setup_task_disabled_ignores_resume_task_id():
+    """Disabled ClearML should still return None when resume task id exists."""
+    from msdflow.tracking import setup_task
+
+    result = setup_task(_cfg(enabled=False), resume_task_id="resume-task")
+
+    assert result is None
+
+
 def test_setup_task_falls_back_to_offline_on_connection_error(tmp_path, monkeypatch):
     monkeypatch.delenv("CLEARML_OFFLINE_MODE", raising=False)
     mock_task = MagicMock()

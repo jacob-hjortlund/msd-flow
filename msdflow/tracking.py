@@ -27,7 +27,7 @@ except ImportError:
     Dataset = None  # type: ignore
 
 
-def setup_task(clearml_cfg) -> Any:
+def setup_task(clearml_cfg, resume_task_id: str | None = None) -> Any:
     """Initialise a ClearML Task, or return None if disabled.
 
     Falls back to offline mode if the server is unreachable.
@@ -35,6 +35,7 @@ def setup_task(clearml_cfg) -> Any:
     Args:
         clearml_cfg: Hydra config node with fields ``enabled``,
             ``project_name``, ``task_name``, and ``offline_dir``.
+        resume_task_id: Existing ClearML task id to continue when truthy.
 
     Returns:
         An initialised ClearML Task, or None if ``clearml_cfg.enabled``
@@ -43,27 +44,42 @@ def setup_task(clearml_cfg) -> Any:
     if not clearml_cfg.enabled:
         return None
 
+    init_kwargs = {
+        "project_name": clearml_cfg.project_name,
+        "task_name": clearml_cfg.task_name,
+    }
+    offline_init_kwargs = dict(init_kwargs)
+    if resume_task_id:
+        init_kwargs["reuse_last_task_id"] = str(resume_task_id)
+        init_kwargs["continue_last_task"] = True
+
     Task.set_resource_monitor_iteration_timeout(
         wait_for_first_iteration_to_start_sec=1,  # initial fallback after 3 min
         # max_wait_for_first_iteration_to_start_sec=7200  # allow reverting for up to 2 hours
     )
     try:
-        return Task.init(
-            project_name=clearml_cfg.project_name,
-            task_name=clearml_cfg.task_name,
-        )
+        task = Task.init(**init_kwargs)
+        if resume_task_id and getattr(task, "id", None) != str(resume_task_id):
+            logger.warning(
+                "Requested ClearML task continuation for %s, but initialized %s.",
+                resume_task_id,
+                getattr(task, "id", None),
+            )
+        return task
     except Exception as exc:
         logger.warning(
             "ClearML server unreachable (%s). Falling back to offline mode.", exc
         )
         try:
+            if resume_task_id:
+                logger.warning(
+                    "ClearML offline mode cannot continue remote task id %s.",
+                    resume_task_id,
+                )
             os.environ["CLEARML_OFFLINE_MODE"] = "1"
             os.makedirs(clearml_cfg.offline_dir, exist_ok=True)
             Task.set_offline(offline_mode=True)
-            return Task.init(
-                project_name=clearml_cfg.project_name,
-                task_name=clearml_cfg.task_name,
-            )
+            return Task.init(**offline_init_kwargs)
         except Exception as exc2:
             logger.warning(
                 "ClearML offline init also failed (%s). Disabling tracking.", exc2
