@@ -124,6 +124,40 @@ def test_discover_latest_checkpoint_returns_none_when_pointer_absent(tmp_path):
     assert result is None
 
 
+@pytest.mark.parametrize("payload_path", ["", None])
+def test_discover_latest_checkpoint_rejects_invalid_payload_path(
+    tmp_path,
+    payload_path,
+):
+    """Metadata payload_path must be a non-empty string path."""
+    run_dir = tmp_path / "hash"
+    run_dir.mkdir()
+    metadata_path = run_dir / "checkpoint_epoch0001_step0000.json"
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "stable_hash": "hash",
+                "checkpoint_kind": "periodic",
+                "epoch": 1,
+                "completed_microsteps": 0,
+                "payload_path": payload_path,
+                "clearml_task_id": "task-1",
+            }
+        )
+    )
+    (run_dir / "latest.json").write_text(
+        json.dumps({"metadata_path": str(metadata_path)})
+    )
+
+    with pytest.raises(ValueError, match="payload_path"):
+        discover_latest_checkpoint(
+            str(run_dir),
+            latest_filename="latest.json",
+            restart=False,
+        )
+
+
 def test_discover_latest_checkpoint_loads_pointer_metadata(tmp_path):
     """restart=false should load metadata referenced by latest.json."""
     run_dir = tmp_path / "hash"

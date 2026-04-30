@@ -197,8 +197,11 @@ def discover_latest_checkpoint(
         metadata_path = pointer_path.parent / metadata_path
 
     metadata = load_json(metadata_path)
-    if "payload_path" not in metadata:
-        raise ValueError(f"Checkpoint metadata {metadata_path} is missing payload_path.")
+    payload_path = metadata.get("payload_path")
+    if not isinstance(payload_path, str) or not payload_path:
+        raise ValueError(
+            f"Checkpoint metadata {metadata_path} has invalid payload_path."
+        )
 
     metadata["metadata_path"] = str(metadata_path)
     return metadata
