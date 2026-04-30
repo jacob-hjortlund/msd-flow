@@ -606,6 +606,60 @@ def test_sigterm_flag_sets_requested_without_exiting():
         assert flag.requested is True
 
 
+def test_sigterm_flag_enabled_installs_and_restores_handler(monkeypatch):
+    """Enabled SIGTERM flag should install and restore the process handler."""
+    getsignal_calls = []
+    signal_calls = []
+
+    def previous_handler(signum, frame):
+        """Stand in for the previously installed SIGTERM handler.
+
+        Args:
+            signum: Signal number received by the process.
+            frame: Current execution frame supplied by the signal module.
+        """
+
+    def fake_getsignal(signum):
+        """Record signal lookup and return the previous handler.
+
+        Args:
+            signum: Signal number whose handler is being requested.
+
+        Returns:
+            The test previous handler.
+        """
+        getsignal_calls.append(signum)
+        return previous_handler
+
+    def fake_signal(signum, handler):
+        """Record signal handler installation and restoration.
+
+        Args:
+            signum: Signal number whose handler is being changed.
+            handler: Handler installed for the signal.
+
+        Returns:
+            Default signal handler placeholder.
+        """
+        signal_calls.append((signum, handler))
+        return signal.SIG_DFL
+
+    monkeypatch.setattr(signal, "getsignal", fake_getsignal)
+    monkeypatch.setattr(signal, "signal", fake_signal)
+    flag = SigtermFlag(enabled=True)
+
+    with flag as active_flag:
+        assert active_flag is flag
+        assert getsignal_calls == [signal.SIGTERM]
+        assert signal_calls == [(signal.SIGTERM, flag.handle)]
+
+    assert getsignal_calls == [signal.SIGTERM]
+    assert signal_calls == [
+        (signal.SIGTERM, flag.handle),
+        (signal.SIGTERM, previous_handler),
+    ]
+
+
 def test_sigterm_flag_disabled_does_not_install_handler(monkeypatch):
     """Disabled SIGTERM flag should not call signal.signal."""
     calls = []
