@@ -2,8 +2,8 @@
 #SBATCH -A m1727
 #SBATCH -J msd-flow-train
 #SBATCH -C gpu&hbm80g
-#SBATCH -q debug
-#SBATCH -t 00:30:00
+#SBATCH -q regular
+#SBATCH -t 48:00:00
 #SBATCH -N 1
 #SBATCH --ntasks-per-node=1
 #SBATCH -c 128
@@ -23,15 +23,12 @@ export ENV_DIR="$ENV_ROOT/msd-flow"
 
 export PROJECT_ROOT="$PSCRATCH/msd-flow"
 export DATA_ROOT="$PROJECT_ROOT/data"
-export RUN_ROOT="$PROJECT_ROOT/runs"
 export CACHE_ROOT="$PROJECT_ROOT/caches"
 export CHECKPOINT_ROOT="$PROJECT_ROOT/checkpoints"
 
-export RUN_DIR="$RUN_ROOT/${SLURM_JOB_NAME}-${SLURM_JOB_ID}"
 
 mkdir -p "$PROJECT_ROOT/slurm" \
          "$DATA_ROOT" \
-         "$RUN_DIR" \
          "$CACHE_ROOT" \
          "$CHECKPOINT_ROOT"
 
@@ -68,7 +65,7 @@ export NUMEXPR_NUM_THREADS=1
 # Make JAX fail clearly if CUDA is not available rather than silently using CPU.
 export JAX_PLATFORMS=cuda
 
-export XLA_PYTHON_CLIENT_MEM_FRACTION=.99
+export XLA_PYTHON_CLIENT_MEM_FRACTION=.85
 export JAX_TRACEBACK_FILTERING=off
 export NVIDIA_TF32_OVERRIDE=1
 
@@ -80,7 +77,6 @@ echo "Node(s): $SLURM_NODELIST"
 echo "Repo: $REPO_DIR"
 echo "Env: $ENV_DIR"
 echo "Data root: $DATA_ROOT"
-echo "Run dir: $RUN_DIR"
 echo "Python: $(which python)"
 
 cd "$REPO_DIR"
