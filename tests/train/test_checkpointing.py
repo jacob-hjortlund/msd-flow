@@ -27,6 +27,30 @@ from msdflow.train.checkpointing import (
 from msdflow.train.trainer import make_train_state
 
 
+def test_train_config_contains_resume_defaults():
+    """Hydra train config should expose resume defaults."""
+    cfg = OmegaConf.load("configs/train/train.yaml")
+
+    assert cfg.resume.restart is False
+    assert cfg.resume.auto is True
+    assert cfg.resume.hash is None
+    assert "clearml" in list(cfg.resume.hash_exclude)
+    assert "train.resume" in list(cfg.resume.hash_exclude)
+    assert "train.num_epochs" in list(cfg.resume.hash_exclude)
+    assert cfg.resume.latest_filename == "latest.json"
+    assert cfg.resume.save_on_sigterm is True
+
+
+def test_run_sh_uses_stable_checkpoint_root():
+    """NERSC run script should not put resumable checkpoints in per-job RUN_DIR."""
+    text = open("run.sh").read()
+
+    assert 'export CHECKPOINT_ROOT="$PROJECT_ROOT/checkpoints"' in text
+    assert '"train.checkpoint_dir=${CHECKPOINT_ROOT}"' in text
+    assert '"train.resume.restart=false"' in text
+    assert '"train.resume.save_on_sigterm=true"' in text
+
+
 def test_compute_config_hash_ignores_excluded_paths():
     """Excluded config paths must not affect the stable hash."""
     cfg_a = OmegaConf.create(

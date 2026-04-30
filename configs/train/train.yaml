@@ -61,6 +61,16 @@ num_epochs: 100
 num_steps_per_epoch: 0
 p_uncond: "${if_cond: ${metadata_columns}, 0.1, 1.0}"
 checkpoint_dir: ${work_dir}/checkpoints
+resume:
+  restart: false
+  auto: true
+  hash: null
+  hash_exclude:
+    - clearml
+    - train.resume
+    - train.num_epochs
+  latest_filename: latest.json
+  save_on_sigterm: true
 val_every: 1
 checkpoint_every: 10
 log_every: ${train.val_every}
