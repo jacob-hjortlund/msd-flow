@@ -6,10 +6,12 @@ import hashlib
 import json
 import math
 import os
+import signal
 import tempfile
 import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from types import FrameType
 from typing import Any
 
 import equinox as eqx
@@ -18,6 +20,49 @@ from omegaconf import OmegaConf
 
 CHECKPOINT_SCHEMA_VERSION = 1
 CHECKPOINT_KINDS = frozenset({"periodic", "sigterm", "manual"})
+
+
+class SigtermFlag:
+    """Context manager that records SIGTERM requests for graceful shutdown."""
+
+    def __init__(self, enabled: bool = True) -> None:
+        """Initialize the SIGTERM request flag.
+
+        Args:
+            enabled: Whether to install a temporary SIGTERM handler.
+        """
+        self.enabled = enabled
+        self.requested = False
+        self.previous_handler: Any | None = None
+
+    def handle(self, signum: int, frame: FrameType | None) -> None:
+        """Record that SIGTERM was requested.
+
+        Args:
+            signum: Signal number received by the process.
+            frame: Current execution frame supplied by the signal module.
+        """
+        self.requested = True
+
+    def __enter__(self) -> "SigtermFlag":
+        """Install the SIGTERM handler when the flag is enabled.
+
+        Returns:
+            This flag instance.
+        """
+        if self.enabled:
+            self.previous_handler = signal.getsignal(signal.SIGTERM)
+            signal.signal(signal.SIGTERM, self.handle)
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        """Restore the previous SIGTERM handler when one was installed.
+
+        Args:
+            *args: Context manager exception details.
+        """
+        if self.enabled and self.previous_handler is not None:
+            signal.signal(signal.SIGTERM, self.previous_handler)
 
 
 class TrainingCheckpoint(eqx.Module):

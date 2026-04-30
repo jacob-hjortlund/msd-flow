@@ -2,6 +2,7 @@
 
 import json
 import os
+import signal
 
 import equinox as eqx
 import jax
@@ -20,6 +21,7 @@ from msdflow.train.checkpointing import (
     discover_latest_checkpoint,
     load_training_checkpoint,
     save_training_checkpoint,
+    SigtermFlag,
     validate_checkpoint_metadata,
 )
 from msdflow.train.trainer import make_train_state
@@ -593,3 +595,29 @@ def test_load_training_checkpoint_round_trips_full_state(tmp_path):
     assert jnp.array_equal(restored.ema_model.weight, checkpoint.ema_model.weight)
     assert jnp.array_equal(restored.key, checkpoint.key)
     assert jnp.array_equal(restored.sampling_key, checkpoint.sampling_key)
+
+
+def test_sigterm_flag_sets_requested_without_exiting():
+    """SIGTERM handler should set a flag and return."""
+    flag = SigtermFlag(enabled=True)
+
+    with flag:
+        flag.handle(signal.SIGTERM, None)
+        assert flag.requested is True
+
+
+def test_sigterm_flag_disabled_does_not_install_handler(monkeypatch):
+    """Disabled SIGTERM flag should not call signal.signal."""
+    calls = []
+
+    def fake_signal(signum, handler):
+        calls.append((signum, handler))
+        return signal.SIG_DFL
+
+    monkeypatch.setattr(signal, "signal", fake_signal)
+    flag = SigtermFlag(enabled=False)
+
+    with flag:
+        assert flag.requested is False
+
+    assert calls == []
