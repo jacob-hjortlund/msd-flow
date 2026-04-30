@@ -1,16 +1,28 @@
 """Tests for resumable training checkpoint helpers."""
 
 import json
+import os
 
+import equinox as eqx
+import jax
+import jax.numpy as jnp
+import optax
 import pytest
 from omegaconf import OmegaConf
 
 from msdflow.train.checkpointing import (
     compute_config_hash,
     checkpoint_run_dir,
+    checkpoint_filename_stem,
+    TrainingCheckpoint,
     latest_pointer_path,
+    build_checkpoint_metadata,
     discover_latest_checkpoint,
+    load_training_checkpoint,
+    save_training_checkpoint,
+    validate_checkpoint_metadata,
 )
+from msdflow.train.trainer import make_train_state
 
 
 def test_compute_config_hash_ignores_excluded_paths():
@@ -191,3 +203,260 @@ def test_discover_latest_checkpoint_loads_pointer_metadata(tmp_path):
     assert result["metadata_path"] == str(metadata_path)
     assert result["payload_path"] == str(payload_path)
     assert result["clearml_task_id"] == "task-1"
+
+
+def _linear_checkpoint_payload():
+    """Build a small checkpoint payload for serialization tests."""
+    model = eqx.nn.Linear(2, 1, key=jax.random.PRNGKey(0))
+    optimizer = optax.sgd(0.1)
+    state = make_train_state(model, optimizer)
+    return TrainingCheckpoint(
+        state=state,
+        ema_model=model,
+        ema_initialized=True,
+        key=jax.random.PRNGKey(1),
+        sampling_key=jax.random.PRNGKey(2),
+        epoch=3,
+        completed_microsteps=5,
+        epoch_loss=7.5,
+        best_metric_value=0.25,
+        best_epoch=2,
+        patience_counter=1,
+        total_epoch_time=11.0,
+        total_train_time=9.0,
+        total_val_time=3.0,
+        val_runs=2,
+        val_time=1.5,
+        val_metrics={"flow_matching_loss": 0.25},
+        train_metrics={"flow_matching_loss": 0.5},
+        epoch_metric_results={"fid_zoobot": 10.0},
+    )
+
+
+def test_training_checkpoint_payload_holds_full_state():
+    """TrainingCheckpoint should hold all train-resume state fields."""
+    checkpoint = _linear_checkpoint_payload()
+
+    assert checkpoint.state.model is checkpoint.ema_model
+    assert checkpoint.ema_initialized is True
+    assert jnp.array_equal(checkpoint.key, jax.random.PRNGKey(1))
+    assert jnp.array_equal(checkpoint.sampling_key, jax.random.PRNGKey(2))
+    assert checkpoint.epoch == 3
+    assert checkpoint.completed_microsteps == 5
+    assert checkpoint.epoch_loss == 7.5
+    assert checkpoint.best_metric_value == 0.25
+    assert checkpoint.best_epoch == 2
+    assert checkpoint.patience_counter == 1
+    assert checkpoint.total_epoch_time == 11.0
+    assert checkpoint.total_train_time == 9.0
+    assert checkpoint.total_val_time == 3.0
+    assert checkpoint.val_runs == 2
+    assert checkpoint.val_time == 1.5
+    assert checkpoint.val_metrics == {"flow_matching_loss": 0.25}
+    assert checkpoint.train_metrics == {"flow_matching_loss": 0.5}
+    assert checkpoint.epoch_metric_results == {"fid_zoobot": 10.0}
+
+
+def test_checkpoint_filename_stem_uses_epoch_and_microstep():
+    """Checkpoint filenames should use one-based epoch and padded microsteps."""
+    assert (
+        checkpoint_filename_stem(epoch=6, completed_microsteps=42)
+        == "checkpoint_epoch0007_step0042"
+    )
+
+
+def test_build_checkpoint_metadata_returns_json_safe_required_fields(tmp_path):
+    """Metadata should include all required JSON-safe checkpoint fields."""
+    payload_path = tmp_path / "checkpoint_epoch0007_step0042.eqx"
+    metadata = build_checkpoint_metadata(
+        stable_hash="abc123",
+        checkpoint_kind="periodic",
+        epoch=6,
+        completed_microsteps=42,
+        payload_path=str(payload_path),
+        grad_accum_steps=2,
+        microsteps_per_epoch=64,
+        monitor="flow_matching_loss",
+        monitor_mode="min",
+        clearml_task_id="task-1",
+        source_checkpoint_path="/source/checkpoint.eqx",
+        hash_payload={"train": {"optimizer": "sgd"}},
+        ema_initialized=True,
+        best_metric_value=float("nan"),
+        best_epoch=5,
+    )
+
+    json.dumps(metadata)
+    assert metadata["schema_version"] == 1
+    assert metadata["stable_hash"] == "abc123"
+    assert metadata["checkpoint_kind"] == "periodic"
+    assert metadata["epoch"] == 6
+    assert metadata["completed_microsteps"] == 42
+    assert metadata["payload_path"] == str(payload_path)
+    assert metadata["grad_accum_steps"] == 2
+    assert metadata["microsteps_per_epoch"] == 64
+    assert metadata["monitor"] == "flow_matching_loss"
+    assert metadata["monitor_mode"] == "min"
+    assert metadata["clearml_task_id"] == "task-1"
+    assert metadata["source_checkpoint_path"] == "/source/checkpoint.eqx"
+    assert metadata["hash_payload"] == {"train": {"optimizer": "sgd"}}
+    assert metadata["ema_initialized"] is True
+    assert metadata["best_metric_value"] == "nan"
+    assert metadata["best_epoch"] == 5
+    assert isinstance(metadata["saved_at_unix"], float)
+
+
+def test_build_checkpoint_metadata_accepts_checkpoint_payload_context(tmp_path):
+    """Metadata builder should accept checkpoint payload context directly."""
+    checkpoint = _linear_checkpoint_payload()
+    payload_path = tmp_path / "checkpoint_epoch0004_step0005.eqx"
+
+    metadata = build_checkpoint_metadata(
+        stable_hash="abc123",
+        checkpoint_kind="manual",
+        checkpoint=checkpoint,
+        payload_path=str(payload_path),
+        grad_accum_steps=1,
+        microsteps_per_epoch=8,
+        monitor="flow_matching_loss",
+        monitor_mode="min",
+        clearml_task_id=None,
+        source_checkpoint_path=None,
+        hash_payload={"train": {"optimizer": "sgd"}},
+    )
+
+    assert metadata["epoch"] == checkpoint.epoch
+    assert metadata["completed_microsteps"] == checkpoint.completed_microsteps
+    assert metadata["ema_initialized"] == checkpoint.ema_initialized
+    assert metadata["best_metric_value"] == checkpoint.best_metric_value
+    assert metadata["best_epoch"] == checkpoint.best_epoch
+
+
+def test_validate_checkpoint_metadata_rejects_wrong_stable_hash(tmp_path):
+    """Checkpoint metadata should reject incompatible stable hashes."""
+    metadata = build_checkpoint_metadata(
+        stable_hash="abc123",
+        checkpoint_kind="periodic",
+        epoch=0,
+        completed_microsteps=0,
+        payload_path=str(tmp_path / "checkpoint.eqx"),
+        grad_accum_steps=1,
+        microsteps_per_epoch=8,
+        monitor="flow_matching_loss",
+        monitor_mode="min",
+        clearml_task_id=None,
+        source_checkpoint_path=None,
+        hash_payload={"train": {"optimizer": "sgd"}},
+        ema_initialized=True,
+        best_metric_value=0.25,
+        best_epoch=0,
+    )
+
+    with pytest.raises(ValueError, match="stable hash"):
+        validate_checkpoint_metadata(
+            metadata,
+            stable_hash="different",
+            monitor="flow_matching_loss",
+            monitor_mode="min",
+            allow_hash_override=False,
+        )
+
+
+def test_validate_checkpoint_metadata_accepts_expected_hash_alias():
+    """Validation should support the approved-plan expected_hash keyword."""
+    metadata = {
+        "schema_version": 1,
+        "stable_hash": "abc123",
+        "checkpoint_kind": "periodic",
+        "epoch": 1,
+        "completed_microsteps": 0,
+        "payload_path": "/tmp/checkpoint.eqx",
+        "monitor": "flow_matching_loss",
+        "monitor_mode": "min",
+    }
+
+    with pytest.raises(ValueError, match="stable hash"):
+        validate_checkpoint_metadata(
+            metadata,
+            expected_hash="different",
+            monitor="flow_matching_loss",
+            monitor_mode="min",
+            microsteps_per_epoch=8,
+            allow_hash_override=False,
+        )
+
+
+def test_save_training_checkpoint_writes_payload_metadata_and_latest(tmp_path):
+    """Saving should write payload, metadata, and latest pointer atomically."""
+    run_dir = tmp_path / "checkpoints"
+    checkpoint = _linear_checkpoint_payload()
+
+    metadata = save_training_checkpoint(
+        run_dir=str(run_dir),
+        checkpoint=checkpoint,
+        stable_hash="abc123",
+        checkpoint_kind="periodic",
+        grad_accum_steps=1,
+        microsteps_per_epoch=8,
+        monitor="flow_matching_loss",
+        monitor_mode="min",
+        clearml_task_id="task-1",
+        latest_filename="latest.json",
+        source_checkpoint_path=None,
+        hash_payload={"train": {"optimizer": "sgd"}},
+    )
+
+    assert os.path.exists(metadata["payload_path"])
+    assert os.path.exists(metadata["metadata_path"])
+    assert json.loads((run_dir / "latest.json").read_text()) == {
+        "metadata_path": metadata["metadata_path"]
+    }
+    assert metadata["payload_path"].endswith("checkpoint_epoch0004_step0005.eqx")
+    assert metadata["metadata_path"].endswith("checkpoint_epoch0004_step0005.json")
+
+
+def test_load_training_checkpoint_round_trips_full_state(tmp_path):
+    """Loading should restore a serialized checkpoint against a like tree."""
+    run_dir = tmp_path / "checkpoints"
+    checkpoint = _linear_checkpoint_payload()
+    metadata = save_training_checkpoint(
+        run_dir=str(run_dir),
+        checkpoint=checkpoint,
+        stable_hash="abc123",
+        checkpoint_kind="periodic",
+        grad_accum_steps=1,
+        microsteps_per_epoch=8,
+        monitor="flow_matching_loss",
+        monitor_mode="min",
+        clearml_task_id="task-1",
+        latest_filename="latest.json",
+        source_checkpoint_path=None,
+        hash_payload={"train": {"optimizer": "sgd"}},
+    )
+    like = _linear_checkpoint_payload()
+
+    restored = load_training_checkpoint(metadata["payload_path"], like)
+    pointer = json.loads((run_dir / "latest.json").read_text())
+
+    assert os.path.exists(metadata["payload_path"])
+    assert os.path.exists(metadata["metadata_path"])
+    assert pointer == {"metadata_path": metadata["metadata_path"]}
+    assert restored.ema_initialized == checkpoint.ema_initialized
+    assert restored.epoch == checkpoint.epoch
+    assert restored.completed_microsteps == checkpoint.completed_microsteps
+    assert restored.epoch_loss == checkpoint.epoch_loss
+    assert restored.best_metric_value == checkpoint.best_metric_value
+    assert restored.best_epoch == checkpoint.best_epoch
+    assert restored.patience_counter == checkpoint.patience_counter
+    assert restored.total_epoch_time == checkpoint.total_epoch_time
+    assert restored.total_train_time == checkpoint.total_train_time
+    assert restored.total_val_time == checkpoint.total_val_time
+    assert restored.val_runs == checkpoint.val_runs
+    assert restored.val_time == checkpoint.val_time
+    assert restored.val_metrics == checkpoint.val_metrics
+    assert restored.train_metrics == checkpoint.train_metrics
+    assert restored.epoch_metric_results == checkpoint.epoch_metric_results
+    assert jnp.array_equal(restored.state.model.weight, checkpoint.state.model.weight)
+    assert jnp.array_equal(restored.ema_model.weight, checkpoint.ema_model.weight)
+    assert jnp.array_equal(restored.key, checkpoint.key)
+    assert jnp.array_equal(restored.sampling_key, checkpoint.sampling_key)

@@ -4,14 +4,66 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import os
+import tempfile
+import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+import equinox as eqx
 from omegaconf import OmegaConf
 
 
 CHECKPOINT_SCHEMA_VERSION = 1
+CHECKPOINT_KINDS = frozenset({"periodic", "sigterm", "manual"})
+
+
+class TrainingCheckpoint(eqx.Module):
+    """Full training state payload for resumable checkpoints.
+
+    Attributes:
+        state: Current train state containing model and optimizer state.
+        ema_model: Exponential moving average model snapshot.
+        ema_initialized: Whether the EMA model has received its first update.
+        key: Main training PRNG key.
+        sampling_key: Sampling PRNG key.
+        epoch: Zero-based epoch index for the checkpoint.
+        completed_microsteps: Completed microsteps within the current epoch.
+        epoch_loss: Accumulated epoch loss value.
+        best_metric_value: Best monitored metric value observed so far.
+        best_epoch: Epoch index associated with the best monitored metric.
+        patience_counter: Current early-stopping patience counter.
+        total_epoch_time: Cumulative epoch loop wall time.
+        total_train_time: Cumulative training step wall time.
+        total_val_time: Cumulative validation wall time.
+        val_runs: Number of validation runs completed.
+        val_time: Most recent validation wall time.
+        val_metrics: Validation metric values from the checkpoint epoch.
+        train_metrics: Training metric values from the checkpoint epoch.
+        epoch_metric_results: Additional epoch-level metric values.
+    """
+
+    state: Any
+    ema_model: Any
+    ema_initialized: bool
+    key: Any
+    sampling_key: Any
+    epoch: int
+    completed_microsteps: int
+    epoch_loss: float
+    best_metric_value: float
+    best_epoch: int | None
+    patience_counter: int
+    total_epoch_time: float
+    total_train_time: float
+    total_val_time: float
+    val_runs: int
+    val_time: float
+    val_metrics: dict[str, float]
+    train_metrics: dict[str, float]
+    epoch_metric_results: dict[str, float]
 
 
 def _json_safe(value: Any) -> Any:
@@ -114,6 +166,352 @@ def compute_config_hash(
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     stable_hash = hashlib.sha256(encoded).hexdigest()[:length]
     return stable_hash, payload
+
+
+def checkpoint_filename_stem(epoch: int, completed_microsteps: int) -> str:
+    """Return the checkpoint filename stem for an epoch and microstep.
+
+    Args:
+        epoch: Zero-based epoch index.
+        completed_microsteps: Completed microsteps within the epoch.
+
+    Returns:
+        Filename stem using one-based epoch numbering and padded microsteps.
+    """
+    return f"checkpoint_epoch{epoch + 1:04d}_step{completed_microsteps:04d}"
+
+
+def _metadata_float(value: float | int | None) -> float | str | None:
+    """Convert a metric value to a JSON-safe metadata scalar.
+
+    Args:
+        value: Numeric value to store in checkpoint metadata.
+
+    Returns:
+        Finite values as ``float`` and non-finite values as strings.
+    """
+    if value is None:
+        return None
+
+    number = float(value)
+    if math.isnan(number):
+        return "nan"
+    if math.isinf(number):
+        return "inf" if number > 0 else "-inf"
+    return number
+
+
+def build_checkpoint_metadata(
+    *,
+    stable_hash: str,
+    checkpoint_kind: str,
+    payload_path: str,
+    grad_accum_steps: int,
+    microsteps_per_epoch: int,
+    monitor: str | None,
+    monitor_mode: str | None,
+    clearml_task_id: str | None,
+    source_checkpoint_path: str | None,
+    hash_payload: Mapping[str, Any] | None,
+    checkpoint: TrainingCheckpoint | None = None,
+    epoch: int | None = None,
+    completed_microsteps: int | None = None,
+    ema_initialized: bool | None = None,
+    best_metric_value: float | int | None = None,
+    best_epoch: int | None = None,
+) -> dict[str, Any]:
+    """Build JSON-safe metadata for a training checkpoint.
+
+    Args:
+        stable_hash: Stable configuration compatibility hash.
+        checkpoint_kind: Checkpoint kind, one of ``periodic``, ``sigterm``, or
+            ``manual``.
+        payload_path: Path to the serialized Equinox payload.
+        grad_accum_steps: Gradient accumulation steps per optimizer update.
+        microsteps_per_epoch: Number of microsteps in a full epoch.
+        monitor: Name of the monitored metric.
+        monitor_mode: Optimization direction for the monitored metric.
+        clearml_task_id: Optional ClearML task id associated with the run.
+        source_checkpoint_path: Optional source checkpoint path for resumed runs.
+        hash_payload: Normalized configuration payload used to compute the hash.
+        checkpoint: Optional checkpoint payload to use for state-derived fields.
+        epoch: Zero-based epoch index. Defaults to ``checkpoint.epoch``.
+        completed_microsteps: Completed microsteps within the epoch. Defaults to
+            ``checkpoint.completed_microsteps``.
+        ema_initialized: Whether the EMA model has been initialized.
+        best_metric_value: Best monitored metric value observed so far.
+        best_epoch: Epoch index associated with the best monitored metric.
+
+    Returns:
+        JSON-compatible checkpoint metadata.
+
+    Raises:
+        ValueError: If ``checkpoint_kind`` is unsupported.
+    """
+    if checkpoint_kind not in CHECKPOINT_KINDS:
+        expected = ", ".join(sorted(CHECKPOINT_KINDS))
+        raise ValueError(
+            f"Unsupported checkpoint kind {checkpoint_kind!r}; expected {expected}."
+        )
+
+    if checkpoint is not None:
+        epoch = checkpoint.epoch if epoch is None else epoch
+        completed_microsteps = (
+            checkpoint.completed_microsteps
+            if completed_microsteps is None
+            else completed_microsteps
+        )
+        ema_initialized = (
+            checkpoint.ema_initialized if ema_initialized is None else ema_initialized
+        )
+        best_metric_value = (
+            checkpoint.best_metric_value
+            if best_metric_value is None
+            else best_metric_value
+        )
+        best_epoch = checkpoint.best_epoch if best_epoch is None else best_epoch
+
+    if epoch is None:
+        raise ValueError("Checkpoint metadata requires epoch.")
+    if completed_microsteps is None:
+        raise ValueError("Checkpoint metadata requires completed_microsteps.")
+    if ema_initialized is None:
+        raise ValueError("Checkpoint metadata requires ema_initialized.")
+
+    return {
+        "schema_version": CHECKPOINT_SCHEMA_VERSION,
+        "stable_hash": stable_hash,
+        "checkpoint_kind": checkpoint_kind,
+        "epoch": int(epoch),
+        "completed_microsteps": int(completed_microsteps),
+        "payload_path": str(payload_path),
+        "grad_accum_steps": int(grad_accum_steps),
+        "microsteps_per_epoch": int(microsteps_per_epoch),
+        "monitor": monitor,
+        "monitor_mode": monitor_mode,
+        "clearml_task_id": clearml_task_id,
+        "source_checkpoint_path": (
+            None if source_checkpoint_path is None else str(source_checkpoint_path)
+        ),
+        "hash_payload": _json_safe(hash_payload),
+        "ema_initialized": bool(ema_initialized),
+        "best_metric_value": _metadata_float(best_metric_value),
+        "best_epoch": None if best_epoch is None else int(best_epoch),
+        "saved_at_unix": _metadata_float(time.time()),
+    }
+
+
+def validate_checkpoint_metadata(
+    metadata: Mapping[str, Any],
+    *,
+    stable_hash: str | None = None,
+    expected_hash: str | None = None,
+    monitor: str | None = None,
+    monitor_mode: str | None = None,
+    microsteps_per_epoch: int | None = None,
+    allow_hash_override: bool = False,
+) -> None:
+    """Validate checkpoint metadata before saving or loading.
+
+    Args:
+        metadata: Metadata object to validate.
+        stable_hash: Expected stable configuration hash.
+        expected_hash: Backward-compatible alias for ``stable_hash``.
+        monitor: Expected monitored metric name.
+        monitor_mode: Expected monitor mode.
+        microsteps_per_epoch: Optional active microstep count used for bounds
+            validation. Defaults to the value stored in metadata.
+        allow_hash_override: Whether to allow stable hash mismatches.
+
+    Raises:
+        ValueError: If metadata is incompatible with the current run.
+    """
+    schema_version = metadata.get("schema_version")
+    if schema_version != CHECKPOINT_SCHEMA_VERSION:
+        raise ValueError(
+            f"Unsupported checkpoint schema version {schema_version!r}; "
+            f"expected {CHECKPOINT_SCHEMA_VERSION}."
+        )
+
+    active_hash = stable_hash if stable_hash is not None else expected_hash
+    if active_hash is None:
+        raise ValueError("Checkpoint validation requires a stable hash.")
+
+    metadata_hash = metadata.get("stable_hash")
+    if not allow_hash_override and metadata_hash != active_hash:
+        raise ValueError(
+            f"Checkpoint stable hash {metadata_hash!r} does not match {active_hash!r}."
+        )
+
+    if metadata.get("monitor") != monitor:
+        raise ValueError(
+            f"Checkpoint monitor {metadata.get('monitor')!r} does not match {monitor!r}."
+        )
+
+    if metadata.get("monitor_mode") != monitor_mode:
+        raise ValueError(
+            "Checkpoint monitor mode "
+            f"{metadata.get('monitor_mode')!r} does not match {monitor_mode!r}."
+        )
+
+    payload_path = metadata.get("payload_path")
+    if not isinstance(payload_path, str) or not payload_path:
+        raise ValueError("Checkpoint metadata is missing payload_path.")
+
+    microsteps_limit = (
+        microsteps_per_epoch
+        if microsteps_per_epoch is not None
+        else metadata.get("microsteps_per_epoch")
+    )
+    completed_microsteps = metadata.get("completed_microsteps")
+    if not isinstance(microsteps_limit, int) or microsteps_limit < 0:
+        raise ValueError("Checkpoint metadata has invalid microsteps_per_epoch.")
+    if (
+        not isinstance(completed_microsteps, int)
+        or completed_microsteps < 0
+        or completed_microsteps > microsteps_limit
+    ):
+        raise ValueError(
+            "Checkpoint completed_microsteps must be within "
+            "[0, microsteps_per_epoch]."
+        )
+
+
+def _atomic_write_json(path: str | Path, data: Mapping[str, Any]) -> None:
+    """Atomically write a JSON object to disk.
+
+    Args:
+        path: Destination JSON path.
+        data: JSON-compatible object to write.
+    """
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: Path | None = None
+
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            dir=destination.parent,
+            encoding="utf-8",
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+            json.dump(data, handle, sort_keys=True, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, destination)
+    except Exception:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+        raise
+
+
+def save_training_checkpoint(
+    *,
+    run_dir: str,
+    checkpoint: TrainingCheckpoint,
+    stable_hash: str,
+    checkpoint_kind: str,
+    grad_accum_steps: int,
+    microsteps_per_epoch: int,
+    monitor: str | None,
+    monitor_mode: str | None,
+    clearml_task_id: str | None,
+    latest_filename: str,
+    source_checkpoint_path: str | None,
+    hash_payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Serialize a training checkpoint and write metadata plus latest pointer.
+
+    Args:
+        run_dir: Directory where checkpoint files should be written.
+        checkpoint: Full training checkpoint payload to serialize.
+        stable_hash: Stable configuration compatibility hash.
+        checkpoint_kind: Checkpoint kind, one of ``periodic``, ``sigterm``, or
+            ``manual``.
+        grad_accum_steps: Gradient accumulation steps per optimizer update.
+        microsteps_per_epoch: Number of microsteps in a full epoch.
+        monitor: Name of the monitored metric.
+        monitor_mode: Optimization direction for the monitored metric.
+        clearml_task_id: Optional ClearML task id associated with the run.
+        latest_filename: Filename for the latest-checkpoint pointer JSON.
+        source_checkpoint_path: Optional source checkpoint path for resumed runs.
+        hash_payload: Normalized configuration payload used to compute the hash.
+
+    Returns:
+        Metadata written for the checkpoint, including metadata and payload paths.
+    """
+    run_path = Path(run_dir)
+    run_path.mkdir(parents=True, exist_ok=True)
+    stem = checkpoint_filename_stem(
+        epoch=checkpoint.epoch,
+        completed_microsteps=checkpoint.completed_microsteps,
+    )
+    payload_path = run_path / f"{stem}.eqx"
+    metadata_path = run_path / f"{stem}.json"
+    latest_path = run_path / latest_filename
+
+    temp_payload_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=run_path,
+            suffix=".eqx.tmp",
+            delete=False,
+        ) as handle:
+            temp_payload_path = Path(handle.name)
+        eqx.tree_serialise_leaves(temp_payload_path, checkpoint)
+        os.replace(temp_payload_path, payload_path)
+    except Exception:
+        if temp_payload_path is not None:
+            temp_payload_path.unlink(missing_ok=True)
+        raise
+
+    metadata = build_checkpoint_metadata(
+        stable_hash=stable_hash,
+        checkpoint_kind=checkpoint_kind,
+        epoch=checkpoint.epoch,
+        completed_microsteps=checkpoint.completed_microsteps,
+        payload_path=str(payload_path),
+        grad_accum_steps=grad_accum_steps,
+        microsteps_per_epoch=microsteps_per_epoch,
+        monitor=monitor,
+        monitor_mode=monitor_mode,
+        clearml_task_id=clearml_task_id,
+        source_checkpoint_path=source_checkpoint_path,
+        hash_payload=hash_payload,
+        ema_initialized=checkpoint.ema_initialized,
+        best_metric_value=checkpoint.best_metric_value,
+        best_epoch=checkpoint.best_epoch,
+    )
+    metadata["metadata_path"] = str(metadata_path)
+    validate_checkpoint_metadata(
+        metadata,
+        stable_hash=stable_hash,
+        monitor=monitor,
+        monitor_mode=monitor_mode,
+        allow_hash_override=False,
+    )
+
+    _atomic_write_json(metadata_path, metadata)
+    _atomic_write_json(latest_path, {"metadata_path": str(metadata_path)})
+    return metadata
+
+
+def load_training_checkpoint(
+    path: str | Path,
+    like: TrainingCheckpoint,
+) -> TrainingCheckpoint:
+    """Deserialize a training checkpoint using a matching example tree.
+
+    Args:
+        path: Path to a serialized Equinox checkpoint payload.
+        like: Checkpoint tree with the same structure as the serialized payload.
+
+    Returns:
+        Restored training checkpoint payload.
+    """
+    return eqx.tree_deserialise_leaves(path, like)
 
 
 def checkpoint_run_dir(root: str, stable_hash: str) -> str:
