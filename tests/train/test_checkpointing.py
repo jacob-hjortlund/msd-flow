@@ -65,9 +65,25 @@ def test_compute_config_hash_changes_for_model_fields():
     assert hash_a != hash_b
 
 
+def test_compute_config_hash_accepts_length_keyword():
+    """Hash length should be configurable with the planned keyword."""
+    cfg = OmegaConf.create({"model": {"base_channels": 64}, "train": {}})
+
+    stable_hash, _ = compute_config_hash(cfg, exclude_paths=[], length=8)
+
+    assert len(stable_hash) == 8
+
+
 def test_checkpoint_run_dir_joins_root_and_hash(tmp_path):
     """Hash-specific checkpoint directory should be deterministic."""
     assert checkpoint_run_dir(str(tmp_path), "abc123") == str(tmp_path / "abc123")
+
+
+def test_checkpoint_run_dir_accepts_root_keyword(tmp_path):
+    """Hash-specific checkpoint directory should accept the planned keyword."""
+    result = checkpoint_run_dir(root=str(tmp_path), stable_hash="abc123")
+
+    assert result == str(tmp_path / "abc123")
 
 
 def test_latest_pointer_path_uses_configured_filename(tmp_path):
@@ -89,6 +105,20 @@ def test_discover_latest_checkpoint_returns_none_when_restart_true(tmp_path):
         str(run_dir),
         latest_filename="latest.json",
         restart=True,
+    )
+
+    assert result is None
+
+
+def test_discover_latest_checkpoint_returns_none_when_pointer_absent(tmp_path):
+    """restart=false should return None when no latest pointer exists."""
+    run_dir = tmp_path / "hash"
+    run_dir.mkdir()
+
+    result = discover_latest_checkpoint(
+        str(run_dir),
+        latest_filename="latest.json",
+        restart=False,
     )
 
     assert result is None

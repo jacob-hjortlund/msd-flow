@@ -97,37 +97,36 @@ def normalized_config_payload(
 
 def compute_config_hash(
     cfg: Any,
-    exclude_paths: Sequence[str] | None = None,
-    digest_length: int = 16,
+    exclude_paths: Sequence[str] | None,
+    length: int = 16,
 ) -> tuple[str, dict[str, Any]]:
     """Compute a stable truncated SHA-256 hash for a configuration.
 
     Args:
         cfg: Hydra/OmegaConf configuration or equivalent mapping.
         exclude_paths: Dot-separated paths to remove before hashing.
-        digest_length: Number of hex characters to keep from the SHA-256
-            digest.
+        length: Number of hex characters to keep from the SHA-256 digest.
 
     Returns:
         Tuple of ``(stable_hash, normalized_payload)``.
     """
     payload = normalized_config_payload(cfg, exclude_paths=exclude_paths)
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    stable_hash = hashlib.sha256(encoded).hexdigest()[:digest_length]
+    stable_hash = hashlib.sha256(encoded).hexdigest()[:length]
     return stable_hash, payload
 
 
-def checkpoint_run_dir(checkpoint_root: str, stable_hash: str) -> str:
+def checkpoint_run_dir(root: str, stable_hash: str) -> str:
     """Return the hash-specific checkpoint directory path.
 
     Args:
-        checkpoint_root: Root directory for resumable checkpoints.
+        root: Root directory for resumable checkpoints.
         stable_hash: Stable configuration hash for the run family.
 
     Returns:
         Path to the directory containing checkpoints for ``stable_hash``.
     """
-    return str(Path(checkpoint_root) / stable_hash)
+    return str(Path(root) / stable_hash)
 
 
 def latest_pointer_path(run_dir: str, latest_filename: str) -> str:
