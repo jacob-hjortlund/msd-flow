@@ -415,6 +415,139 @@ def test_save_training_checkpoint_writes_payload_metadata_and_latest(tmp_path):
     assert metadata["metadata_path"].endswith("checkpoint_epoch0004_step0005.json")
 
 
+def test_save_with_relative_run_dir_discovers_absolute_metadata(tmp_path, monkeypatch):
+    """Relative run directories should save self-contained absolute paths."""
+    monkeypatch.chdir(tmp_path)
+    run_dir = "relative_ckpts"
+    checkpoint = _linear_checkpoint_payload()
+
+    metadata = save_training_checkpoint(
+        run_dir=run_dir,
+        checkpoint=checkpoint,
+        stable_hash="abc123",
+        checkpoint_kind="periodic",
+        grad_accum_steps=1,
+        microsteps_per_epoch=8,
+        monitor="flow_matching_loss",
+        monitor_mode="min",
+        clearml_task_id="task-1",
+        latest_filename="latest.json",
+        source_checkpoint_path=None,
+        hash_payload={"train": {"optimizer": "sgd"}},
+    )
+
+    discovered = discover_latest_checkpoint(
+        run_dir,
+        latest_filename="latest.json",
+        restart=False,
+    )
+    pointer = json.loads((tmp_path / run_dir / "latest.json").read_text())
+
+    assert discovered is not None
+    assert os.path.isabs(metadata["metadata_path"])
+    assert os.path.isabs(metadata["payload_path"])
+    assert pointer == {"metadata_path": metadata["metadata_path"]}
+    assert discovered["metadata_path"] == metadata["metadata_path"]
+    assert discovered["payload_path"] == metadata["payload_path"]
+    assert not (
+        tmp_path
+        / run_dir
+        / run_dir
+        / "checkpoint_epoch0004_step0005.json"
+    ).exists()
+
+
+@pytest.mark.parametrize("latest_filename", ["../outside.json", "absolute"])
+def test_save_training_checkpoint_rejects_unsafe_latest_filename(
+    tmp_path,
+    latest_filename,
+):
+    """Latest pointer filename must stay inside the checkpoint run directory."""
+    run_dir = tmp_path / "checkpoints"
+    if latest_filename == "absolute":
+        outside = tmp_path / "outside_absolute.json"
+        latest_filename = str(outside)
+    else:
+        outside = tmp_path / "outside.json"
+
+    with pytest.raises(ValueError, match="latest_filename"):
+        save_training_checkpoint(
+            run_dir=str(run_dir),
+            checkpoint=_linear_checkpoint_payload(),
+            stable_hash="abc123",
+            checkpoint_kind="periodic",
+            grad_accum_steps=1,
+            microsteps_per_epoch=8,
+            monitor="flow_matching_loss",
+            monitor_mode="min",
+            clearml_task_id="task-1",
+            latest_filename=latest_filename,
+            source_checkpoint_path=None,
+            hash_payload={"train": {"optimizer": "sgd"}},
+        )
+
+    assert not outside.exists()
+
+
+def test_save_training_checkpoint_invalid_kind_does_not_replace_payload(tmp_path):
+    """Invalid metadata should be rejected before payload replacement."""
+    run_dir = tmp_path / "checkpoints"
+    run_dir.mkdir()
+    payload_path = run_dir / "checkpoint_epoch0004_step0005.eqx"
+    payload_path.write_bytes(b"existing payload")
+
+    with pytest.raises(ValueError, match="checkpoint kind"):
+        save_training_checkpoint(
+            run_dir=str(run_dir),
+            checkpoint=_linear_checkpoint_payload(),
+            stable_hash="abc123",
+            checkpoint_kind="invalid",
+            grad_accum_steps=1,
+            microsteps_per_epoch=8,
+            monitor="flow_matching_loss",
+            monitor_mode="min",
+            clearml_task_id="task-1",
+            latest_filename="latest.json",
+            source_checkpoint_path=None,
+            hash_payload={"train": {"optimizer": "sgd"}},
+        )
+
+    assert payload_path.read_bytes() == b"existing payload"
+    assert not (run_dir / "checkpoint_epoch0004_step0005.json").exists()
+    assert not (run_dir / "latest.json").exists()
+
+
+def test_validate_checkpoint_metadata_rejects_invalid_checkpoint_kind(tmp_path):
+    """Metadata validation should reject unsupported checkpoint kinds."""
+    metadata = build_checkpoint_metadata(
+        stable_hash="abc123",
+        checkpoint_kind="periodic",
+        epoch=0,
+        completed_microsteps=0,
+        payload_path=str(tmp_path / "checkpoint.eqx"),
+        grad_accum_steps=1,
+        microsteps_per_epoch=8,
+        monitor="flow_matching_loss",
+        monitor_mode="min",
+        clearml_task_id=None,
+        source_checkpoint_path=None,
+        hash_payload={"train": {"optimizer": "sgd"}},
+        ema_initialized=True,
+        best_metric_value=0.25,
+        best_epoch=0,
+    )
+    metadata["checkpoint_kind"] = "invalid"
+
+    with pytest.raises(ValueError, match="checkpoint kind"):
+        validate_checkpoint_metadata(
+            metadata,
+            stable_hash="abc123",
+            monitor="flow_matching_loss",
+            monitor_mode="min",
+            allow_hash_override=False,
+        )
+
+
 def test_load_training_checkpoint_round_trips_full_state(tmp_path):
     """Loading should restore a serialized checkpoint against a like tree."""
     run_dir = tmp_path / "checkpoints"

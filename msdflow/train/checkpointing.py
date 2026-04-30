@@ -343,6 +343,14 @@ def validate_checkpoint_metadata(
             f"Checkpoint stable hash {metadata_hash!r} does not match {active_hash!r}."
         )
 
+    checkpoint_kind = metadata.get("checkpoint_kind")
+    if checkpoint_kind not in CHECKPOINT_KINDS:
+        expected = ", ".join(sorted(CHECKPOINT_KINDS))
+        raise ValueError(
+            "Checkpoint metadata has invalid checkpoint kind "
+            f"{checkpoint_kind!r}; expected {expected}."
+        )
+
     if metadata.get("monitor") != monitor:
         raise ValueError(
             f"Checkpoint monitor {metadata.get('monitor')!r} does not match {monitor!r}."
@@ -407,6 +415,29 @@ def _atomic_write_json(path: str | Path, data: Mapping[str, Any]) -> None:
         raise
 
 
+def _latest_filename_path(latest_filename: str) -> Path:
+    """Return a validated latest pointer filename path.
+
+    Args:
+        latest_filename: Relative filename for the latest pointer JSON.
+
+    Returns:
+        Relative path that is safe to join under a checkpoint run directory.
+
+    Raises:
+        ValueError: If ``latest_filename`` is absolute, empty, or contains
+            parent-directory traversal.
+    """
+    filename = os.fspath(latest_filename)
+    path = Path(filename)
+    if not filename or path.is_absolute() or ".." in path.parts:
+        raise ValueError(
+            "latest_filename must be a relative path inside run_dir without "
+            "parent traversal."
+        )
+    return path
+
+
 def save_training_checkpoint(
     *,
     run_dir: str,
@@ -442,30 +473,15 @@ def save_training_checkpoint(
     Returns:
         Metadata written for the checkpoint, including metadata and payload paths.
     """
-    run_path = Path(run_dir)
-    run_path.mkdir(parents=True, exist_ok=True)
+    latest_pathname = _latest_filename_path(latest_filename)
+    run_path = Path(run_dir).expanduser().resolve()
     stem = checkpoint_filename_stem(
         epoch=checkpoint.epoch,
         completed_microsteps=checkpoint.completed_microsteps,
     )
     payload_path = run_path / f"{stem}.eqx"
     metadata_path = run_path / f"{stem}.json"
-    latest_path = run_path / latest_filename
-
-    temp_payload_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            dir=run_path,
-            suffix=".eqx.tmp",
-            delete=False,
-        ) as handle:
-            temp_payload_path = Path(handle.name)
-        eqx.tree_serialise_leaves(temp_payload_path, checkpoint)
-        os.replace(temp_payload_path, payload_path)
-    except Exception:
-        if temp_payload_path is not None:
-            temp_payload_path.unlink(missing_ok=True)
-        raise
+    latest_path = run_path / latest_pathname
 
     metadata = build_checkpoint_metadata(
         stable_hash=stable_hash,
@@ -492,6 +508,24 @@ def save_training_checkpoint(
         monitor_mode=monitor_mode,
         allow_hash_override=False,
     )
+
+    run_path.mkdir(parents=True, exist_ok=True)
+    temp_payload_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=run_path,
+            suffix=".eqx.tmp",
+            delete=False,
+        ) as handle:
+            temp_payload_path = Path(handle.name)
+        eqx.tree_serialise_leaves(temp_payload_path, checkpoint)
+        with temp_payload_path.open("rb") as handle:
+            os.fsync(handle.fileno())
+        os.replace(temp_payload_path, payload_path)
+    except Exception:
+        if temp_payload_path is not None:
+            temp_payload_path.unlink(missing_ok=True)
+        raise
 
     _atomic_write_json(metadata_path, metadata)
     _atomic_write_json(latest_path, {"metadata_path": str(metadata_path)})
@@ -537,7 +571,7 @@ def latest_pointer_path(run_dir: str, latest_filename: str) -> str:
     Returns:
         Path to the latest checkpoint pointer JSON file.
     """
-    return str(Path(run_dir) / latest_filename)
+    return str(Path(run_dir) / _latest_filename_path(latest_filename))
 
 
 def load_json(path: str | Path) -> dict[str, Any]:
