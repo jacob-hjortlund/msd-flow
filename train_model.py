@@ -56,7 +56,7 @@ def main(cfg: DictConfig):
 
     # 0. ClearML setup
     resume_task_id = (
-        resume_metadata["clearml_task_id"] if resume_metadata is not None else None
+        resume_metadata.get("clearml_task_id") if resume_metadata is not None else None
     )
     task = setup_task(cfg.clearml, resume_task_id=resume_task_id)
 

@@ -86,18 +86,32 @@ def test_main_discovers_checkpoint_before_clearml_setup(tmp_path):
                     train_cfg.checkpoint_dir,
                     train_cfg.checkpoint_hash,
                     kwargs["resume_checkpoint_path"],
+                    kwargs["resume_metadata"],
+                    kwargs["source_checkpoint_path"],
                 )
             )
             return kwargs["model"]
 
         return runner
 
-    with patch("train_model.compute_config_hash", return_value=("hash123", {"model": {}})), patch(
+    def fake_compute_config_hash(cfg, exclude_paths):
+        calls.append(("compute_config_hash", tuple(exclude_paths)))
+        return "hash123", {"model": {}}
+
+    def fake_checkpoint_run_dir(root, stable_hash):
+        calls.append(("checkpoint_run_dir", root, stable_hash))
+        return str(tmp_path / "checkpoints" / "hash123")
+
+    def fake_discover_latest_checkpoint(run_dir, latest_filename, restart):
+        calls.append(("discover_latest_checkpoint", run_dir, latest_filename, restart))
+        return checkpoint_metadata
+
+    with patch("train_model.compute_config_hash", side_effect=fake_compute_config_hash), patch(
         "train_model.checkpoint_run_dir",
-        return_value=str(tmp_path / "checkpoints" / "hash123"),
+        side_effect=fake_checkpoint_run_dir,
     ), patch(
         "train_model.discover_latest_checkpoint",
-        return_value=checkpoint_metadata,
+        side_effect=fake_discover_latest_checkpoint,
     ), patch(
         "train_model.setup_task",
         side_effect=fake_setup_task,
@@ -121,9 +135,71 @@ def test_main_discovers_checkpoint_before_clearml_setup(tmp_path):
 
         train_model.main.__wrapped__(cfg)
 
-    assert calls[0] == ("setup_task", "task-1")
-    assert calls[1] == ("resolve_dataset", "task-1")
+    assert calls[0][0] == "compute_config_hash"
+    assert calls[1][0] == "checkpoint_run_dir"
+    assert calls[2][0] == "discover_latest_checkpoint"
+    assert calls[3] == ("setup_task", "task-1")
+    assert calls[4] == ("resolve_dataset", "task-1")
     assert calls[-1][0] == "train"
     assert calls[-1][1].endswith("checkpoints/hash123")
     assert calls[-1][2] == "hash123"
     assert calls[-1][3] == str(tmp_path / "checkpoint.eqx")
+    assert calls[-1][4] is checkpoint_metadata
+    assert calls[-1][5] == str(tmp_path / "checkpoint.eqx")
+
+
+def test_main_starts_fresh_clearml_task_when_resume_metadata_has_no_task_id(tmp_path):
+    """Missing checkpoint task id should not block resume startup."""
+    cfg = _cfg(tmp_path)
+    calls = []
+    checkpoint_metadata = {
+        "metadata_path": str(tmp_path / "checkpoint.json"),
+        "payload_path": str(tmp_path / "checkpoint.eqx"),
+        "stable_hash": "hash123",
+        "ema_initialized": True,
+    }
+
+    def fake_setup_task(clearml_cfg, resume_task_id=None):
+        calls.append(("setup_task", resume_task_id))
+        task = MagicMock()
+        task.id = "new-task"
+        return task
+
+    def fake_call(train_cfg):
+        def runner(**kwargs):
+            calls.append(("train", kwargs["resume_metadata"]))
+            return kwargs["model"]
+
+        return runner
+
+    with patch("train_model.compute_config_hash", return_value=("hash123", {"model": {}})), patch(
+        "train_model.checkpoint_run_dir",
+        return_value=str(tmp_path / "checkpoints" / "hash123"),
+    ), patch(
+        "train_model.discover_latest_checkpoint",
+        return_value=checkpoint_metadata,
+    ), patch(
+        "train_model.setup_task",
+        side_effect=fake_setup_task,
+    ), patch(
+        "train_model.resolve_dataset",
+        return_value=str(tmp_path / "resolved-data"),
+    ), patch(
+        "train_model.build_dataloader",
+        return_value=[],
+    ), patch(
+        "train_model.instantiate",
+        return_value=lambda key: MagicMock(name="model"),
+    ), patch(
+        "train_model.call",
+        side_effect=fake_call,
+    ), patch(
+        "train_model.seed_everything",
+        return_value=__import__("jax").random.PRNGKey(0),
+    ):
+        import train_model
+
+        train_model.main.__wrapped__(cfg)
+
+    assert ("setup_task", None) in calls
+    assert ("train", checkpoint_metadata) in calls
