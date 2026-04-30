@@ -25,6 +25,22 @@ def _array_leaf_dtypes(pytree):
     }
 
 
+def _primitive_io_dtypes(jaxpr, primitive_name):
+    """Return input and output dtypes for primitive equations in a jaxpr."""
+    records = []
+    for eqn in jaxpr.eqns:
+        if eqn.primitive.name != primitive_name:
+            continue
+        in_dtypes = tuple(
+            var.aval.dtype for var in eqn.invars if hasattr(var, "aval")
+        )
+        out_dtypes = tuple(
+            var.aval.dtype for var in eqn.outvars if hasattr(var, "aval")
+        )
+        records.append((in_dtypes, out_dtypes))
+    return records
+
+
 def test_sinusoidal_embedding_output_shape():
     """Verify output shape matches the requested embedding dimension."""
     dim = 32
@@ -458,6 +474,68 @@ def test_resblock_biggan_bfloat16_compute_close_to_float32_compute():
     out_bf16 = block_bf16(x, t_emb, dropout_key)
 
     assert jnp.allclose(out_fp32, out_bf16, atol=2e-1, rtol=2e-1)
+
+
+def test_resblock_biggan_compute_dtype_reaches_conv_and_time_projection_primitives():
+    """bf16 compute uses bf16 primitive IO for convs and time projection."""
+    block_fp32 = ResBlockBigGAN(
+        in_channels=4,
+        out_channels=8,
+        time_emb_dim=TIME_EMB_DIM,
+        num_groups=2,
+        activation=jax.nn.swish,
+        dropout=0.0,
+        skip_rescale=True,
+        key=KEY,
+    )
+    block_bf16 = ResBlockBigGAN(
+        in_channels=4,
+        out_channels=8,
+        time_emb_dim=TIME_EMB_DIM,
+        num_groups=2,
+        activation=jax.nn.swish,
+        dropout=0.0,
+        skip_rescale=True,
+        key=KEY,
+        compute_dtype=jnp.bfloat16,
+    )
+    x_key, emb_key = jax.random.split(KEY)
+    x = jax.random.normal(x_key, (4, 8, 8)).astype(jnp.float32)
+    t_emb = jax.random.normal(emb_key, (TIME_EMB_DIM,)).astype(jnp.float32)
+    dropout_key = jax.random.PRNGKey(0)
+
+    def apply_block(block, x, t_emb, key):
+        return block(x, t_emb, key)
+
+    bf16_jaxpr = eqx.filter_make_jaxpr(apply_block)(
+        block_bf16, x, t_emb, dropout_key
+    )[0].jaxpr
+    fp32_jaxpr = eqx.filter_make_jaxpr(apply_block)(
+        block_fp32, x, t_emb, dropout_key
+    )[0].jaxpr
+
+    bf16_conv_dtypes = _primitive_io_dtypes(bf16_jaxpr, "conv_general_dilated")
+    bf16_dot_dtypes = _primitive_io_dtypes(bf16_jaxpr, "dot_general")
+    fp32_conv_dtypes = _primitive_io_dtypes(fp32_jaxpr, "conv_general_dilated")
+    fp32_dot_dtypes = _primitive_io_dtypes(fp32_jaxpr, "dot_general")
+
+    assert len(bf16_conv_dtypes) == 3
+    assert all(
+        jnp.dtype(jnp.bfloat16) in in_dtypes
+        and jnp.dtype(jnp.bfloat16) in out_dtypes
+        for in_dtypes, out_dtypes in bf16_conv_dtypes[:3]
+    )
+    assert any(
+        jnp.dtype(jnp.bfloat16) in in_dtypes
+        and jnp.dtype(jnp.bfloat16) in out_dtypes
+        for in_dtypes, out_dtypes in bf16_dot_dtypes
+    )
+
+    assert not any(
+        jnp.dtype(jnp.bfloat16) in in_dtypes
+        or jnp.dtype(jnp.bfloat16) in out_dtypes
+        for in_dtypes, out_dtypes in fp32_conv_dtypes + fp32_dot_dtypes
+    )
 
 
 from msdflow.model.blocks import AttnBlockNCSN
