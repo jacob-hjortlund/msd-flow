@@ -727,6 +727,41 @@ def test_train_saves_full_state_periodic_checkpoint(tmp_path):
     assert checkpoint.completed_microsteps == 0
 
 
+def test_train_resume_checkpoint_path_loads_sidecar_metadata(tmp_path):
+    """Path-based resume should infer EMA structure from checkpoint metadata."""
+    dataloader = list(_make_fake_dataloader(B=2, num_batches=2))
+    val_dataloader = _fake_val_dataloader(B=2)
+    kwargs = _make_train_kwargs(num_epochs=1, num_steps_per_epoch=1)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+    kwargs["checkpoint_every"] = 1
+    kwargs["checkpoint_hash"] = "hash123"
+    kwargs["latest_filename"] = "latest.json"
+    model = _make_small_model()
+
+    train(
+        model=model,
+        dataloader=dataloader,
+        val_dataloader=val_dataloader,
+        **kwargs,
+    )
+
+    pointer = json.loads((tmp_path / "latest.json").read_text())
+    metadata = json.loads(open(pointer["metadata_path"]).read())
+    resume_kwargs = _make_train_kwargs(num_epochs=1, num_steps_per_epoch=1)
+    resume_kwargs["checkpoint_dir"] = str(tmp_path)
+    resume_kwargs["checkpoint_hash"] = "hash123"
+
+    resumed = train(
+        model=_make_small_model(),
+        dataloader=dataloader,
+        val_dataloader=val_dataloader,
+        resume_checkpoint_path=metadata["payload_path"],
+        **resume_kwargs,
+    )
+
+    assert resumed is not None
+
+
 def test_train_resumes_mid_epoch_and_normalizes_loss_with_saved_microsteps(tmp_path):
     """Mid-epoch resume should replay epoch and include saved loss denominator."""
     dataloader = list(_make_fake_dataloader(B=2, num_batches=3))
@@ -823,6 +858,424 @@ def test_train_sigterm_flag_saves_checkpoint_and_stops(tmp_path):
     assert metadata["checkpoint_kind"] == "sigterm"
     assert metadata["epoch"] == 0
     assert metadata["completed_microsteps"] == 1
+
+
+def test_train_sigterm_at_epoch_boundary_resumes_next_epoch(tmp_path):
+    """SIGTERM after a complete epoch should not replay that whole epoch."""
+    dataloader = list(_make_fake_dataloader(B=2, num_batches=2))
+    val_dataloader = _fake_val_dataloader(B=2)
+    kwargs = _make_train_kwargs(num_epochs=2, num_steps_per_epoch=1)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+    kwargs["checkpoint_hash"] = "hash123"
+    kwargs["latest_filename"] = "latest.json"
+    model = _make_small_model()
+
+    class RequestedFlag:
+        """Context manager whose requested flag is already set."""
+
+        requested = True
+
+        def __enter__(self):
+            """Return this requested flag."""
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            """Leave the fake signal context."""
+            return None
+
+    train(
+        model=model,
+        dataloader=dataloader,
+        val_dataloader=val_dataloader,
+        sigterm_flag_factory=lambda enabled: RequestedFlag(),
+        **kwargs,
+    )
+
+    pointer = json.loads((tmp_path / "latest.json").read_text())
+    metadata = json.loads(open(pointer["metadata_path"]).read())
+    assert metadata["checkpoint_kind"] == "sigterm"
+    assert metadata["epoch"] == 1
+    assert metadata["completed_microsteps"] == 0
+
+
+def test_train_sigterm_requested_after_final_microstep_stops_at_epoch_boundary(
+    tmp_path,
+):
+    """SIGTERM after the last microstep poll should stop before the next epoch."""
+    dataloader = list(_make_fake_dataloader(B=2, num_batches=3))
+    val_dataloader = _fake_val_dataloader(B=2)
+    kwargs = _make_train_kwargs(num_epochs=2, num_steps_per_epoch=1)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+    kwargs["checkpoint_hash"] = "hash123"
+    kwargs["latest_filename"] = "latest.json"
+    kwargs["checkpoint_every"] = 100
+    kwargs["val_every"] = 100
+    model = _make_small_model()
+
+    class BoundaryFlag:
+        """Flag that becomes requested after the final microstep check."""
+
+        def __init__(self):
+            """Initialize request polling state."""
+            self.reads = 0
+
+        @property
+        def requested(self):
+            """Return true after the in-loop microstep poll."""
+            self.reads += 1
+            return self.reads > 1
+
+        def __enter__(self):
+            """Return this boundary flag."""
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            """Leave the fake signal context."""
+            return None
+
+    train(
+        model=model,
+        dataloader=dataloader,
+        val_dataloader=val_dataloader,
+        sigterm_flag_factory=lambda enabled: BoundaryFlag(),
+        **kwargs,
+    )
+
+    pointer = json.loads((tmp_path / "latest.json").read_text())
+    metadata = json.loads(open(pointer["metadata_path"]).read())
+    assert metadata["checkpoint_kind"] == "sigterm"
+    assert metadata["epoch"] == 1
+    assert metadata["completed_microsteps"] == 0
+
+
+def test_train_sigterm_during_resumed_epoch_waits_for_replay_boundary(tmp_path):
+    """SIGTERM in a resumed epoch should not advance until replay is complete."""
+    dataloader = list(_make_fake_dataloader(B=2, num_batches=2))
+    val_dataloader = _fake_val_dataloader(B=2)
+    kwargs = _make_train_kwargs(num_epochs=2, num_steps_per_epoch=2)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+    kwargs["checkpoint_hash"] = "hash123"
+    kwargs["latest_filename"] = "latest.json"
+    kwargs["checkpoint_every"] = 100
+    kwargs["val_every"] = 100
+    model = _make_small_model()
+    state = make_train_state(model, kwargs["optimizer"])
+    resume_payload = TrainingCheckpoint(
+        state=state,
+        ema_model=model,
+        ema_initialized=True,
+        key=jax.random.PRNGKey(5),
+        sampling_key=jax.random.PRNGKey(6),
+        epoch=0,
+        completed_microsteps=1,
+        epoch_loss=2.0,
+        best_metric_value=float("inf"),
+        best_epoch=None,
+        patience_counter=0,
+        total_epoch_time=0.0,
+        total_train_time=0.0,
+        total_val_time=0.0,
+        val_runs=0,
+        val_time=float("nan"),
+        val_metrics={},
+        train_metrics={},
+        epoch_metric_results={},
+    )
+
+    class RequestedFlag:
+        """Context manager whose requested flag is already set."""
+
+        requested = True
+
+        def __enter__(self):
+            """Return this requested flag."""
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            """Leave the fake signal context."""
+            return None
+
+    train(
+        model=model,
+        dataloader=dataloader,
+        val_dataloader=val_dataloader,
+        resume_checkpoint=resume_payload,
+        resume_metadata={
+            "schema_version": 1,
+            "stable_hash": "hash123",
+            "checkpoint_kind": "sigterm",
+            "epoch": 0,
+            "completed_microsteps": 1,
+            "payload_path": str(tmp_path / "resume.eqx"),
+            "monitor": "flow_matching_loss",
+            "monitor_mode": "min",
+            "microsteps_per_epoch": 2,
+        },
+        sigterm_flag_factory=lambda enabled: RequestedFlag(),
+        **kwargs,
+    )
+
+    pointer = json.loads((tmp_path / "latest.json").read_text())
+    metadata = json.loads(open(pointer["metadata_path"]).read())
+    assert metadata["checkpoint_kind"] == "sigterm"
+    assert metadata["epoch"] == 0
+    assert metadata["completed_microsteps"] == 1
+
+
+def test_train_sigterm_during_repeated_resume_caps_completed_microsteps(tmp_path):
+    """Repeated mid-epoch SIGTERM should save bounded replay progress."""
+    dataloader = list(_make_fake_dataloader(B=2, num_batches=4))
+    val_dataloader = _fake_val_dataloader(B=2)
+    kwargs = _make_train_kwargs(num_epochs=2, num_steps_per_epoch=4)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+    kwargs["checkpoint_hash"] = "hash123"
+    kwargs["latest_filename"] = "latest.json"
+    kwargs["checkpoint_every"] = 100
+    kwargs["val_every"] = 100
+    kwargs["loss_fn"] = constant_one_loss
+    model = _make_small_model()
+    state = make_train_state(model, kwargs["optimizer"])
+    resume_payload = TrainingCheckpoint(
+        state=state,
+        ema_model=model,
+        ema_initialized=True,
+        key=jax.random.PRNGKey(5),
+        sampling_key=jax.random.PRNGKey(6),
+        epoch=0,
+        completed_microsteps=3,
+        epoch_loss=9.0,
+        best_metric_value=float("inf"),
+        best_epoch=None,
+        patience_counter=0,
+        total_epoch_time=0.0,
+        total_train_time=0.0,
+        total_val_time=0.0,
+        val_runs=0,
+        val_time=float("nan"),
+        val_metrics={},
+        train_metrics={},
+        epoch_metric_results={},
+    )
+
+    class SecondMicrostepFlag:
+        """Context manager requested on the second replayed microstep."""
+
+        def __init__(self):
+            """Initialize request polling state."""
+            self.reads = 0
+
+        @property
+        def requested(self):
+            """Return true only after the first replayed microstep."""
+            self.reads += 1
+            return self.reads > 1
+
+        def __enter__(self):
+            """Return this requested flag."""
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            """Leave the fake signal context."""
+            return None
+
+    train(
+        model=model,
+        dataloader=dataloader,
+        val_dataloader=val_dataloader,
+        resume_checkpoint=resume_payload,
+        resume_metadata={
+            "schema_version": 1,
+            "stable_hash": "hash123",
+            "checkpoint_kind": "sigterm",
+            "epoch": 0,
+            "completed_microsteps": 3,
+            "payload_path": str(tmp_path / "resume.eqx"),
+            "monitor": "flow_matching_loss",
+            "monitor_mode": "min",
+            "microsteps_per_epoch": 4,
+        },
+        sigterm_flag_factory=lambda enabled: SecondMicrostepFlag(),
+        **kwargs,
+    )
+
+    pointer = json.loads((tmp_path / "latest.json").read_text())
+    metadata = json.loads(open(pointer["metadata_path"]).read())
+    assert metadata["checkpoint_kind"] == "sigterm"
+    assert metadata["epoch"] == 0
+    assert metadata["completed_microsteps"] == 3
+
+    like_checkpoint = TrainingCheckpoint(
+        state=state,
+        ema_model=model,
+        ema_initialized=True,
+        key=jax.random.PRNGKey(0),
+        sampling_key=jax.random.PRNGKey(1),
+        epoch=0,
+        completed_microsteps=0,
+        epoch_loss=0.0,
+        best_metric_value=float("inf"),
+        best_epoch=None,
+        patience_counter=0,
+        total_epoch_time=0.0,
+        total_train_time=0.0,
+        total_val_time=0.0,
+        val_runs=0,
+        val_time=float("nan"),
+        val_metrics={},
+        train_metrics={},
+        epoch_metric_results={},
+    )
+    checkpoint = load_training_checkpoint(metadata["payload_path"], like_checkpoint)
+    assert checkpoint.completed_microsteps == 3
+    assert checkpoint.epoch_loss / checkpoint.completed_microsteps == pytest.approx(
+        11.0 / 5.0,
+    )
+
+
+def test_train_sigterm_after_epoch_work_stops_before_next_epoch(tmp_path):
+    """SIGTERM during epoch-end work should not start the next epoch."""
+    dataloader = list(_make_fake_dataloader(B=2, num_batches=3))
+    val_dataloader = _fake_val_dataloader(B=2)
+    kwargs = _make_train_kwargs(num_epochs=2, num_steps_per_epoch=1)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+    kwargs["checkpoint_hash"] = "hash123"
+    kwargs["latest_filename"] = "latest.json"
+    kwargs["checkpoint_every"] = 100
+    kwargs["val_every"] = 100
+    model = _make_small_model()
+
+    class EpochEndFlag:
+        """Flag that becomes requested after epoch-boundary polling."""
+
+        def __init__(self):
+            """Initialize request polling state."""
+            self.reads = 0
+
+        @property
+        def requested(self):
+            """Return true after microstep and boundary polls."""
+            self.reads += 1
+            return self.reads > 2
+
+        def __enter__(self):
+            """Return this epoch-end flag."""
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            """Leave the fake signal context."""
+            return None
+
+    train(
+        model=model,
+        dataloader=dataloader,
+        val_dataloader=val_dataloader,
+        sigterm_flag_factory=lambda enabled: EpochEndFlag(),
+        **kwargs,
+    )
+
+    pointer = json.loads((tmp_path / "latest.json").read_text())
+    metadata = json.loads(open(pointer["metadata_path"]).read())
+    assert metadata["checkpoint_kind"] == "sigterm"
+    assert metadata["epoch"] == 1
+    assert metadata["completed_microsteps"] == 0
+
+
+def test_train_sigterm_during_validation_preempts_early_stopping(tmp_path):
+    """SIGTERM observed during validation should checkpoint before early stop."""
+    dataloader = list(_make_fake_dataloader(B=2, num_batches=3))
+    val_dataloader = _fake_val_dataloader(B=2)
+    kwargs = _make_train_kwargs(num_epochs=3, num_steps_per_epoch=1)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+    kwargs["checkpoint_hash"] = "hash123"
+    kwargs["latest_filename"] = "latest.json"
+    kwargs["checkpoint_every"] = 100
+    kwargs["monitor"] = "constant_validation_metric"
+    kwargs["early_stopping_patience"] = 1
+    model = _make_small_model()
+    flag_holder = {}
+    metric_calls = []
+
+    class ValidationFlag:
+        """Context manager requested by the validation metric."""
+
+        def __init__(self):
+            """Initialize an unset request flag."""
+            self.requested = False
+
+        def __enter__(self):
+            """Return this validation flag."""
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            """Leave the fake signal context."""
+            return None
+
+    def constant_validation_metric(model, val_batches, key):
+        """Set the SIGTERM flag during the second validation cycle."""
+        metric_calls.append(None)
+        if len(metric_calls) > 1:
+            flag_holder["flag"].requested = True
+        return jnp.array(0.0)
+
+    def factory(enabled):
+        """Create and retain the validation flag."""
+        flag = ValidationFlag()
+        flag_holder["flag"] = flag
+        return flag
+
+    kwargs["epoch_metrics"] = [constant_validation_metric]
+
+    train(
+        model=model,
+        dataloader=dataloader,
+        val_dataloader=val_dataloader,
+        sigterm_flag_factory=factory,
+        **kwargs,
+    )
+
+    pointer = json.loads((tmp_path / "latest.json").read_text())
+    metadata = json.loads(open(pointer["metadata_path"]).read())
+    assert metadata["checkpoint_kind"] == "sigterm"
+    assert metadata["epoch"] == 2
+    assert metadata["completed_microsteps"] == 0
+
+
+def test_train_sigterm_handler_disabled_without_checkpoint_hash(tmp_path):
+    """Legacy model-only runs should not install a SIGTERM checkpoint handler."""
+    dataloader = list(_make_fake_dataloader(B=2, num_batches=2))
+    val_dataloader = _fake_val_dataloader(B=2)
+    kwargs = _make_train_kwargs(num_epochs=1, num_steps_per_epoch=1)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+    seen_enabled = []
+    model = _make_small_model()
+
+    class UnrequestedFlag:
+        """Context manager that records disabled SIGTERM setup."""
+
+        requested = False
+
+        def __enter__(self):
+            """Return this unrequested flag."""
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            """Leave the fake signal context."""
+            return None
+
+    def factory(enabled):
+        """Record whether the trainer attempted to enable SIGTERM handling."""
+        seen_enabled.append(enabled)
+        return UnrequestedFlag()
+
+    train(
+        model=model,
+        dataloader=dataloader,
+        val_dataloader=val_dataloader,
+        sigterm_flag_factory=factory,
+        **kwargs,
+    )
+
+    assert seen_enabled == [False]
 
 
 def test_train_runs_with_data_parallel_enabled_min_one(tmp_path):

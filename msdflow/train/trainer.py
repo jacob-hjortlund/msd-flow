@@ -27,6 +27,7 @@ from msdflow.tracking import log_metrics, log_checkpoint, log_samples
 from msdflow.train.checkpointing import (
     SigtermFlag,
     TrainingCheckpoint,
+    load_json,
     load_training_checkpoint,
     save_training_checkpoint,
     validate_checkpoint_metadata,
@@ -690,6 +691,17 @@ def train(
     resume_completed_microsteps = 0
     resume_epoch_loss = 0.0
 
+    if resume_checkpoint_path is not None and resume_metadata is None:
+        resume_metadata_path = os.path.splitext(os.fspath(resume_checkpoint_path))[0]
+        resume_metadata_path = f"{resume_metadata_path}.json"
+        if not os.path.exists(resume_metadata_path):
+            raise ValueError(
+                "resume_metadata is required when resume_checkpoint_path has no "
+                f"JSON sidecar: {resume_metadata_path}"
+            )
+        resume_metadata = load_json(resume_metadata_path)
+        resume_metadata.setdefault("metadata_path", resume_metadata_path)
+
     if resume_checkpoint_path is not None:
         resume_ema_initialized = bool(
             resume_metadata and resume_metadata.get("ema_initialized")
@@ -831,7 +843,9 @@ def train(
         logger.info("Saved full-state %s checkpoint: %s", kind, metadata["payload_path"])
         return metadata
 
-    with sigterm_flag_factory(save_on_sigterm) as sigterm_flag:
+    with sigterm_flag_factory(
+        save_on_sigterm and checkpoint_hash is not None
+    ) as sigterm_flag:
         for epoch in range(start_epoch, num_epochs):
             is_resumed_epoch = (
                 epoch == start_epoch and resume_completed_microsteps > 0
@@ -889,11 +903,34 @@ def train(
                             partial_time = time.perf_counter() - epoch_start_time
                             total_train_time += partial_time
                             total_epoch_time += partial_time
+                            if microstep + 1 >= microsteps_per_epoch:
+                                checkpoint_epoch = epoch + 1
+                                checkpoint_microsteps = 0
+                                checkpoint_epoch_loss = 0.0
+                            else:
+                                checkpoint_epoch = epoch
+                                max_mid_epoch_microsteps = max(
+                                    microsteps_per_epoch - 1,
+                                    0,
+                                )
+                                checkpoint_microsteps = min(
+                                    epoch_loss_denominator,
+                                    max_mid_epoch_microsteps,
+                                )
+                                checkpoint_epoch_loss = float(epoch_loss)
+                                if (
+                                    checkpoint_microsteps > 0
+                                    and checkpoint_microsteps < epoch_loss_denominator
+                                ):
+                                    checkpoint_epoch_loss *= (
+                                        checkpoint_microsteps
+                                        / epoch_loss_denominator
+                                    )
                             _save_full_checkpoint(
                                 kind="sigterm",
-                                epoch_to_resume=epoch,
-                                completed_microsteps=epoch_loss_denominator,
-                                current_epoch_loss=float(epoch_loss),
+                                epoch_to_resume=checkpoint_epoch,
+                                completed_microsteps=checkpoint_microsteps,
+                                current_epoch_loss=checkpoint_epoch_loss,
                             )
                             return ema_model if ema_model is not None else state.model
             finally:
@@ -906,6 +943,15 @@ def train(
             train_time = time.perf_counter() - epoch_start_time
             total_train_time += train_time
             avg_train_time = total_train_time / (epoch + 1)
+            if sigterm_flag.requested:
+                total_epoch_time += train_time
+                _save_full_checkpoint(
+                    kind="sigterm",
+                    epoch_to_resume=epoch + 1,
+                    completed_microsteps=0,
+                    current_epoch_loss=0.0,
+                )
+                return ema_model if ema_model is not None else state.model
 
             if (epoch + 1) % val_every == 0:
                 val_start_time = time.perf_counter()
@@ -1011,6 +1057,15 @@ def train(
                     else:
                         patience_counter += 1
 
+                    if sigterm_flag.requested:
+                        _save_full_checkpoint(
+                            kind="sigterm",
+                            epoch_to_resume=epoch + 1,
+                            completed_microsteps=0,
+                            current_epoch_loss=0.0,
+                        )
+                        return ema_model if ema_model is not None else state.model
+
                     if (
                         early_stopping_patience is not None
                         and patience_counter >= early_stopping_patience
@@ -1112,5 +1167,14 @@ def train(
                     + val_time_str
                 )
                 logger.info(log_string)
+
+            if sigterm_flag.requested:
+                _save_full_checkpoint(
+                    kind="sigterm",
+                    epoch_to_resume=epoch + 1,
+                    completed_microsteps=0,
+                    current_epoch_loss=0.0,
+                )
+                return ema_model if ema_model is not None else state.model
 
     return ema_model if ema_model is not None else state.model
