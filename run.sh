@@ -10,8 +10,8 @@
 #SBATCH --gpus-per-node=4
 #SBATCH --gpu-bind=none
 #SBATCH --signal=TERM@600
-#SBATCH -o /pscratch/sd/h/%u/msd-flow/slurm/%x-%j.out
-#SBATCH -e /pscratch/sd/h/%u/msd-flow/slurm/%x-%j.err
+#SBATCH -o %x-%j.out
+#SBATCH -e %x-%j.err
 
 set -euo pipefail
 

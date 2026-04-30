@@ -45,7 +45,11 @@ def test_run_sh_uses_stable_checkpoint_root():
     """NERSC run script should not put resumable checkpoints in per-job RUN_DIR."""
     text = open("run.sh").read()
 
+    assert "#SBATCH --signal=TERM@600" in text
+    assert "#SBATCH -o %x-%j.out" in text
+    assert "#SBATCH -e %x-%j.err" in text
     assert 'export CHECKPOINT_ROOT="$PROJECT_ROOT/checkpoints"' in text
+    assert '"$CHECKPOINT_ROOT"' in text
     assert '"train.checkpoint_dir=${CHECKPOINT_ROOT}"' in text
     assert '"train.resume.restart=false"' in text
     assert '"train.resume.save_on_sigterm=true"' in text
