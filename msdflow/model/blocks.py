@@ -171,14 +171,15 @@ class ResBlock(eqx.Module):
 
 
 def _apply_linear(linear: eqx.nn.Linear, x: jax.Array) -> jax.Array:
-    """Apply ``eqx.nn.Linear`` to a batch of vectors with weights cast to ``x.dtype``.
+    """Apply ``eqx.nn.Linear`` with weights cast to ``x.dtype``.
 
     Args:
-        linear: Equinox Linear layer with weight shape ``(out_features, in_features)``.
-        x: Input array of shape ``(T, in_features)``.
+        linear: Equinox Linear layer with weight shape
+            ``(out_features, in_features)``.
+        x: Input array with trailing dimension ``in_features``.
 
     Returns:
-        Output array of shape ``(T, out_features)`` in ``x.dtype``.
+        Output array with trailing dimension ``out_features`` in ``x.dtype``.
     """
     weight = linear.weight.astype(x.dtype)
     out = x @ weight.T
@@ -658,6 +659,7 @@ class ResBlockBigGAN(eqx.Module):
     skip_rescale: bool = eqx.field(static=True)
     up: bool = eqx.field(static=True)
     down: bool = eqx.field(static=True)
+    compute_dtype: jnp.dtype = eqx.field(static=True)
 
     def __init__(
         self,
@@ -671,6 +673,7 @@ class ResBlockBigGAN(eqx.Module):
         key: jax.Array,
         up: bool = False,
         down: bool = False,
+        compute_dtype: jnp.dtype = jnp.float32,
     ):
         """Args:
         in_channels: Input channel count.
@@ -683,6 +686,7 @@ class ResBlockBigGAN(eqx.Module):
         key: JAX PRNG key.
         up: If True, upsample 2x within the block.
         down: If True, downsample 2x within the block.
+        compute_dtype: Dtype used for convolution and time-projection math.
         """
         if up and down:
             raise ValueError("Cannot set both up=True and down=True.")
@@ -692,6 +696,7 @@ class ResBlockBigGAN(eqx.Module):
         self.skip_rescale = skip_rescale
         self.up = up
         self.down = down
+        self.compute_dtype = compute_dtype
 
         self.norm1 = eqx.nn.GroupNorm(num_groups, in_channels)
         self.conv1 = eqx.nn.Conv2d(in_channels, out_channels, 3, padding=1, key=k1)
@@ -734,19 +739,30 @@ class ResBlockBigGAN(eqx.Module):
             Output feature map of shape ``(C_out, H', W')`` where
             ``H', W'`` depend on up/down settings.
         """
+        orig_dtype = x.dtype
+
         h = self.norm1(x)
         h = self.activation(h)
         h = self._resample(h)
-        h = self.conv1(h)
-        h = h + self.time_proj(time_emb).reshape(-1, 1, 1)
+        h = _apply_conv2d(self.conv1, h.astype(self.compute_dtype)).astype(orig_dtype)
+
+        time_h = _apply_linear(
+            self.time_proj,
+            time_emb.astype(self.compute_dtype),
+        ).astype(orig_dtype)
+        h = h + time_h.reshape(-1, 1, 1)
+
         h = self.norm2(h)
         h = self.activation(h)
         h = self.dropout(h, key=key)
-        h = self.conv2(h)
+        h = _apply_conv2d(self.conv2, h.astype(self.compute_dtype)).astype(orig_dtype)
 
         skip = self._resample(x)
         if self.skip_conv is not None:
-            skip = self.skip_conv(skip)
+            skip = _apply_conv2d(
+                self.skip_conv,
+                skip.astype(self.compute_dtype),
+            ).astype(orig_dtype)
 
         out = h + skip
         if self.skip_rescale:

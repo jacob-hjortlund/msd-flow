@@ -3,6 +3,7 @@
 import jax
 import pytest
 
+import equinox as eqx
 import jax.numpy as jnp
 
 from msdflow.model.blocks import ResBlock
@@ -14,6 +15,14 @@ from msdflow.model.blocks import Downsample, Upsample
 
 KEY = jax.random.PRNGKey(0)
 TIME_EMB_DIM = 16
+
+
+def _array_leaf_dtypes(pytree):
+    """Return dtypes for array leaves in a pytree."""
+    return {
+        leaf.dtype
+        for leaf in jax.tree.leaves(eqx.filter(pytree, eqx.is_array))
+    }
 
 
 def test_sinusoidal_embedding_output_shape():
@@ -373,6 +382,82 @@ def test_resblock_biggan_up_and_down_raises():
             num_groups=2, activation=jax.nn.swish, dropout=0.0,
             skip_rescale=True, up=True, down=True, key=KEY,
         )
+
+
+def test_resblock_biggan_compute_dtype_bfloat16_smoke():
+    """bf16 compute returns finite fp32 output for fp32 inputs."""
+    block = ResBlockBigGAN(
+        in_channels=4,
+        out_channels=8,
+        time_emb_dim=TIME_EMB_DIM,
+        num_groups=2,
+        activation=jax.nn.swish,
+        dropout=0.0,
+        skip_rescale=True,
+        key=KEY,
+        compute_dtype=jnp.bfloat16,
+    )
+    x_key, emb_key = jax.random.split(KEY)
+    x = jax.random.normal(x_key, (4, 8, 8)).astype(jnp.float32)
+    t_emb = jax.random.normal(emb_key, (TIME_EMB_DIM,)).astype(jnp.float32)
+
+    out = block(x, t_emb, jax.random.PRNGKey(0))
+
+    assert block.compute_dtype == jnp.bfloat16
+    assert out.shape == (8, 8, 8)
+    assert out.dtype == jnp.float32
+    assert jnp.all(jnp.isfinite(out))
+
+
+def test_resblock_biggan_compute_dtype_keeps_stored_arrays_float32():
+    """bf16 compute does not convert stored trainable arrays."""
+    block = ResBlockBigGAN(
+        in_channels=4,
+        out_channels=8,
+        time_emb_dim=TIME_EMB_DIM,
+        num_groups=2,
+        activation=jax.nn.swish,
+        dropout=0.0,
+        skip_rescale=True,
+        key=KEY,
+        compute_dtype=jnp.bfloat16,
+    )
+
+    assert _array_leaf_dtypes(block) == {jnp.dtype(jnp.float32)}
+
+
+def test_resblock_biggan_bfloat16_compute_close_to_float32_compute():
+    """bf16 compute stays close to the default fp32 compute path."""
+    block_fp32 = ResBlockBigGAN(
+        in_channels=4,
+        out_channels=8,
+        time_emb_dim=TIME_EMB_DIM,
+        num_groups=2,
+        activation=jax.nn.swish,
+        dropout=0.0,
+        skip_rescale=True,
+        key=KEY,
+    )
+    block_bf16 = ResBlockBigGAN(
+        in_channels=4,
+        out_channels=8,
+        time_emb_dim=TIME_EMB_DIM,
+        num_groups=2,
+        activation=jax.nn.swish,
+        dropout=0.0,
+        skip_rescale=True,
+        key=KEY,
+        compute_dtype=jnp.bfloat16,
+    )
+    x_key, emb_key = jax.random.split(KEY)
+    x = jax.random.normal(x_key, (4, 8, 8)).astype(jnp.float32)
+    t_emb = jax.random.normal(emb_key, (TIME_EMB_DIM,)).astype(jnp.float32)
+    dropout_key = jax.random.PRNGKey(0)
+
+    out_fp32 = block_fp32(x, t_emb, dropout_key)
+    out_bf16 = block_bf16(x, t_emb, dropout_key)
+
+    assert jnp.allclose(out_fp32, out_bf16, atol=2e-1, rtol=2e-1)
 
 
 from msdflow.model.blocks import AttnBlockNCSN
