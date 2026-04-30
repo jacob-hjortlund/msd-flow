@@ -16,6 +16,7 @@ from msdflow.model.blocks import (
     AttnBlockNCSN,
     GaussianFourierProjection,
     ResBlockBigGAN,
+    _apply_conv2d,
 )
 from msdflow.utils import register_all_resolvers
 
@@ -44,6 +45,7 @@ class NCSNpp(eqx.Module):
         final_conv: Output 3x3 convolution.
         activation: Activation function.
         prediction_type: Output semantics — ``"velocity"`` or ``"image"``.
+        compute_dtype: Dtype for conv/linear-heavy model compute outside attention.
     """
 
     stem: eqx.nn.Conv2d
@@ -73,6 +75,7 @@ class NCSNpp(eqx.Module):
     attn_resolutions: List[int] = eqx.field(static=True)
     image_size: int = eqx.field(static=True)
     prediction_type: str = eqx.field(static=True)
+    compute_dtype: jnp.dtype = eqx.field(static=True)
 
     def __init__(
         self,
@@ -92,6 +95,7 @@ class NCSNpp(eqx.Module):
         key: jax.Array,
         cond_dim: int = 0,
         prediction_type: str = "velocity",
+        compute_dtype: jnp.dtype = jnp.float32,
         attention_dtype: jnp.dtype = jnp.float32,
         attention_implementation: Optional[str] = None,
         attention_type: str = "dot_product",
@@ -121,6 +125,10 @@ class NCSNpp(eqx.Module):
                 ``v_t`` directly. ``"image"`` means it predicts the target
                 image ``x_t_pred``; the caller converts to velocity via
                 ``(x_t_pred - x_t) / (1 - t)``.
+            compute_dtype: Dtype for conv/linear-heavy model compute outside
+                attention. Stored parameters, optimizer state, normalization,
+                residual sums, and normal fp32-training outputs remain fp32.
+                Defaults to ``jnp.float32`` (no behavior change).
             attention_dtype: Dtype for Q/K/V projections and the attention
                 call inside every ``AttnBlockNCSN``. Output of each attention
                 block is upcast back to the input's dtype after the attention
@@ -139,6 +147,7 @@ class NCSNpp(eqx.Module):
         self.attn_resolutions = list(attn_resolutions)
         self.image_size = image_size
         self.cond_dim = cond_dim
+        self.compute_dtype = compute_dtype
 
         if cond_dim > 1:
             raise ValueError(
@@ -208,6 +217,7 @@ class NCSNpp(eqx.Module):
                         dropout=dropout,
                         skip_rescale=skip_rescale,
                         key=block_key,
+                        compute_dtype=compute_dtype,
                     )
                 )
                 enc_is_attn.append(False)
@@ -245,6 +255,7 @@ class NCSNpp(eqx.Module):
                         skip_rescale=skip_rescale,
                         key=block_key,
                         down=True,
+                        compute_dtype=compute_dtype,
                     )
                 )
                 skip_channels.append(ch_out)
@@ -266,6 +277,7 @@ class NCSNpp(eqx.Module):
             dropout,
             skip_rescale,
             mid1_key,
+            compute_dtype=compute_dtype,
         )
         self.mid_attn = AttnBlockNCSN(
             channels=ch_bot,
@@ -286,6 +298,7 @@ class NCSNpp(eqx.Module):
             dropout,
             skip_rescale,
             mid2_key,
+            compute_dtype=compute_dtype,
         )
 
         # -- Decoder --
@@ -314,6 +327,7 @@ class NCSNpp(eqx.Module):
                         dropout,
                         skip_rescale,
                         key=block_key,
+                        compute_dtype=compute_dtype,
                     )
                 )
                 dec_is_attn.append(False)
@@ -348,6 +362,7 @@ class NCSNpp(eqx.Module):
                         skip_rescale,
                         block_key,
                         up=True,
+                        compute_dtype=compute_dtype,
                     )
                 )
                 current_res = current_res * 2
@@ -409,7 +424,10 @@ class NCSNpp(eqx.Module):
         else:
             combined_emb = time_emb
 
-        h = self.stem(x_t)
+        h = _apply_conv2d(
+            self.stem,
+            x_t.astype(self.compute_dtype),
+        ).astype(x_t.dtype)
 
         # -- Encoder: collect skip connections --
         skips = [h]
@@ -461,5 +479,9 @@ class NCSNpp(eqx.Module):
         # -- Output head --
         h = self.final_norm(h)
         h = self.activation(h)
-        h = self.final_conv(h)
+        output_dtype = h.dtype
+        h = _apply_conv2d(
+            self.final_conv,
+            h.astype(self.compute_dtype),
+        ).astype(output_dtype)
         return h

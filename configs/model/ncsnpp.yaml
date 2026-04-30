@@ -17,6 +17,7 @@ skip_rescale: true
 image_size: ${image_size}
 cond_dim: "${if_cond: ${metadata_columns}, 1, 0}"
 prediction_type: "velocity"
+compute_dtype: "${jnp_dtype: float32}"
 attention_dtype: "${jnp_dtype: float32}"
 attention_implementation: null
 attention_type: "dot_product"
