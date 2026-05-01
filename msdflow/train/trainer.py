@@ -901,6 +901,7 @@ def train(
 
     data_parallel_config = resolve_data_parallel_config(data_parallel)
     time_loss_config = resolve_time_loss_diagnostic_config(time_loss_diagnostic)
+    time_loss_enabled = time_loss_config.enabled and clearml_task is not None
 
     state = make_train_state(model, optimizer)
     state = shard_train_state(state, data_parallel_config)
@@ -915,7 +916,7 @@ def train(
         data_parallel=data_parallel_config,
     )
     time_binned_loss_step = None
-    if time_loss_config.enabled:
+    if time_loss_enabled:
         time_binned_loss_step = make_time_binned_loss_step(
             time_loss_config.num_bins,
             data_parallel=data_parallel_config,
@@ -1230,7 +1231,7 @@ def train(
 
                 key, key_val, key_train, key_epoch = jax.random.split(key, 4)
                 key_time_loss = None
-                if time_loss_config.enabled:
+                if time_loss_enabled:
                     key, key_time_loss = jax.random.split(key, 2)
 
                 eval_model = ema_model if ema_model is not None else state.model
@@ -1275,7 +1276,7 @@ def train(
                                 name = type(fn).__name__
                             epoch_metric_results[name] = result
 
-                if time_loss_config.enabled and time_binned_loss_step is not None:
+                if time_loss_enabled and time_binned_loss_step is not None:
                     assert key_time_loss is not None
                     split_dataloaders = {
                         "val": val_dataloader,

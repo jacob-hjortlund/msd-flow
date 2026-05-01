@@ -2182,6 +2182,50 @@ def test_train_logs_time_binned_loss_diagnostic_at_validation_cadence(tmp_path):
     assert first_call["history"] is not None
 
 
+def test_train_skips_time_binned_loss_diagnostic_without_clearml_task(tmp_path):
+    """Enabled diagnostic should not run a diagnostic pass without ClearML."""
+    key = jax.random.PRNGKey(34)
+    dl = _make_dataloader()
+    model = _make_small_model()
+
+    with (
+        patch("msdflow.train.trainer.time_binned_loss_loop") as mock_loop,
+        patch("msdflow.train.trainer.log_time_binned_loss") as mock_log_diag,
+    ):
+        train(
+            key=key,
+            model=model,
+            dataloader=dl,
+            val_dataloader=dl,
+            optimizer=OPTIMIZER,
+            loss_fn=lambda model, x_t, u_t, t, cond, cond_mask, key: jnp.mean(x_t),
+            batch_metrics=[],
+            epoch_metrics=[],
+            coupling=_COUPLING,
+            time_sampler=_time_sampler,
+            path_sampler=_PATH_SAMPLER,
+            num_epochs=1,
+            num_steps_per_epoch=1,
+            p_uncond=1.0,
+            ema_decay=0.999,
+            log_every=1,
+            val_every=1,
+            checkpoint_every=10,
+            checkpoint_dir=str(tmp_path),
+            clearml_task=None,
+            time_loss_diagnostic={
+                "enabled": True,
+                "split": "val",
+                "num_bins": 4,
+                "num_batches": 1,
+                "log_heatmap": True,
+            },
+        )
+
+    mock_loop.assert_not_called()
+    mock_log_diag.assert_not_called()
+
+
 def test_train_time_loss_diagnostic_keeps_positional_checkpoint_hash_binding():
     """Old positional checkpoint_hash calls should not bind to diagnostics."""
     sentinel_hash = "old-positional-hash"
@@ -2296,10 +2340,19 @@ def test_train_time_loss_diagnostic_disabled_preserves_epoch_metric_key(tmp_path
 
     omitted_key = run_and_capture()
     disabled_key = run_and_capture({"enabled": False})
+    enabled_without_task_key = run_and_capture(
+        {
+            "enabled": True,
+            "split": "val",
+            "num_bins": 4,
+            "num_batches": 1,
+        }
+    )
     expected_old_key = np.array([4, 3], dtype=np.uint32)
 
     assert np.array_equal(omitted_key, expected_old_key)
     assert np.array_equal(disabled_key, omitted_key)
+    assert np.array_equal(enabled_without_task_key, omitted_key)
 
 
 def test_train_logs_time_binned_loss_diagnostic_for_both_splits(tmp_path):
