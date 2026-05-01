@@ -686,7 +686,8 @@ def radius_at_fraction(img, frac, eps=1e-12):
     """
     J = _prepare_image(img)
     # xc, yc = centroid(img, eps=eps)
-    xc, yc = (256, 256)
+    mid_idx = img.shape[0] // 2
+    xc, yc = (mid_idx, mid_idx)
     r_sorted, J_sorted = _radii_and_sorted_intensity(J, xc, yc)
 
     cumulative = jnp.cumsum(J_sorted)
@@ -723,7 +724,8 @@ def second_moments(img, eps=1e-12):
     N = J.shape[0]
     X, Y = _coordinate_grids(N)
     # xc, yc = centroid(img, eps=eps)
-    xc, yc = (256, 256)
+    mid_idx = img.shape[0] // 2
+    xc, yc = (mid_idx, mid_idx)
 
     total = jnp.sum(J)
 
@@ -795,8 +797,8 @@ def asymmetry(img, eps=1e-12):
     Uses 180-degree rotation about the intensity-weighted centroid.
     """
     J = _prepare_image(img)
-    # xc, yc = centroid(img, eps=eps)
-    xc, yc = (256, 256)
+    mid_idx = img.shape[0] // 2
+    xc, yc = (mid_idx, mid_idx)
     J_rot = _rotate_180_about_center(J, xc, yc, order=1)
 
     num = jnp.sum(jnp.abs(J - J_rot))
