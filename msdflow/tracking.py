@@ -477,3 +477,150 @@ def log_samples(
     )
 
     plt.close(fig)
+
+
+def plot_time_binned_loss_histogram(
+    result: Any,
+    *,
+    split: str,
+    epoch: int,
+):
+    """Create a per-epoch histogram of mean loss by time bin.
+
+    Args:
+        result: Object with ``bin_edges``, ``mean_loss``, and ``counts``.
+        split: Split name used in the plot title.
+        epoch: One-indexed epoch number.
+
+    Returns:
+        Matplotlib figure.
+    """
+    bin_edges = np.asarray(result.bin_edges, dtype=np.float64)
+    mean_loss = np.asarray(result.mean_loss, dtype=np.float64)
+    counts = np.asarray(result.counts, dtype=np.int64)
+    centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+    widths = np.diff(bin_edges)
+
+    fig, ax_loss = plt.subplots(figsize=(8.0, 4.5))
+    masked_loss = np.ma.masked_invalid(mean_loss)
+    ax_loss.bar(
+        centers,
+        masked_loss,
+        width=0.9 * widths,
+        align="center",
+        color="#3b82f6",
+        edgecolor="#1e3a8a",
+        linewidth=0.8,
+    )
+    ax_loss.set_xlabel("t")
+    ax_loss.set_ylabel("Mean flow-matching loss")
+    ax_loss.set_xlim(float(bin_edges[0]), float(bin_edges[-1]))
+    ax_loss.set_title(f"{split} loss by t, epoch {epoch}")
+    ax_loss.grid(axis="y", alpha=0.25)
+
+    ax_count = ax_loss.twinx()
+    ax_count.step(
+        centers,
+        counts,
+        where="mid",
+        color="#64748b",
+        linewidth=1.2,
+        alpha=0.9,
+    )
+    ax_count.set_ylabel("Samples per bin")
+    ax_count.set_ylim(bottom=0)
+
+    fig.tight_layout()
+    return fig
+
+
+def plot_time_binned_loss_heatmap(
+    history: Any,
+    *,
+    split: str,
+):
+    """Create a cumulative epoch-by-time heatmap of mean loss.
+
+    Args:
+        history: Object with ``bin_edges``, ``epochs``, and ``mean_losses``.
+        split: Split name used in the plot title.
+
+    Returns:
+        Matplotlib figure.
+    """
+    bin_edges = np.asarray(history.bin_edges, dtype=np.float64)
+    epochs = np.asarray(history.epochs, dtype=np.int64)
+    mean_losses = np.asarray(history.mean_losses, dtype=np.float64)
+    masked_losses = np.ma.masked_invalid(mean_losses)
+
+    fig, ax = plt.subplots(figsize=(8.0, 4.8))
+    if epochs.size == 0:
+        epoch_min = 0.5
+        epoch_max = 1.5
+    else:
+        epoch_min = float(epochs[0]) - 0.5
+        epoch_max = float(epochs[-1]) + 0.5
+    image = ax.imshow(
+        masked_losses,
+        aspect="auto",
+        origin="lower",
+        interpolation="nearest",
+        extent=(float(bin_edges[0]), float(bin_edges[-1]), epoch_min, epoch_max),
+    )
+    ax.set_xlabel("t")
+    ax.set_ylabel("Epoch")
+    ax.set_title(f"{split} loss by t over epochs")
+    if epochs.size > 0:
+        ax.set_yticks(epochs)
+    fig.colorbar(image, ax=ax, label="Mean flow-matching loss")
+    fig.tight_layout()
+    return fig
+
+
+def log_time_binned_loss(
+    task: Any,
+    *,
+    split: str,
+    epoch: int,
+    result: Any,
+    history: Any | None = None,
+) -> None:
+    """Log time-binned loss diagnostic figures to ClearML.
+
+    Args:
+        task: Active ClearML Task, or None.
+        split: Split name for title namespacing.
+        epoch: One-indexed epoch number.
+        result: Per-epoch result with ``bin_edges``, ``mean_loss``, and
+            ``counts``.
+        history: Optional cumulative history for heatmap logging.
+    """
+    if task is None:
+        return
+
+    title = f"{split}/flow_matching_loss_by_t"
+    cl_logger = task.get_logger()
+    fig = plot_time_binned_loss_histogram(result, split=split, epoch=epoch)
+    cl_logger.report_matplotlib_figure(
+        title=title,
+        series="histogram",
+        iteration=epoch,
+        figure=fig,
+        report_image=False,
+        report_interactive=False,
+    )
+    plt.close(fig)
+
+    if history is None:
+        return
+
+    fig = plot_time_binned_loss_heatmap(history, split=split)
+    cl_logger.report_matplotlib_figure(
+        title=title,
+        series="heatmap",
+        iteration=epoch,
+        figure=fig,
+        report_image=False,
+        report_interactive=False,
+    )
+    plt.close(fig)

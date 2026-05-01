@@ -174,6 +174,81 @@ def test_log_samples_calls_report_matplotlib_figure():
     assert logger.report_image.call_count == 0
 
 
+def _time_binned_result():
+    """Return a small time-binned result and matching history for tracking tests."""
+    from msdflow.train.metrics import TimeBinnedLossHistory, TimeBinnedLossResult
+
+    result = TimeBinnedLossResult.empty(num_bins=3)
+    result.add_batch(
+        loss_sums=np.array([1.0, 0.0, 6.0]),
+        counts=np.array([1, 0, 3]),
+    )
+    history = TimeBinnedLossHistory(bin_edges=result.bin_edges)
+    history.append(epoch=2, result=result)
+    return result, history
+
+
+def test_log_time_binned_loss_noop_when_task_is_none():
+    """Time-binned loss logging should no-op when ClearML tracking is disabled."""
+    from msdflow.tracking import log_time_binned_loss
+
+    result, history = _time_binned_result()
+
+    log_time_binned_loss(
+        task=None,
+        split="val",
+        epoch=2,
+        result=result,
+        history=history,
+    )
+
+
+def test_log_time_binned_loss_reports_histogram_and_heatmap():
+    """Time-binned loss logging should report one histogram and one heatmap."""
+    from msdflow.tracking import log_time_binned_loss
+
+    mock_task = MagicMock()
+    result, history = _time_binned_result()
+
+    log_time_binned_loss(
+        task=mock_task,
+        split="val",
+        epoch=2,
+        result=result,
+        history=history,
+    )
+
+    logger = mock_task.get_logger.return_value
+    assert logger.report_matplotlib_figure.call_count == 2
+    calls = logger.report_matplotlib_figure.call_args_list
+    assert calls[0].kwargs["title"] == "val/flow_matching_loss_by_t"
+    assert calls[0].kwargs["series"] == "histogram"
+    assert calls[0].kwargs["iteration"] == 2
+    assert calls[1].kwargs["title"] == "val/flow_matching_loss_by_t"
+    assert calls[1].kwargs["series"] == "heatmap"
+    assert calls[1].kwargs["iteration"] == 2
+
+
+def test_log_time_binned_loss_can_skip_heatmap():
+    """Passing no history should only report the per-epoch histogram."""
+    from msdflow.tracking import log_time_binned_loss
+
+    mock_task = MagicMock()
+    result, _ = _time_binned_result()
+
+    log_time_binned_loss(
+        task=mock_task,
+        split="val",
+        epoch=2,
+        result=result,
+        history=None,
+    )
+
+    logger = mock_task.get_logger.return_value
+    assert logger.report_matplotlib_figure.call_count == 1
+    assert logger.report_matplotlib_figure.call_args.kwargs["series"] == "histogram"
+
+
 # ---------------------------------------------------------------------------
 # get_dataset_id
 # ---------------------------------------------------------------------------
