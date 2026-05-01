@@ -1776,6 +1776,38 @@ def test_time_binned_loss_loop_returns_result_with_counts():
     assert int(result.counts.sum()) == 2
 
 
+def test_time_binned_loss_loop_supports_data_parallel_min_one():
+    """Diagnostic loop should aggregate counts with enabled data parallelism."""
+    cfg = make_data_parallel_config(enabled=True, min_devices=1)
+    step = make_time_binned_loss_step(num_bins=4, data_parallel=cfg)
+    val_loader = _make_val_dataloader(num_batches=2)
+    model = _make_small_model()
+    observed = {}
+
+    def checking_step(model, x_t, u_t, t, cond, cond_mask, key):
+        """Record diagnostic batch sharding before delegating to the real step."""
+        observed["x_t_sharding"] = x_t.sharding
+        observed["t_sharding"] = t.sharding
+        return step(model, x_t, u_t, t, cond, cond_mask, key)
+
+    result = time_binned_loss_loop(
+        key=jax.random.PRNGKey(8),
+        model=model,
+        dataloader=val_loader,
+        step_fn=checking_step,
+        prepare_jax=_make_prepare_jax(),
+        num_bins=4,
+        num_batches=1,
+        data_parallel=cfg,
+    )
+
+    assert result.loss_sums.shape == (4,)
+    assert result.counts.shape == (4,)
+    assert int(result.counts.sum()) == 2
+    assert observed["x_t_sharding"] == cfg.data_sharding
+    assert observed["t_sharding"] == cfg.data_sharding
+
+
 def test_call_epoch_metric_passes_data_parallel_when_supported():
     """Epoch metrics that accept data_parallel receive the resolved config."""
     received = {}

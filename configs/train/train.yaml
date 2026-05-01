@@ -75,6 +75,7 @@ resume:
     - clearml
     - train.resume
     - train.num_epochs
+    - train.time_loss_diagnostic
   latest_filename: latest.json
   save_on_sigterm: true
 val_every: 1

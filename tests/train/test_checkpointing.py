@@ -39,6 +39,7 @@ def test_train_config_contains_resume_defaults():
     assert "clearml" in list(cfg.resume.hash_exclude)
     assert "train.resume" in list(cfg.resume.hash_exclude)
     assert "train.num_epochs" in list(cfg.resume.hash_exclude)
+    assert "train.time_loss_diagnostic" in list(cfg.resume.hash_exclude)
     assert cfg.resume.latest_filename == "latest.json"
     assert cfg.resume.save_on_sigterm is True
 
@@ -107,6 +108,45 @@ def test_compute_config_hash_ignores_excluded_paths():
     assert "clearml" not in payload_a
     assert "resume" not in payload_a["train"]
     assert "num_epochs" not in payload_a["train"]
+
+
+def test_composed_config_hash_ignores_time_loss_diagnostic_defaults():
+    """Configured hash excludes should keep diagnostics observational."""
+    with initialize_config_dir(
+        config_dir=str(Path("configs").resolve()),
+        version_base=None,
+    ):
+        cfg_a = compose(
+            config_name="config",
+            overrides=["work_dir=/tmp/msdflow-test"],
+        )
+        cfg_b = compose(
+            config_name="config",
+            overrides=["work_dir=/tmp/msdflow-test"],
+        )
+
+    cfg_b.train.time_loss_diagnostic.enabled = (
+        not cfg_a.train.time_loss_diagnostic.enabled
+    )
+    cfg_b.train.time_loss_diagnostic.num_bins = (
+        cfg_a.train.time_loss_diagnostic.num_bins + 1
+    )
+    cfg_b.train.time_loss_diagnostic.log_heatmap = (
+        not cfg_a.train.time_loss_diagnostic.log_heatmap
+    )
+
+    hash_a, payload_a = compute_config_hash(
+        cfg_a,
+        exclude_paths=list(cfg_a.train.resume.hash_exclude),
+    )
+    hash_b, payload_b = compute_config_hash(
+        cfg_b,
+        exclude_paths=list(cfg_b.train.resume.hash_exclude),
+    )
+
+    assert hash_a == hash_b
+    assert payload_a == payload_b
+    assert "time_loss_diagnostic" not in payload_a["train"]
 
 
 def test_compute_config_hash_changes_for_model_fields():

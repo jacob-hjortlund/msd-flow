@@ -250,7 +250,11 @@ class TimeBinnedLossResult:
 
     @property
     def mean_loss(self) -> np.ndarray:
-        """Return mean loss per bin, using NaN for empty bins."""
+        """Return mean loss per time bin.
+
+        Returns:
+            Mean loss per bin, with ``NaN`` for empty bins.
+        """
         return np.divide(
             self.loss_sums,
             self.counts,
