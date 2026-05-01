@@ -1668,6 +1668,20 @@ def test_resolve_time_loss_diagnostic_config_accepts_mapping():
     assert cfg.log_heatmap is False
 
 
+def test_resolve_time_loss_diagnostic_config_accepts_integer_strings():
+    """Integer strings should resolve into diagnostic integer fields."""
+    cfg = resolve_time_loss_diagnostic_config(
+        {
+            "enabled": True,
+            "num_bins": "8",
+            "num_batches": "2",
+        }
+    )
+
+    assert cfg.num_bins == 8
+    assert cfg.num_batches == 2
+
+
 def test_resolve_time_loss_diagnostic_config_rejects_invalid_split():
     """Only val, train, and both are valid diagnostic splits."""
     with pytest.raises(ValueError, match="split"):
@@ -1687,6 +1701,20 @@ def test_resolve_time_loss_diagnostic_config_rejects_non_integer_bins(num_bins):
         resolve_time_loss_diagnostic_config({"enabled": True, "num_bins": num_bins})
 
 
+def test_resolve_time_loss_diagnostic_config_rejects_direct_non_integer_bins():
+    """Direct diagnostic configs should validate invalid num_bins fields."""
+    with pytest.raises(ValueError, match="num_bins"):
+        resolve_time_loss_diagnostic_config(
+            TimeLossDiagnosticConfig(enabled=True, num_bins="bad")
+        )
+
+
+def test_resolve_time_loss_diagnostic_config_rejects_fractional_num_bins():
+    """Diagnostic bin count should reject fractional numeric values."""
+    with pytest.raises(ValueError, match="num_bins"):
+        resolve_time_loss_diagnostic_config({"enabled": True, "num_bins": 1.9})
+
+
 @pytest.mark.parametrize("num_batches", [-1, "bad", None])
 def test_resolve_time_loss_diagnostic_config_rejects_invalid_num_batches(num_batches):
     """Diagnostic batch limit errors should name num_batches."""
@@ -1694,6 +1722,20 @@ def test_resolve_time_loss_diagnostic_config_rejects_invalid_num_batches(num_bat
         resolve_time_loss_diagnostic_config(
             {"enabled": True, "num_batches": num_batches}
         )
+
+
+def test_resolve_time_loss_diagnostic_config_rejects_direct_none_num_batches():
+    """Direct diagnostic configs should validate invalid num_batches fields."""
+    with pytest.raises(ValueError, match="num_batches"):
+        resolve_time_loss_diagnostic_config(
+            TimeLossDiagnosticConfig(enabled=True, num_batches=None)
+        )
+
+
+def test_resolve_time_loss_diagnostic_config_rejects_fractional_num_batches():
+    """Diagnostic batch limit should reject fractional numeric values."""
+    with pytest.raises(ValueError, match="num_batches"):
+        resolve_time_loss_diagnostic_config({"enabled": True, "num_batches": 2.5})
 
 
 def test_time_binned_loss_loop_returns_result_with_counts():

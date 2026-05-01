@@ -12,6 +12,7 @@ import inspect
 import time
 import queue
 import threading
+import numbers
 import jax
 import jax.numpy as jnp
 import equinox as eqx
@@ -135,6 +136,17 @@ def _parse_diagnostic_int(value: Any, name: str) -> int:
     """
     if value is None or isinstance(value, bool):
         raise ValueError(f"{name} must be an integer; got {value!r}")
+    if isinstance(value, numbers.Integral):
+        return int(value)
+    if isinstance(value, numbers.Real):
+        if float(value).is_integer():
+            return int(value)
+        raise ValueError(f"{name} must be an integer; got {value!r}")
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped and stripped.lstrip("+-").isdigit():
+            return int(stripped)
+        raise ValueError(f"{name} must be an integer; got {value!r}")
     try:
         return int(value)
     except (TypeError, ValueError) as exc:
@@ -160,41 +172,50 @@ def resolve_time_loss_diagnostic_config(
     if time_loss_diagnostic is None:
         return TimeLossDiagnosticConfig()
     if isinstance(time_loss_diagnostic, TimeLossDiagnosticConfig):
-        config = time_loss_diagnostic
+        config_values = {
+            "enabled": time_loss_diagnostic.enabled,
+            "split": time_loss_diagnostic.split,
+            "num_bins": time_loss_diagnostic.num_bins,
+            "num_batches": time_loss_diagnostic.num_batches,
+            "log_heatmap": time_loss_diagnostic.log_heatmap,
+        }
+        get_config_value = config_values.get
     elif isinstance(time_loss_diagnostic, Mapping) or hasattr(
         time_loss_diagnostic,
         "get",
     ):
-        enabled = _parse_diagnostic_bool(
-            time_loss_diagnostic.get("enabled", False),
-            "time_loss_diagnostic.enabled",
-        )
-        split = str(time_loss_diagnostic.get("split", "val")).strip().lower()
-        num_bins = _parse_diagnostic_int(
-            time_loss_diagnostic.get("num_bins", 20),
-            "time_loss_diagnostic.num_bins",
-        )
-        num_batches = _parse_diagnostic_int(
-            time_loss_diagnostic.get("num_batches", 0),
-            "time_loss_diagnostic.num_batches",
-        )
-        log_heatmap = _parse_diagnostic_bool(
-            time_loss_diagnostic.get("log_heatmap", True),
-            "time_loss_diagnostic.log_heatmap",
-        )
-        config = TimeLossDiagnosticConfig(
-            enabled=enabled,
-            split=split,
-            num_bins=num_bins,
-            num_batches=num_batches,
-            log_heatmap=log_heatmap,
-        )
+        get_config_value = time_loss_diagnostic.get
     else:
         raise TypeError(
             "time_loss_diagnostic must be None, a mapping, or "
             "TimeLossDiagnosticConfig; "
             f"got {type(time_loss_diagnostic).__name__}"
         )
+
+    enabled = _parse_diagnostic_bool(
+        get_config_value("enabled", False),
+        "time_loss_diagnostic.enabled",
+    )
+    split = str(get_config_value("split", "val")).strip().lower()
+    num_bins = _parse_diagnostic_int(
+        get_config_value("num_bins", 20),
+        "time_loss_diagnostic.num_bins",
+    )
+    num_batches = _parse_diagnostic_int(
+        get_config_value("num_batches", 0),
+        "time_loss_diagnostic.num_batches",
+    )
+    log_heatmap = _parse_diagnostic_bool(
+        get_config_value("log_heatmap", True),
+        "time_loss_diagnostic.log_heatmap",
+    )
+    config = TimeLossDiagnosticConfig(
+        enabled=enabled,
+        split=split,
+        num_bins=num_bins,
+        num_batches=num_batches,
+        log_heatmap=log_heatmap,
+    )
 
     if config.split not in {"val", "train", "both"}:
         raise ValueError(
