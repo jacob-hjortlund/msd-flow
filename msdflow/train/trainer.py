@@ -900,8 +900,11 @@ def train(
         optimizer = optax.MultiSteps(optimizer, every_k_schedule=grad_accum_steps)
 
     data_parallel_config = resolve_data_parallel_config(data_parallel)
-    time_loss_config = resolve_time_loss_diagnostic_config(time_loss_diagnostic)
-    time_loss_enabled = time_loss_config.enabled and clearml_task is not None
+    if clearml_task is None:
+        time_loss_config = TimeLossDiagnosticConfig()
+    else:
+        time_loss_config = resolve_time_loss_diagnostic_config(time_loss_diagnostic)
+    time_loss_enabled = time_loss_config.enabled
 
     state = make_train_state(model, optimizer)
     state = shard_train_state(state, data_parallel_config)

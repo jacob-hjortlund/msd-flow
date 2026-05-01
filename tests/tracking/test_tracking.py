@@ -1,6 +1,7 @@
 """Tests for msdflow.tracking."""
 
 import os
+import warnings
 import numpy as np
 import pytest
 from unittest.mock import MagicMock, patch, call
@@ -227,6 +228,30 @@ def test_log_time_binned_loss_reports_histogram_and_heatmap():
     assert calls[1].kwargs["title"] == "val/flow_matching_loss_by_t"
     assert calls[1].kwargs["series"] == "heatmap"
     assert calls[1].kwargs["iteration"] == 2
+
+
+def test_plot_time_binned_loss_histogram_avoids_masked_mean_loss_warning():
+    """Histogram plotting should not pass masked mean-loss bars to Matplotlib."""
+    import matplotlib.pyplot as plt
+
+    from msdflow.tracking import plot_time_binned_loss_histogram
+
+    result, _ = _time_binned_result()
+
+    fig = None
+    try:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            fig = plot_time_binned_loss_histogram(result, split="val", epoch=2)
+
+        warning_messages = [str(warning.message) for warning in caught]
+        assert not any(
+            "converting a masked element to nan" in message
+            for message in warning_messages
+        )
+    finally:
+        if fig is not None:
+            plt.close(fig)
 
 
 def test_log_time_binned_loss_can_skip_heatmap():

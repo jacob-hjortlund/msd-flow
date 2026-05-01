@@ -2226,6 +2226,46 @@ def test_train_skips_time_binned_loss_diagnostic_without_clearml_task(tmp_path):
     mock_log_diag.assert_not_called()
 
 
+def test_train_time_loss_diagnostic_noop_ignores_malformed_config_without_clearml(
+    tmp_path,
+):
+    """ClearML-disabled diagnostics should not parse or run malformed configs."""
+    key = jax.random.PRNGKey(35)
+    dl = _make_dataloader()
+    model = _make_small_model()
+
+    with (
+        patch("msdflow.train.trainer.time_binned_loss_loop") as mock_loop,
+        patch("msdflow.train.trainer.log_time_binned_loss") as mock_log_diag,
+    ):
+        train(
+            key=key,
+            model=model,
+            dataloader=dl,
+            val_dataloader=dl,
+            optimizer=OPTIMIZER,
+            loss_fn=lambda model, x_t, u_t, t, cond, cond_mask, key: jnp.mean(x_t),
+            batch_metrics=[],
+            epoch_metrics=[],
+            coupling=_COUPLING,
+            time_sampler=_time_sampler,
+            path_sampler=_PATH_SAMPLER,
+            num_epochs=1,
+            num_steps_per_epoch=1,
+            p_uncond=1.0,
+            ema_decay=0.999,
+            log_every=1,
+            val_every=1,
+            checkpoint_every=10,
+            checkpoint_dir=str(tmp_path),
+            clearml_task=None,
+            time_loss_diagnostic={"enabled": True, "num_bins": 0},
+        )
+
+    mock_loop.assert_not_called()
+    mock_log_diag.assert_not_called()
+
+
 def test_train_time_loss_diagnostic_keeps_positional_checkpoint_hash_binding():
     """Old positional checkpoint_hash calls should not bind to diagnostics."""
     sentinel_hash = "old-positional-hash"

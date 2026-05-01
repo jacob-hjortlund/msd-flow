@@ -502,16 +502,17 @@ def plot_time_binned_loss_histogram(
     widths = np.diff(bin_edges)
 
     fig, ax_loss = plt.subplots(figsize=(8.0, 4.5))
-    masked_loss = np.ma.masked_invalid(mean_loss)
-    ax_loss.bar(
-        centers,
-        masked_loss,
-        width=0.9 * widths,
-        align="center",
-        color="#3b82f6",
-        edgecolor="#1e3a8a",
-        linewidth=0.8,
-    )
+    finite_loss = np.isfinite(mean_loss)
+    if np.any(finite_loss):
+        ax_loss.bar(
+            centers[finite_loss],
+            mean_loss[finite_loss],
+            width=0.9 * widths[finite_loss],
+            align="center",
+            color="#3b82f6",
+            edgecolor="#1e3a8a",
+            linewidth=0.8,
+        )
     ax_loss.set_xlabel("t")
     ax_loss.set_ylabel("Mean flow-matching loss")
     ax_loss.set_xlim(float(bin_edges[0]), float(bin_edges[-1]))
