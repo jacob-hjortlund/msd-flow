@@ -14,6 +14,7 @@ matplotlib.use("Agg", force=True)  # safe non-interactive backend
 import numpy as np
 import cmasher as cmr
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MaxNLocator
 
 from typing import Any
 from tqdm.contrib.logging import logging_redirect_tqdm
@@ -571,7 +572,7 @@ def plot_time_binned_loss_heatmap(
     ax.set_ylabel("Epoch")
     ax.set_title(f"{split} loss by t over epochs")
     if epochs.size > 0:
-        ax.set_yticks(epochs)
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=10, integer=True))
     fig.colorbar(image, ax=ax, label="Mean flow-matching loss")
     fig.tight_layout()
     return fig
@@ -601,26 +602,30 @@ def log_time_binned_loss(
     title = f"{split}/flow_matching_loss_by_t"
     cl_logger = task.get_logger()
     fig = plot_time_binned_loss_histogram(result, split=split, epoch=epoch)
-    cl_logger.report_matplotlib_figure(
-        title=title,
-        series="histogram",
-        iteration=epoch,
-        figure=fig,
-        report_image=False,
-        report_interactive=False,
-    )
-    plt.close(fig)
+    try:
+        cl_logger.report_matplotlib_figure(
+            title=title,
+            series="histogram",
+            iteration=epoch,
+            figure=fig,
+            report_image=False,
+            report_interactive=False,
+        )
+    finally:
+        plt.close(fig)
 
-    if history is None:
+    if history is None or len(history.epochs) == 0:
         return
 
     fig = plot_time_binned_loss_heatmap(history, split=split)
-    cl_logger.report_matplotlib_figure(
-        title=title,
-        series="heatmap",
-        iteration=epoch,
-        figure=fig,
-        report_image=False,
-        report_interactive=False,
-    )
-    plt.close(fig)
+    try:
+        cl_logger.report_matplotlib_figure(
+            title=title,
+            series="heatmap",
+            iteration=epoch,
+            figure=fig,
+            report_image=False,
+            report_interactive=False,
+        )
+    finally:
+        plt.close(fig)

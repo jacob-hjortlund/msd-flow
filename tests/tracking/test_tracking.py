@@ -249,6 +249,79 @@ def test_log_time_binned_loss_can_skip_heatmap():
     assert logger.report_matplotlib_figure.call_args.kwargs["series"] == "histogram"
 
 
+def test_log_time_binned_loss_skips_empty_history_heatmap():
+    """Empty history should not attempt invalid heatmap rendering."""
+    from msdflow.train.metrics import TimeBinnedLossHistory
+    from msdflow.tracking import log_time_binned_loss
+
+    mock_task = MagicMock()
+    result, _ = _time_binned_result()
+    history = TimeBinnedLossHistory(bin_edges=result.bin_edges)
+
+    log_time_binned_loss(
+        task=mock_task,
+        split="val",
+        epoch=2,
+        result=result,
+        history=history,
+    )
+
+    logger = mock_task.get_logger.return_value
+    assert logger.report_matplotlib_figure.call_count == 1
+    assert logger.report_matplotlib_figure.call_args.kwargs["series"] == "histogram"
+
+
+def test_log_time_binned_loss_closes_figures_after_successful_reporting():
+    """Successful time-binned loss logging should not leave figures open."""
+    import matplotlib.pyplot as plt
+
+    from msdflow.tracking import log_time_binned_loss
+
+    plt.close("all")
+    mock_task = MagicMock()
+    result, history = _time_binned_result()
+
+    try:
+        log_time_binned_loss(
+            task=mock_task,
+            split="val",
+            epoch=2,
+            result=result,
+            history=history,
+        )
+
+        assert plt.get_fignums() == []
+    finally:
+        plt.close("all")
+
+
+def test_log_time_binned_loss_closes_figures_when_reporting_raises():
+    """Time-binned loss logging should close figures when ClearML reporting fails."""
+    import matplotlib.pyplot as plt
+
+    from msdflow.tracking import log_time_binned_loss
+
+    plt.close("all")
+    mock_task = MagicMock()
+    logger = mock_task.get_logger.return_value
+    logger.report_matplotlib_figure.side_effect = [None, RuntimeError("report failed")]
+    result, history = _time_binned_result()
+
+    try:
+        with pytest.raises(RuntimeError, match="report failed"):
+            log_time_binned_loss(
+                task=mock_task,
+                split="val",
+                epoch=2,
+                result=result,
+                history=history,
+            )
+
+        assert plt.get_fignums() == []
+    finally:
+        plt.close("all")
+
+
 # ---------------------------------------------------------------------------
 # get_dataset_id
 # ---------------------------------------------------------------------------
