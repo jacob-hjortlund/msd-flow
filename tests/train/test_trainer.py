@@ -1680,6 +1680,22 @@ def test_resolve_time_loss_diagnostic_config_rejects_invalid_bins():
         resolve_time_loss_diagnostic_config({"enabled": True, "num_bins": 0})
 
 
+@pytest.mark.parametrize("num_bins", ["bad", None])
+def test_resolve_time_loss_diagnostic_config_rejects_non_integer_bins(num_bins):
+    """Diagnostic bin count errors should name num_bins."""
+    with pytest.raises(ValueError, match="num_bins"):
+        resolve_time_loss_diagnostic_config({"enabled": True, "num_bins": num_bins})
+
+
+@pytest.mark.parametrize("num_batches", [-1, "bad", None])
+def test_resolve_time_loss_diagnostic_config_rejects_invalid_num_batches(num_batches):
+    """Diagnostic batch limit errors should name num_batches."""
+    with pytest.raises(ValueError, match="num_batches"):
+        resolve_time_loss_diagnostic_config(
+            {"enabled": True, "num_batches": num_batches}
+        )
+
+
 def test_time_binned_loss_loop_returns_result_with_counts():
     """Diagnostic loop should aggregate losses over a limited dataloader pass."""
     step = make_time_binned_loss_step(num_bins=4)

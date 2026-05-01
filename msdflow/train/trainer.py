@@ -120,6 +120,27 @@ def _parse_diagnostic_bool(value: Any, name: str) -> bool:
     )
 
 
+def _parse_diagnostic_int(value: Any, name: str) -> int:
+    """Parse an integer-like diagnostic config value.
+
+    Args:
+        value: Value to parse as an integer.
+        name: Config field name for error messages.
+
+    Returns:
+        Parsed integer.
+
+    Raises:
+        ValueError: If the value is not a valid integer representation.
+    """
+    if value is None or isinstance(value, bool):
+        raise ValueError(f"{name} must be an integer; got {value!r}")
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be an integer; got {value!r}") from exc
+
+
 def resolve_time_loss_diagnostic_config(
     time_loss_diagnostic: Any = None,
 ) -> TimeLossDiagnosticConfig:
@@ -149,8 +170,14 @@ def resolve_time_loss_diagnostic_config(
             "time_loss_diagnostic.enabled",
         )
         split = str(time_loss_diagnostic.get("split", "val")).strip().lower()
-        num_bins = int(time_loss_diagnostic.get("num_bins", 20))
-        num_batches = int(time_loss_diagnostic.get("num_batches", 0))
+        num_bins = _parse_diagnostic_int(
+            time_loss_diagnostic.get("num_bins", 20),
+            "time_loss_diagnostic.num_bins",
+        )
+        num_batches = _parse_diagnostic_int(
+            time_loss_diagnostic.get("num_batches", 0),
+            "time_loss_diagnostic.num_batches",
+        )
         log_heatmap = _parse_diagnostic_bool(
             time_loss_diagnostic.get("log_heatmap", True),
             "time_loss_diagnostic.log_heatmap",
@@ -187,7 +214,14 @@ def resolve_time_loss_diagnostic_config(
 
 
 def _time_loss_diagnostic_splits(config: TimeLossDiagnosticConfig) -> tuple[str, ...]:
-    """Return selected split names for a resolved diagnostic config."""
+    """Return selected split names for a resolved diagnostic config.
+
+    Args:
+        config: Resolved diagnostic configuration.
+
+    Returns:
+        Tuple of split names to evaluate.
+    """
     if config.split == "both":
         return ("val", "train")
     return (config.split,)
