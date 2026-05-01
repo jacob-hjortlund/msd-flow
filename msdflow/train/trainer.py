@@ -1228,10 +1228,10 @@ def train(
             if (epoch + 1) % val_every == 0:
                 val_start_time = time.perf_counter()
 
-                key, key_val, key_train, key_epoch, key_time_loss = jax.random.split(
-                    key,
-                    5,
-                )
+                key, key_val, key_train, key_epoch = jax.random.split(key, 4)
+                key_time_loss = None
+                if time_loss_config.enabled:
+                    key, key_time_loss = jax.random.split(key, 2)
 
                 eval_model = ema_model if ema_model is not None else state.model
                 val_metrics = batch_metric_loop(
@@ -1276,6 +1276,7 @@ def train(
                             epoch_metric_results[name] = result
 
                 if time_loss_config.enabled and time_binned_loss_step is not None:
+                    assert key_time_loss is not None
                     split_dataloaders = {
                         "val": val_dataloader,
                         "train": dataloader,

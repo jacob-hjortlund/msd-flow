@@ -2229,6 +2229,79 @@ def test_train_time_loss_diagnostic_keeps_positional_checkpoint_hash_binding():
     assert "time_loss_diagnostic" not in bound.arguments
 
 
+def test_train_time_loss_diagnostic_disabled_preserves_epoch_metric_key(tmp_path):
+    """Disabled diagnostics should preserve pre-diagnostic epoch metric keys."""
+    def run_and_capture(time_loss_diagnostic=None):
+        captured = []
+
+        def fake_split(key, num=2):
+            return tuple(jnp.array([num, index], dtype=jnp.uint32) for index in range(num))
+
+        def fake_prepare_jax(images_np, cond_np, key):
+            batch_size = images_np.shape[0]
+            return (
+                jnp.zeros((batch_size,)),
+                jnp.zeros((batch_size, 1, 8, 8)),
+                jnp.zeros((batch_size, 1, 8, 8)),
+                jnp.zeros((batch_size, 0)),
+                jnp.zeros((batch_size,), dtype=bool),
+                jnp.zeros((batch_size, 2), dtype=jnp.uint32),
+            )
+
+        def fake_train_step(state, x_t, u_t, t, cond, cond_mask, key):
+            return state, jnp.array(0.0)
+
+        def capture_metric(model, val_dataloader, key):
+            captured.append(np.asarray(key))
+            return {"captured": 0.0}
+
+        kwargs = {}
+        if time_loss_diagnostic is not None:
+            kwargs["time_loss_diagnostic"] = time_loss_diagnostic
+
+        with (
+            patch("msdflow.train.trainer.jax.random.split", side_effect=fake_split),
+            patch("msdflow.train.trainer.make_train_step", return_value=fake_train_step),
+            patch(
+                "msdflow.train.trainer.make_prepare_batch_jax",
+                return_value=fake_prepare_jax,
+            ),
+            patch("msdflow.train.trainer.batch_metric_loop", return_value={}),
+        ):
+            train(
+                key=jnp.array([0, 0], dtype=jnp.uint32),
+                model=_make_small_model(),
+                dataloader=_make_dataloader(steps=1),
+                val_dataloader=_make_dataloader(steps=1),
+                optimizer=OPTIMIZER,
+                loss_fn=lambda model, x_t, u_t, t, cond, cond_mask, key: jnp.mean(x_t),
+                batch_metrics=[],
+                epoch_metrics=[capture_metric],
+                coupling=_COUPLING,
+                time_sampler=_time_sampler,
+                path_sampler=_PATH_SAMPLER,
+                num_epochs=1,
+                num_steps_per_epoch=1,
+                p_uncond=1.0,
+                ema_decay=0.999,
+                log_every=1,
+                val_every=1,
+                checkpoint_every=10,
+                checkpoint_dir=str(tmp_path),
+                clearml_task=None,
+                monitor="captured",
+                **kwargs,
+            )
+        return captured[0]
+
+    omitted_key = run_and_capture()
+    disabled_key = run_and_capture({"enabled": False})
+    expected_old_key = np.array([4, 3], dtype=np.uint32)
+
+    assert np.array_equal(omitted_key, expected_old_key)
+    assert np.array_equal(disabled_key, omitted_key)
+
+
 def test_train_logs_time_binned_loss_diagnostic_for_both_splits(tmp_path):
     """The both split should log independent train and val diagnostics."""
     key = jax.random.PRNGKey(32)
