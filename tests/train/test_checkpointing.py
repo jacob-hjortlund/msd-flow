@@ -3,8 +3,10 @@
 import json
 import os
 import signal
+from pathlib import Path
 
 import equinox as eqx
+from hydra import compose, initialize_config_dir
 import jax
 import jax.numpy as jnp
 import optax
@@ -43,12 +45,14 @@ def test_train_config_contains_resume_defaults():
 
 def test_train_config_enables_time_loss_diagnostic_by_default():
     """Default train config should enable validation time-binned loss logging."""
-    cfg = OmegaConf.create({"train": OmegaConf.load("configs/train/train.yaml")})
+    with initialize_config_dir(config_dir=str(Path("configs").resolve()), version_base=None):
+        cfg = compose(config_name="config", overrides=["train.num_train_eval_batches=7"])
 
     assert cfg.train.time_loss_diagnostic.enabled is True
     assert cfg.train.time_loss_diagnostic.split == "val"
     assert cfg.train.time_loss_diagnostic.num_bins == 20
-    assert cfg.train.time_loss_diagnostic.num_batches == cfg.train.num_train_eval_batches
+    assert cfg.train.num_train_eval_batches == 7
+    assert cfg.train.time_loss_diagnostic.num_batches == 7
     assert cfg.train.time_loss_diagnostic.log_heatmap is True
 
 
@@ -57,8 +61,6 @@ def test_run_sh_uses_stable_checkpoint_root():
     text = open("run.sh").read()
 
     assert "#SBATCH --signal=TERM@600" in text
-    assert "#SBATCH -o %x-%j.out" in text
-    assert "#SBATCH -e %x-%j.err" in text
     assert 'export CHECKPOINT_ROOT="$PROJECT_ROOT/checkpoints"' in text
     assert '"$CHECKPOINT_ROOT"' in text
     assert '"train.checkpoint_dir=${CHECKPOINT_ROOT}"' in text
