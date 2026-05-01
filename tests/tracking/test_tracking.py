@@ -342,6 +342,31 @@ def test_plot_time_binned_loss_heatmap_rejects_empty_history_without_open_figure
         plt.close("all")
 
 
+def test_plot_time_binned_loss_heatmap_labels_nonconsecutive_epochs():
+    """Heatmap y-axis should label rows with actual non-consecutive epochs."""
+    import matplotlib.pyplot as plt
+
+    from msdflow.train.metrics import TimeBinnedLossHistory
+    from msdflow.tracking import plot_time_binned_loss_heatmap
+
+    result, _ = _time_binned_result()
+    history = TimeBinnedLossHistory(bin_edges=result.bin_edges)
+    for epoch in [5, 10, 15]:
+        history.append(epoch=epoch, result=result)
+
+    fig = plot_time_binned_loss_heatmap(history, split="val")
+    try:
+        ax = fig.axes[0]
+        tick_positions = ax.get_yticks()
+        tick_labels = [label.get_text() for label in ax.get_yticklabels()]
+
+        assert set(["5", "10", "15"]).issubset(tick_labels)
+        assert min(tick_positions) >= -0.5
+        assert max(tick_positions) <= 2.5
+    finally:
+        plt.close(fig)
+
+
 # ---------------------------------------------------------------------------
 # get_dataset_id
 # ---------------------------------------------------------------------------

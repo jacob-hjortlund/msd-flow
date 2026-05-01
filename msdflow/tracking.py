@@ -14,7 +14,6 @@ matplotlib.use("Agg", force=True)  # safe non-interactive backend
 import numpy as np
 import cmasher as cmr
 import matplotlib.pyplot as plt
-from matplotlib.ticker import MaxNLocator
 
 from typing import Any
 from tqdm.contrib.logging import logging_redirect_tqdm
@@ -548,6 +547,9 @@ def plot_time_binned_loss_heatmap(
 
     Returns:
         Matplotlib figure.
+
+    Raises:
+        ValueError: If ``history`` does not contain any epochs.
     """
     bin_edges = np.asarray(history.bin_edges, dtype=np.float64)
     epochs = np.asarray(history.epochs, dtype=np.int64)
@@ -556,22 +558,32 @@ def plot_time_binned_loss_heatmap(
 
     mean_losses = np.asarray(history.mean_losses, dtype=np.float64)
     masked_losses = np.ma.masked_invalid(mean_losses)
+    row_indices = np.arange(epochs.size)
 
     fig, ax = plt.subplots(figsize=(8.0, 4.8))
-    epoch_min = float(epochs[0]) - 0.5
-    epoch_max = float(epochs[-1]) + 0.5
     image = ax.imshow(
         masked_losses,
         aspect="auto",
         origin="lower",
         interpolation="nearest",
-        extent=(float(bin_edges[0]), float(bin_edges[-1]), epoch_min, epoch_max),
+        extent=(
+            float(bin_edges[0]),
+            float(bin_edges[-1]),
+            -0.5,
+            float(epochs.size) - 0.5,
+        ),
     )
     ax.set_xlabel("t")
     ax.set_ylabel("Epoch")
     ax.set_title(f"{split} loss by t over epochs")
-    if epochs.size > 0:
-        ax.yaxis.set_major_locator(MaxNLocator(nbins=10, integer=True))
+    if epochs.size <= 10:
+        tick_indices = row_indices
+    else:
+        tick_indices = np.unique(
+            np.linspace(0, epochs.size - 1, num=10).round().astype(np.int64)
+        )
+    ax.set_yticks(tick_indices)
+    ax.set_yticklabels([str(epochs[index]) for index in tick_indices])
     fig.colorbar(image, ax=ax, label="Mean flow-matching loss")
     fig.tight_layout()
     return fig
