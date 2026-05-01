@@ -1235,7 +1235,7 @@ def train(
                 key, key_val, key_train, key_epoch = jax.random.split(key, 4)
                 key_time_loss = None
                 if time_loss_enabled:
-                    key, key_time_loss = jax.random.split(key, 2)
+                    key_time_loss = jax.random.fold_in(key, epoch + 1)
 
                 eval_model = ema_model if ema_model is not None else state.model
                 val_metrics = batch_metric_loop(

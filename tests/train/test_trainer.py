@@ -485,7 +485,7 @@ def test_ema_update_is_jit_compiled():
 
 
 from msdflow.train.trainer import make_batch_metric_step
-from msdflow.train.metrics import make_time_binned_loss_step
+from msdflow.train.metrics import TimeBinnedLossResult, make_time_binned_loss_step
 
 
 def test_make_batch_metric_step_returns_dict_keyed_by_fn_name():
@@ -2393,6 +2393,84 @@ def test_train_time_loss_diagnostic_disabled_preserves_epoch_metric_key(tmp_path
     assert np.array_equal(omitted_key, expected_old_key)
     assert np.array_equal(disabled_key, omitted_key)
     assert np.array_equal(enabled_without_task_key, omitted_key)
+
+
+def test_train_time_loss_diagnostic_does_not_change_training_prepare_keys(tmp_path):
+    """Enabled ClearML diagnostics should not alter subsequent training keys."""
+    diagnostic_result = TimeBinnedLossResult.empty(num_bins=4)
+
+    def run_and_capture_training_keys(time_loss_diagnostic):
+        """Run two epochs and return keys passed to training prepare_jax."""
+        captured_keys = []
+
+        def fake_prepare_jax(images_np, cond_np, key):
+            batch_size = images_np.shape[0]
+            captured_keys.append(np.asarray(key))
+            return (
+                jnp.zeros((batch_size,)),
+                jnp.zeros((batch_size, 1, 8, 8)),
+                jnp.zeros((batch_size, 1, 8, 8)),
+                jnp.zeros((batch_size, 0)),
+                jnp.zeros((batch_size,), dtype=bool),
+                jnp.zeros((batch_size, 2), dtype=jnp.uint32),
+            )
+
+        def fake_train_step(state, x_t, u_t, t, cond, cond_mask, key):
+            return state, jnp.array(0.0)
+
+        with (
+            patch("msdflow.train.trainer.make_train_step", return_value=fake_train_step),
+            patch(
+                "msdflow.train.trainer.make_prepare_batch_jax",
+                return_value=fake_prepare_jax,
+            ),
+            patch("msdflow.train.trainer.batch_metric_loop", return_value={}),
+            patch(
+                "msdflow.train.trainer.time_binned_loss_loop",
+                return_value=diagnostic_result,
+            ),
+            patch("msdflow.train.trainer.log_time_binned_loss"),
+        ):
+            train(
+                key=jax.random.PRNGKey(43),
+                model=_make_small_model(),
+                dataloader=_make_dataloader(steps=1),
+                val_dataloader=_make_dataloader(steps=1),
+                optimizer=OPTIMIZER,
+                loss_fn=lambda model, x_t, u_t, t, cond, cond_mask, key: jnp.mean(x_t),
+                batch_metrics=[],
+                epoch_metrics=[],
+                coupling=_COUPLING,
+                time_sampler=_time_sampler,
+                path_sampler=_PATH_SAMPLER,
+                num_epochs=2,
+                num_steps_per_epoch=1,
+                p_uncond=1.0,
+                ema_decay=0.999,
+                log_every=1,
+                val_every=1,
+                checkpoint_every=10,
+                checkpoint_dir=str(tmp_path),
+                clearml_task=MagicMock(),
+                time_loss_diagnostic=time_loss_diagnostic,
+            )
+        return captured_keys
+
+    disabled_keys = run_and_capture_training_keys({"enabled": False})
+    enabled_keys = run_and_capture_training_keys(
+        {
+            "enabled": True,
+            "split": "val",
+            "num_bins": 4,
+            "num_batches": 1,
+        }
+    )
+
+    assert len(disabled_keys) == len(enabled_keys) == 2
+    assert all(
+        np.array_equal(disabled_key, enabled_key)
+        for disabled_key, enabled_key in zip(disabled_keys, enabled_keys)
+    )
 
 
 def test_train_logs_time_binned_loss_diagnostic_for_both_splits(tmp_path):
