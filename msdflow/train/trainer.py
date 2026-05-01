@@ -4,6 +4,8 @@ Provides ``TrainState``, a JIT-compiled train step factory, and
 the main training loop with periodic checkpointing.
 """
 
+from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 import inspect
@@ -23,7 +25,12 @@ import numpy as np
 from tqdm import tqdm
 from msdflow.utils import register_all_resolvers
 from tqdm.contrib.logging import logging_redirect_tqdm
-from msdflow.tracking import log_metrics, log_checkpoint, log_samples
+from msdflow.tracking import (
+    log_checkpoint,
+    log_metrics,
+    log_samples,
+    log_time_binned_loss,
+)
 from msdflow.train.checkpointing import (
     SigtermFlag,
     TrainingCheckpoint,
@@ -31,6 +38,11 @@ from msdflow.train.checkpointing import (
     load_training_checkpoint,
     save_training_checkpoint,
     validate_checkpoint_metadata,
+)
+from msdflow.train.metrics import (
+    TimeBinnedLossHistory,
+    TimeBinnedLossResult,
+    make_time_binned_loss_step,
 )
 from msdflow.train.parallel import (
     DataParallelConfig,
@@ -59,6 +71,126 @@ class TrainState(eqx.Module):
 
     model: Any  # UNet
     opt_state: Any  # optax.OptState
+
+
+@dataclass(frozen=True)
+class TimeLossDiagnosticConfig:
+    """Resolved configuration for the time-binned loss diagnostic.
+
+    Attributes:
+        enabled: Whether to run the diagnostic.
+        split: Split to evaluate: ``"val"``, ``"train"``, or ``"both"``.
+        num_bins: Number of equal-width bins over ``[0, 1]``.
+        num_batches: Maximum batches per split; ``0`` means all batches.
+        log_heatmap: Whether to log cumulative heatmap figures.
+    """
+
+    enabled: bool = False
+    split: str = "val"
+    num_bins: int = 20
+    num_batches: int = 0
+    log_heatmap: bool = True
+
+
+def _parse_diagnostic_bool(value: Any, name: str) -> bool:
+    """Parse a boolean-like diagnostic config value.
+
+    Args:
+        value: Boolean or supported boolean string.
+        name: Config field name for error messages.
+
+    Returns:
+        Parsed boolean.
+
+    Raises:
+        ValueError: If the value is not a supported boolean representation.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "y", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "n", "off"}:
+            return False
+    raise ValueError(
+        f"{name} must be a boolean or one of "
+        "'true', 'false', '1', '0', 'yes', 'no', 'on', or 'off'; "
+        f"got {value!r}"
+    )
+
+
+def resolve_time_loss_diagnostic_config(
+    time_loss_diagnostic: Any = None,
+) -> TimeLossDiagnosticConfig:
+    """Resolve user/Hydra diagnostic settings into a runtime config.
+
+    Args:
+        time_loss_diagnostic: None, TimeLossDiagnosticConfig, or mapping-like
+            object with enabled, split, num_bins, num_batches, and log_heatmap.
+
+    Returns:
+        Resolved diagnostic config.
+
+    Raises:
+        TypeError: If the config object is unsupported.
+        ValueError: If a config value is invalid.
+    """
+    if time_loss_diagnostic is None:
+        return TimeLossDiagnosticConfig()
+    if isinstance(time_loss_diagnostic, TimeLossDiagnosticConfig):
+        config = time_loss_diagnostic
+    elif isinstance(time_loss_diagnostic, Mapping) or hasattr(
+        time_loss_diagnostic,
+        "get",
+    ):
+        enabled = _parse_diagnostic_bool(
+            time_loss_diagnostic.get("enabled", False),
+            "time_loss_diagnostic.enabled",
+        )
+        split = str(time_loss_diagnostic.get("split", "val")).strip().lower()
+        num_bins = int(time_loss_diagnostic.get("num_bins", 20))
+        num_batches = int(time_loss_diagnostic.get("num_batches", 0))
+        log_heatmap = _parse_diagnostic_bool(
+            time_loss_diagnostic.get("log_heatmap", True),
+            "time_loss_diagnostic.log_heatmap",
+        )
+        config = TimeLossDiagnosticConfig(
+            enabled=enabled,
+            split=split,
+            num_bins=num_bins,
+            num_batches=num_batches,
+            log_heatmap=log_heatmap,
+        )
+    else:
+        raise TypeError(
+            "time_loss_diagnostic must be None, a mapping, or "
+            "TimeLossDiagnosticConfig; "
+            f"got {type(time_loss_diagnostic).__name__}"
+        )
+
+    if config.split not in {"val", "train", "both"}:
+        raise ValueError(
+            "time_loss_diagnostic.split must be one of 'val', 'train', or "
+            f"'both'; got {config.split!r}"
+        )
+    if config.num_bins < 1:
+        raise ValueError(
+            f"time_loss_diagnostic.num_bins must be >= 1, got {config.num_bins}"
+        )
+    if config.num_batches < 0:
+        raise ValueError(
+            "time_loss_diagnostic.num_batches must be >= 0, "
+            f"got {config.num_batches}"
+        )
+    return config
+
+
+def _time_loss_diagnostic_splits(config: TimeLossDiagnosticConfig) -> tuple[str, ...]:
+    """Return selected split names for a resolved diagnostic config."""
+    if config.split == "both":
+        return ("val", "train")
+    return (config.split,)
 
 
 def make_train_state(model, optimizer: optax.GradientTransformation) -> TrainState:
@@ -409,6 +541,76 @@ def batch_metric_loop(
     return {k: v / n_batches for k, v in totals.items()}
 
 
+def time_binned_loss_loop(
+    key: jax.Array,
+    model,
+    dataloader,
+    step_fn: callable,
+    prepare_jax: callable,
+    num_bins: int,
+    num_batches: int = 0,
+    data_parallel: DataParallelConfig | None = None,
+) -> TimeBinnedLossResult:
+    """Stream a dataloader through the time-binned loss diagnostic step.
+
+    Args:
+        key: JAX PRNG key consumed internally via splitting.
+        model: Model used for inference.
+        dataloader: Iterable of ``(images, meta)`` batches.
+        step_fn: JIT-compiled step from ``make_time_binned_loss_step()``.
+        prepare_jax: JIT-compiled batch preparation function.
+        num_bins: Number of equal-width bins over ``[0, 1]``.
+        num_batches: Maximum number of batches; ``0`` processes the full
+            dataloader.
+        data_parallel: Optional data-parallel runtime configuration.
+
+    Returns:
+        Host-side result containing bin edges, loss sums, counts, and means.
+    """
+    data_parallel = resolve_data_parallel_config(data_parallel)
+    model = shard_model(model, data_parallel)
+    result = TimeBinnedLossResult.empty(num_bins)
+
+    total = num_batches if num_batches > 0 else len(dataloader)
+    data_iter = iter(dataloader)
+    for _ in tqdm(
+        range(total),
+        desc="Time-binned loss",
+        leave=False,
+        dynamic_ncols=True,
+    ):
+        try:
+            batch = next(data_iter)
+        except StopIteration:
+            break
+        batch_key, key = jax.random.split(key, 2)
+        images_np, cond_np = prepare_batch(batch)
+        t, x_t, u_t, cond, cond_mask, dropout_keys = prepare_jax(
+            images_np,
+            cond_np,
+            batch_key,
+        )
+        x_t, u_t, t, cond, cond_mask, dropout_keys = shard_batch(
+            (x_t, u_t, t, cond, cond_mask, dropout_keys),
+            data_parallel,
+        )
+        loss_sums, counts = step_fn(
+            model,
+            x_t,
+            u_t,
+            t,
+            cond,
+            cond_mask,
+            dropout_keys,
+        )
+        result.add_batch(
+            loss_sums=np.asarray(loss_sums),
+            counts=np.asarray(counts),
+        )
+
+    return result
+
+
 def _call_epoch_metric(
     metric: callable,
     model,
@@ -494,6 +696,7 @@ def train(
     grad_accum_steps: int = 1,
     buffer_size: int = 4,
     data_parallel: Any = None,
+    time_loss_diagnostic: Any = None,
     checkpoint_hash: str | None = None,
     hash_payload: dict | None = None,
     latest_filename: str = "latest.json",
@@ -568,6 +771,9 @@ def train(
         buffer_size: Number of prepared batches to prefetch.
         data_parallel: None, mapping, or DataParallelConfig controlling optional
             local data-parallel sharding.
+        time_loss_diagnostic: Optional mapping or TimeLossDiagnosticConfig for
+            logging flow-matching loss binned by sampled time ``t``. Defaults to
+            None, which disables the diagnostic for direct train() calls.
         checkpoint_hash: Stable checkpoint compatibility hash used for full-state
             checkpoint saves and resume validation. Defaults to None.
         hash_payload: JSON-safe payload used to compute ``checkpoint_hash``.
@@ -636,6 +842,7 @@ def train(
         optimizer = optax.MultiSteps(optimizer, every_k_schedule=grad_accum_steps)
 
     data_parallel_config = resolve_data_parallel_config(data_parallel)
+    time_loss_config = resolve_time_loss_diagnostic_config(time_loss_diagnostic)
 
     state = make_train_state(model, optimizer)
     state = shard_train_state(state, data_parallel_config)
@@ -649,6 +856,12 @@ def train(
         batch_metrics,
         data_parallel=data_parallel_config,
     )
+    time_binned_loss_step = None
+    if time_loss_config.enabled:
+        time_binned_loss_step = make_time_binned_loss_step(
+            time_loss_config.num_bins,
+            data_parallel=data_parallel_config,
+        )
     prepare_jax = make_prepare_batch_jax(coupling, time_sampler, path_sampler, p_uncond)
 
     if num_steps_per_epoch == 0:
@@ -678,6 +891,7 @@ def train(
     val_metrics: dict = {}
     train_metrics: dict = {}
     epoch_metric_results: dict = {}
+    time_loss_histories: dict[str, TimeBinnedLossHistory] = {}
 
     best_metric_value = float("inf") if monitor_mode == "min" else float("-inf")
     best_epoch = None
@@ -956,7 +1170,10 @@ def train(
             if (epoch + 1) % val_every == 0:
                 val_start_time = time.perf_counter()
 
-                key, key_val, key_train, key_epoch = jax.random.split(key, 4)
+                key, key_val, key_train, key_epoch, key_time_loss = jax.random.split(
+                    key,
+                    5,
+                )
 
                 eval_model = ema_model if ema_model is not None else state.model
                 val_metrics = batch_metric_loop(
@@ -999,6 +1216,38 @@ def train(
                             else:
                                 name = type(fn).__name__
                             epoch_metric_results[name] = result
+
+                if time_loss_config.enabled and time_binned_loss_step is not None:
+                    split_dataloaders = {
+                        "val": val_dataloader,
+                        "train": dataloader,
+                    }
+                    for split in _time_loss_diagnostic_splits(time_loss_config):
+                        key_time_loss, split_key = jax.random.split(key_time_loss, 2)
+                        time_loss_result = time_binned_loss_loop(
+                            key=split_key,
+                            model=eval_model,
+                            dataloader=split_dataloaders[split],
+                            step_fn=time_binned_loss_step,
+                            prepare_jax=prepare_jax,
+                            num_bins=time_loss_config.num_bins,
+                            num_batches=time_loss_config.num_batches,
+                            data_parallel=data_parallel_config,
+                        )
+                        history = time_loss_histories.get(split)
+                        if history is None:
+                            history = TimeBinnedLossHistory(
+                                bin_edges=time_loss_result.bin_edges,
+                            )
+                            time_loss_histories[split] = history
+                        history.append(epoch + 1, time_loss_result)
+                        log_time_binned_loss(
+                            task=clearml_task,
+                            split=split,
+                            epoch=epoch + 1,
+                            result=time_loss_result,
+                            history=history if time_loss_config.log_heatmap else None,
+                        )
 
                 val_time = time.perf_counter() - val_start_time
                 total_val_time += val_time

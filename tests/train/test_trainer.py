@@ -13,13 +13,16 @@ from msdflow.model.unet import UNet
 import msdflow.train.parallel as train_parallel
 from msdflow.train.trainer import (
     DataParallelConfig,
+    TimeLossDiagnosticConfig,
     TrainState,
     _call_epoch_metric,
     make_data_parallel_config,
     make_train_state,
     make_prepare_batch_jax,
     resolve_data_parallel_config,
+    resolve_time_loss_diagnostic_config,
     shard_batch,
+    time_binned_loss_loop,
     train,
 )
 from msdflow.train.checkpointing import TrainingCheckpoint, load_training_checkpoint
@@ -480,6 +483,7 @@ def test_ema_update_is_jit_compiled():
 
 
 from msdflow.train.trainer import make_batch_metric_step
+from msdflow.train.metrics import make_time_binned_loss_step
 
 
 def test_make_batch_metric_step_returns_dict_keyed_by_fn_name():
@@ -1633,6 +1637,69 @@ def test_batch_metric_loop_returns_mean_not_sum():
     assert abs(result["simple_metric"] - 3.0) < 1e-5
 
 
+def test_resolve_time_loss_diagnostic_config_defaults_disabled():
+    """Missing diagnostic config should preserve direct train() compatibility."""
+    cfg = resolve_time_loss_diagnostic_config(None)
+
+    assert isinstance(cfg, TimeLossDiagnosticConfig)
+    assert cfg.enabled is False
+    assert cfg.split == "val"
+    assert cfg.num_bins == 20
+    assert cfg.num_batches == 0
+    assert cfg.log_heatmap is True
+
+
+def test_resolve_time_loss_diagnostic_config_accepts_mapping():
+    """Hydra-style mappings should resolve into a diagnostic config."""
+    cfg = resolve_time_loss_diagnostic_config(
+        {
+            "enabled": "true",
+            "split": "both",
+            "num_bins": 8,
+            "num_batches": 2,
+            "log_heatmap": "false",
+        }
+    )
+
+    assert cfg.enabled is True
+    assert cfg.split == "both"
+    assert cfg.num_bins == 8
+    assert cfg.num_batches == 2
+    assert cfg.log_heatmap is False
+
+
+def test_resolve_time_loss_diagnostic_config_rejects_invalid_split():
+    """Only val, train, and both are valid diagnostic splits."""
+    with pytest.raises(ValueError, match="split"):
+        resolve_time_loss_diagnostic_config({"enabled": True, "split": "test"})
+
+
+def test_resolve_time_loss_diagnostic_config_rejects_invalid_bins():
+    """Diagnostic bin count must be positive."""
+    with pytest.raises(ValueError, match="num_bins"):
+        resolve_time_loss_diagnostic_config({"enabled": True, "num_bins": 0})
+
+
+def test_time_binned_loss_loop_returns_result_with_counts():
+    """Diagnostic loop should aggregate losses over a limited dataloader pass."""
+    step = make_time_binned_loss_step(num_bins=4)
+    val_loader = _make_val_dataloader(num_batches=2)
+    model = _make_small_model()
+    result = time_binned_loss_loop(
+        key=jax.random.PRNGKey(7),
+        model=model,
+        dataloader=val_loader,
+        step_fn=step,
+        prepare_jax=_make_prepare_jax(),
+        num_bins=4,
+        num_batches=1,
+    )
+
+    assert result.loss_sums.shape == (4,)
+    assert result.counts.shape == (4,)
+    assert int(result.counts.sum()) == 2
+
+
 def test_call_epoch_metric_passes_data_parallel_when_supported():
     """Epoch metrics that accept data_parallel receive the resolved config."""
     received = {}
@@ -1990,6 +2057,53 @@ def test_train_calls_log_checkpoint_when_task_provided(tmp_path):
     assert mock_log_ckpt.call_count == 1
     called_path = mock_log_ckpt.call_args[0][1]
     assert "ema" in called_path
+
+
+def test_train_logs_time_binned_loss_diagnostic_at_validation_cadence(tmp_path):
+    """Enabled diagnostic should log once per validation epoch for the val split."""
+    key = jax.random.PRNGKey(31)
+    dl = _make_dataloader()
+    mock_task = MagicMock()
+    model = _make_small_model()
+
+    with patch("msdflow.train.trainer.log_time_binned_loss") as mock_log_diag:
+        train(
+            key=key,
+            model=model,
+            dataloader=dl,
+            val_dataloader=dl,
+            optimizer=OPTIMIZER,
+            loss_fn=lambda model, x_t, u_t, t, cond, cond_mask, key: jnp.mean(x_t),
+            batch_metrics=[],
+            epoch_metrics=[],
+            coupling=_COUPLING,
+            time_sampler=_time_sampler,
+            path_sampler=_PATH_SAMPLER,
+            num_epochs=2,
+            num_steps_per_epoch=1,
+            p_uncond=1.0,
+            ema_decay=0.999,
+            log_every=1,
+            val_every=1,
+            checkpoint_every=10,
+            checkpoint_dir=str(tmp_path),
+            clearml_task=mock_task,
+            time_loss_diagnostic={
+                "enabled": True,
+                "split": "val",
+                "num_bins": 4,
+                "num_batches": 1,
+                "log_heatmap": True,
+            },
+        )
+
+    assert mock_log_diag.call_count == 2
+    first_call = mock_log_diag.call_args_list[0].kwargs
+    assert first_call["task"] is mock_task
+    assert first_call["split"] == "val"
+    assert first_call["epoch"] == 1
+    assert first_call["result"].counts.shape == (4,)
+    assert first_call["history"] is not None
 
 
 def test_train_generates_samples_to_disk(tmp_path):
