@@ -551,16 +551,15 @@ def plot_time_binned_loss_heatmap(
     """
     bin_edges = np.asarray(history.bin_edges, dtype=np.float64)
     epochs = np.asarray(history.epochs, dtype=np.int64)
+    if epochs.size == 0:
+        raise ValueError("Cannot plot empty time-binned loss history.")
+
     mean_losses = np.asarray(history.mean_losses, dtype=np.float64)
     masked_losses = np.ma.masked_invalid(mean_losses)
 
     fig, ax = plt.subplots(figsize=(8.0, 4.8))
-    if epochs.size == 0:
-        epoch_min = 0.5
-        epoch_max = 1.5
-    else:
-        epoch_min = float(epochs[0]) - 0.5
-        epoch_max = float(epochs[-1]) + 0.5
+    epoch_min = float(epochs[0]) - 0.5
+    epoch_max = float(epochs[-1]) + 0.5
     image = ax.imshow(
         masked_losses,
         aspect="auto",

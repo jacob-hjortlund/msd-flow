@@ -322,6 +322,26 @@ def test_log_time_binned_loss_closes_figures_when_reporting_raises():
         plt.close("all")
 
 
+def test_plot_time_binned_loss_heatmap_rejects_empty_history_without_open_figures():
+    """Empty history heatmap plotting should fail before creating a figure."""
+    import matplotlib.pyplot as plt
+
+    from msdflow.train.metrics import TimeBinnedLossHistory
+    from msdflow.tracking import plot_time_binned_loss_heatmap
+
+    result, _ = _time_binned_result()
+    history = TimeBinnedLossHistory(bin_edges=result.bin_edges)
+
+    plt.close("all")
+    try:
+        with pytest.raises(ValueError, match="empty time-binned loss history"):
+            plot_time_binned_loss_heatmap(history, split="val")
+
+        assert plt.get_fignums() == []
+    finally:
+        plt.close("all")
+
+
 # ---------------------------------------------------------------------------
 # get_dataset_id
 # ---------------------------------------------------------------------------
