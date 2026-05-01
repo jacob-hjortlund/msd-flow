@@ -2505,6 +2505,75 @@ def test_train_time_loss_diagnostic_does_not_change_training_prepare_keys(tmp_pa
     )
 
 
+def test_train_time_loss_diagnostic_does_not_reiterate_training_dataloader(tmp_path):
+    """Train diagnostics should not add a training dataloader iteration."""
+    import torch
+
+    class CountingDataloader:
+        """List-backed dataloader that counts top-level iteration starts."""
+
+        def __init__(self, steps=2):
+            """Initialize the dataloader with fixed zero batches.
+
+            Args:
+                steps: Number of batches yielded per full dataloader pass.
+            """
+            images = torch.zeros(2, 1, 8, 8)
+            meta = torch.zeros(2, 0)
+            self._batches = [(images, meta)] * steps
+            self.iter_count = 0
+
+        def __iter__(self):
+            """Yield stored batches and record the new iterator request."""
+            self.iter_count += 1
+            return iter(self._batches)
+
+        def __len__(self):
+            """Return the number of stored batches."""
+            return len(self._batches)
+
+    def run_and_count(time_loss_diagnostic):
+        """Run one epoch and return training dataloader iterator count."""
+        train_dataloader = CountingDataloader(steps=2)
+        train(
+            key=jax.random.PRNGKey(44),
+            model=_make_small_model(),
+            dataloader=train_dataloader,
+            val_dataloader=_make_dataloader(steps=1),
+            optimizer=OPTIMIZER,
+            loss_fn=lambda model, x_t, u_t, t, cond, cond_mask, key: jnp.mean(x_t),
+            batch_metrics=[],
+            epoch_metrics=[],
+            coupling=_COUPLING,
+            time_sampler=_time_sampler,
+            path_sampler=_PATH_SAMPLER,
+            num_epochs=1,
+            num_steps_per_epoch=1,
+            num_train_eval_batches=1,
+            p_uncond=1.0,
+            ema_decay=0.999,
+            log_every=1,
+            val_every=1,
+            checkpoint_every=10,
+            checkpoint_dir=str(tmp_path),
+            clearml_task=MagicMock(),
+            time_loss_diagnostic=time_loss_diagnostic,
+        )
+        return train_dataloader.iter_count
+
+    disabled_iters = run_and_count({"enabled": False})
+    enabled_iters = run_and_count(
+        {
+            "enabled": True,
+            "split": "train",
+            "num_bins": 4,
+            "num_batches": 1,
+        }
+    )
+
+    assert enabled_iters == disabled_iters
+
+
 def test_train_logs_time_binned_loss_diagnostic_for_both_splits(tmp_path):
     """The both split should log independent train and val diagnostics."""
     key = jax.random.PRNGKey(32)

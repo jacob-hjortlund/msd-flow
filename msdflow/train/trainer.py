@@ -668,6 +668,67 @@ def time_binned_loss_loop(
     return result
 
 
+def _time_binned_loss_cached_batch_loop(
+    key: jax.Array,
+    model,
+    cached_batches: list[tuple[np.ndarray, np.ndarray]],
+    step_fn: callable,
+    prepare_jax: callable,
+    num_bins: int,
+    data_parallel: DataParallelConfig | None = None,
+) -> TimeBinnedLossResult:
+    """Stream cached prepared batches through the time-binned diagnostic.
+
+    Args:
+        key: JAX PRNG key consumed internally via splitting.
+        model: Model used for inference.
+        cached_batches: Prepared ``(images_np, cond_np)`` training micro-batches
+            copied from the just-finished epoch.
+        step_fn: JIT-compiled step from ``make_time_binned_loss_step()``.
+        prepare_jax: JIT-compiled batch preparation function.
+        num_bins: Number of equal-width bins over ``[0, 1]``.
+        data_parallel: Optional data-parallel runtime configuration.
+
+    Returns:
+        Host-side result containing bin edges, loss sums, counts, and means.
+    """
+    data_parallel = resolve_data_parallel_config(data_parallel)
+    model = shard_model(model, data_parallel)
+    result = TimeBinnedLossResult.empty(num_bins)
+
+    for images_np, cond_np in tqdm(
+        cached_batches,
+        desc="Time-binned loss",
+        leave=False,
+        dynamic_ncols=True,
+    ):
+        batch_key, key = jax.random.split(key, 2)
+        t, x_t, u_t, cond, cond_mask, dropout_keys = prepare_jax(
+            images_np,
+            cond_np,
+            batch_key,
+        )
+        x_t, u_t, t, cond, cond_mask, dropout_keys = shard_batch(
+            (x_t, u_t, t, cond, cond_mask, dropout_keys),
+            data_parallel,
+        )
+        loss_sums, counts = step_fn(
+            model,
+            x_t,
+            u_t,
+            t,
+            cond,
+            cond_mask,
+            dropout_keys,
+        )
+        result.add_batch(
+            loss_sums=np.asarray(loss_sums),
+            counts=np.asarray(counts),
+        )
+
+    return result
+
+
 def _call_epoch_metric(
     metric: callable,
     model,
@@ -905,6 +966,10 @@ def train(
     else:
         time_loss_config = resolve_time_loss_diagnostic_config(time_loss_diagnostic)
     time_loss_enabled = time_loss_config.enabled
+    time_loss_splits = (
+        _time_loss_diagnostic_splits(time_loss_config) if time_loss_enabled else ()
+    )
+    cache_train_time_loss_batches = "train" in time_loss_splits
 
     state = make_train_state(model, optimizer)
     state = shard_train_state(state, data_parallel_config)
@@ -1132,6 +1197,7 @@ def train(
             epoch_loss_denominator = (
                 resume_completed_microsteps if is_resumed_epoch else 0
             )
+            train_time_loss_batches: list[tuple[np.ndarray, np.ndarray]] = []
             epoch_start_time = time.perf_counter()
 
             prefetcher = BatchPrefetcher(
@@ -1150,6 +1216,17 @@ def train(
                     )
                     for microstep in pbar:
                         images_np, cond_np = next(prefetcher)
+                        if cache_train_time_loss_batches and (
+                            time_loss_config.num_batches == 0
+                            or len(train_time_loss_batches)
+                            < time_loss_config.num_batches
+                        ):
+                            train_time_loss_batches.append(
+                                (
+                                    np.array(images_np, copy=True),
+                                    np.array(cond_np, copy=True),
+                                )
+                            )
                         step_key, key = jax.random.split(key)
                         t, x_t, u_t, cond, cond_mask, dropout_keys = prepare_jax(
                             images_np, cond_np, step_key
@@ -1281,22 +1358,29 @@ def train(
 
                 if time_loss_enabled and time_binned_loss_step is not None:
                     assert key_time_loss is not None
-                    split_dataloaders = {
-                        "val": val_dataloader,
-                        "train": dataloader,
-                    }
-                    for split in _time_loss_diagnostic_splits(time_loss_config):
+                    for split in time_loss_splits:
                         key_time_loss, split_key = jax.random.split(key_time_loss, 2)
-                        time_loss_result = time_binned_loss_loop(
-                            key=split_key,
-                            model=eval_model,
-                            dataloader=split_dataloaders[split],
-                            step_fn=time_binned_loss_step,
-                            prepare_jax=prepare_jax,
-                            num_bins=time_loss_config.num_bins,
-                            num_batches=time_loss_config.num_batches,
-                            data_parallel=data_parallel_config,
-                        )
+                        if split == "train":
+                            time_loss_result = _time_binned_loss_cached_batch_loop(
+                                key=split_key,
+                                model=eval_model,
+                                cached_batches=train_time_loss_batches,
+                                step_fn=time_binned_loss_step,
+                                prepare_jax=prepare_jax,
+                                num_bins=time_loss_config.num_bins,
+                                data_parallel=data_parallel_config,
+                            )
+                        else:
+                            time_loss_result = time_binned_loss_loop(
+                                key=split_key,
+                                model=eval_model,
+                                dataloader=val_dataloader,
+                                step_fn=time_binned_loss_step,
+                                prepare_jax=prepare_jax,
+                                num_bins=time_loss_config.num_bins,
+                                num_batches=time_loss_config.num_batches,
+                                data_parallel=data_parallel_config,
+                            )
                         history = time_loss_histories.get(split)
                         if history is None:
                             history = TimeBinnedLossHistory(
