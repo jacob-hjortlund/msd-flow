@@ -753,7 +753,6 @@ def train(
     grad_accum_steps: int = 1,
     buffer_size: int = 4,
     data_parallel: Any = None,
-    time_loss_diagnostic: Any = None,
     checkpoint_hash: str | None = None,
     hash_payload: dict | None = None,
     latest_filename: str = "latest.json",
@@ -764,6 +763,7 @@ def train(
     source_checkpoint_path: str | None = None,
     sigterm_flag_factory=SigtermFlag,
     *args,
+    time_loss_diagnostic: Any = None,
     **kwargs,
 ):
     """Main training loop with EMA and periodic validation.
@@ -828,9 +828,6 @@ def train(
         buffer_size: Number of prepared batches to prefetch.
         data_parallel: None, mapping, or DataParallelConfig controlling optional
             local data-parallel sharding.
-        time_loss_diagnostic: Optional mapping or TimeLossDiagnosticConfig for
-            logging flow-matching loss binned by sampled time ``t``. Defaults to
-            None, which disables the diagnostic for direct train() calls.
         checkpoint_hash: Stable checkpoint compatibility hash used for full-state
             checkpoint saves and resume validation. Defaults to None.
         hash_payload: JSON-safe payload used to compute ``checkpoint_hash``.
@@ -849,6 +846,10 @@ def train(
             full-state checkpoint metadata. Defaults to None.
         sigterm_flag_factory: Context manager factory used to observe SIGTERM
             requests. Defaults to ``SigtermFlag``.
+        time_loss_diagnostic: Keyword-only optional mapping or
+            TimeLossDiagnosticConfig for logging flow-matching loss binned by
+            sampled time ``t``. Defaults to None, which disables the diagnostic
+            for direct train() calls.
 
     Returns:
         Trained EMA model when initialized, otherwise the live model.

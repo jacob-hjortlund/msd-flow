@@ -1,5 +1,6 @@
 """Tests for msdflow.train.trainer."""
 
+import inspect
 import json
 from decimal import Decimal
 
@@ -2179,6 +2180,141 @@ def test_train_logs_time_binned_loss_diagnostic_at_validation_cadence(tmp_path):
     assert first_call["epoch"] == 1
     assert first_call["result"].counts.shape == (4,)
     assert first_call["history"] is not None
+
+
+def test_train_time_loss_diagnostic_keeps_positional_checkpoint_hash_binding():
+    """Old positional checkpoint_hash calls should not bind to diagnostics."""
+    sentinel_hash = "old-positional-hash"
+    positional_args = [
+        jax.random.PRNGKey(41),
+        _make_small_model(),
+        _make_dataloader(),
+        _make_dataloader(),
+        OPTIMIZER,
+        lambda model, x_t, u_t, t, cond, cond_mask, key: jnp.mean(x_t),
+        [],
+        [],
+        _COUPLING,
+        _time_sampler,
+        _PATH_SAMPLER,
+        1,
+        1,
+        1.0,
+        0.999,
+        1,
+        1,
+        10,
+        "/tmp/test_ckpt_positional",
+        0,
+        None,
+        None,
+        0,
+        4,
+        False,
+        "arcsinh",
+        10.0,
+        None,
+        "flow_matching_loss",
+        "min",
+        None,
+        1,
+        4,
+        None,
+        sentinel_hash,
+    ]
+
+    bound = inspect.signature(train).bind_partial(*positional_args)
+
+    assert bound.arguments["checkpoint_hash"] == sentinel_hash
+    assert "time_loss_diagnostic" not in bound.arguments
+
+
+def test_train_logs_time_binned_loss_diagnostic_for_both_splits(tmp_path):
+    """The both split should log independent train and val diagnostics."""
+    key = jax.random.PRNGKey(32)
+    dl = _make_dataloader()
+    mock_task = MagicMock()
+    model = _make_small_model()
+
+    with patch("msdflow.train.trainer.log_time_binned_loss") as mock_log_diag:
+        train(
+            key=key,
+            model=model,
+            dataloader=dl,
+            val_dataloader=dl,
+            optimizer=OPTIMIZER,
+            loss_fn=lambda model, x_t, u_t, t, cond, cond_mask, key: jnp.mean(x_t),
+            batch_metrics=[],
+            epoch_metrics=[],
+            coupling=_COUPLING,
+            time_sampler=_time_sampler,
+            path_sampler=_PATH_SAMPLER,
+            num_epochs=1,
+            num_steps_per_epoch=1,
+            p_uncond=1.0,
+            ema_decay=0.999,
+            log_every=1,
+            val_every=1,
+            checkpoint_every=10,
+            checkpoint_dir=str(tmp_path),
+            clearml_task=mock_task,
+            time_loss_diagnostic={
+                "enabled": True,
+                "split": "both",
+                "num_bins": 4,
+                "num_batches": 1,
+                "log_heatmap": True,
+            },
+        )
+
+    calls = mock_log_diag.call_args_list
+    assert [call.kwargs["split"] for call in calls] == ["val", "train"]
+    assert calls[0].kwargs["history"] is not None
+    assert calls[1].kwargs["history"] is not None
+    assert calls[0].kwargs["history"] is not calls[1].kwargs["history"]
+    assert {call.kwargs["result"].counts.shape for call in calls} == {(4,)}
+
+
+def test_train_logs_time_binned_loss_diagnostic_without_heatmap_history(tmp_path):
+    """Disabled heatmap logging should pass no cumulative history."""
+    key = jax.random.PRNGKey(33)
+    dl = _make_dataloader()
+    mock_task = MagicMock()
+    model = _make_small_model()
+
+    with patch("msdflow.train.trainer.log_time_binned_loss") as mock_log_diag:
+        train(
+            key=key,
+            model=model,
+            dataloader=dl,
+            val_dataloader=dl,
+            optimizer=OPTIMIZER,
+            loss_fn=lambda model, x_t, u_t, t, cond, cond_mask, key: jnp.mean(x_t),
+            batch_metrics=[],
+            epoch_metrics=[],
+            coupling=_COUPLING,
+            time_sampler=_time_sampler,
+            path_sampler=_PATH_SAMPLER,
+            num_epochs=1,
+            num_steps_per_epoch=1,
+            p_uncond=1.0,
+            ema_decay=0.999,
+            log_every=1,
+            val_every=1,
+            checkpoint_every=10,
+            checkpoint_dir=str(tmp_path),
+            clearml_task=mock_task,
+            time_loss_diagnostic={
+                "enabled": True,
+                "split": "val",
+                "num_bins": 4,
+                "num_batches": 1,
+                "log_heatmap": False,
+            },
+        )
+
+    assert mock_log_diag.call_count == 1
+    assert mock_log_diag.call_args.kwargs["history"] is None
 
 
 def test_train_generates_samples_to_disk(tmp_path):
