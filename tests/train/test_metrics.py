@@ -100,6 +100,15 @@ def test_bin_time_losses_assigns_t_one_to_final_bin():
     assert np.array_equal(np.asarray(counts), np.array([2, 1, 0, 2]))
 
 
+def test_bin_time_losses_rejects_nonpositive_num_bins():
+    """Time binning should reject nonpositive bin counts."""
+    t = jnp.array([0.5])
+    losses = jnp.array([1.0])
+
+    with pytest.raises(ValueError, match="num_bins must be >= 1"):
+        bin_time_losses(t, losses, num_bins=0)
+
+
 def test_time_binned_loss_result_mean_uses_nan_for_empty_bins():
     """Empty time bins should have NaN mean loss and zero counts."""
     result = TimeBinnedLossResult.empty(num_bins=3)
@@ -111,6 +120,12 @@ def test_time_binned_loss_result_mean_uses_nan_for_empty_bins():
     assert np.allclose(result.mean_loss[[0, 2]], np.array([2.0, 2.0]))
     assert np.isnan(result.mean_loss[1])
     assert np.array_equal(result.counts, np.array([1, 0, 3]))
+
+
+def test_time_binned_loss_result_empty_rejects_nonpositive_num_bins():
+    """Time-binned result creation should reject nonpositive bin counts."""
+    with pytest.raises(ValueError, match="num_bins must be >= 1"):
+        TimeBinnedLossResult.empty(num_bins=0)
 
 
 def test_time_binned_loss_history_records_epochs_and_means():
@@ -125,6 +140,25 @@ def test_time_binned_loss_history_records_epochs_and_means():
     history.append(epoch=5, result=result)
 
     assert history.epochs == [5]
+    assert np.allclose(history.mean_losses[0], np.array([1.0, 2.0]))
+    assert np.array_equal(history.counts[0], np.array([1, 2]))
+
+
+def test_time_binned_loss_history_snapshots_appended_results():
+    """History should not change when a previously appended result mutates."""
+    result = TimeBinnedLossResult.empty(num_bins=2)
+    result.add_batch(
+        loss_sums=np.array([1.0, 4.0]),
+        counts=np.array([1, 2]),
+    )
+    history = TimeBinnedLossHistory(bin_edges=result.bin_edges)
+
+    history.append(epoch=5, result=result)
+    result.add_batch(
+        loss_sums=np.array([10.0, 10.0]),
+        counts=np.array([10, 10]),
+    )
+
     assert np.allclose(history.mean_losses[0], np.array([1.0, 2.0]))
     assert np.array_equal(history.counts[0], np.array([1, 2]))
 
@@ -145,8 +179,14 @@ def test_make_time_binned_loss_step_returns_bin_sums_and_counts():
 
     assert loss_sums.shape == (4,)
     assert counts.shape == (4,)
-    assert int(np.asarray(counts).sum()) == batch_size
-    assert np.all(np.asarray(loss_sums) >= 0.0)
+    assert np.allclose(np.asarray(loss_sums), np.array([2.0, 0.0, 1.0, 1.0]))
+    assert np.array_equal(np.asarray(counts), np.array([2, 0, 1, 1]))
+
+
+def test_make_time_binned_loss_step_rejects_nonpositive_num_bins():
+    """Diagnostic step creation should reject nonpositive bin counts."""
+    with pytest.raises(ValueError, match="num_bins must be >= 1"):
+        make_time_binned_loss_step(num_bins=0)
 
 
 def test_flow_matching_loss_is_positive():

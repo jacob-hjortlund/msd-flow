@@ -313,8 +313,8 @@ class TimeBinnedLossHistory:
         if not np.allclose(np.asarray(result.bin_edges), np.asarray(self.bin_edges)):
             raise ValueError("result bin_edges must match history bin_edges")
         self.epochs.append(int(epoch))
-        self.mean_losses.append(np.asarray(result.mean_loss, dtype=np.float64))
-        self.counts.append(np.asarray(result.counts, dtype=np.int64))
+        self.mean_losses.append(np.asarray(result.mean_loss, dtype=np.float64).copy())
+        self.counts.append(np.asarray(result.counts, dtype=np.int64).copy())
 
 
 def make_time_binned_loss_step(
