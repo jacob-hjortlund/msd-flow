@@ -191,7 +191,7 @@ data_overrides=(
   "train.buffer_size=8"
   "train.grad_accum_steps=4"
   "data.dataloader.batch_size=128"
-  "train.num_steps_per_epoch=16"
+  "train.num_steps_per_epoch=128"
   "data.dataloader.num_workers=8"
   "data.dataloader.prefetch_factor=4"
   

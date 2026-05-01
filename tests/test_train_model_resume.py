@@ -203,3 +203,66 @@ def test_main_starts_fresh_clearml_task_when_resume_metadata_has_no_task_id(tmp_
 
     assert ("setup_task", None) in calls
     assert ("train", checkpoint_metadata) in calls
+
+
+def test_main_passes_hash_payload_outside_hydra_train_config(tmp_path):
+    """Hash payload should not be recursively instantiated by Hydra."""
+    cfg = _cfg(tmp_path)
+    hash_payload = {
+        "data": {
+            "dataloader": {
+                "data_dir": None,
+                "test": {
+                    "dataset": {
+                        "image_transform": {
+                            "_target_": "msdflow.data.preprocess.ArcsinhStretch",
+                            "scale": None,
+                            "percentile": 50,
+                            "data_dir": None,
+                        }
+                    }
+                },
+            }
+        }
+    }
+    train_calls = []
+
+    def fake_call(train_cfg):
+        assert "hash_payload" not in train_cfg
+
+        def runner(**kwargs):
+            train_calls.append(kwargs)
+            return kwargs["model"]
+
+        return runner
+
+    with patch("train_model.compute_config_hash", return_value=("hash123", hash_payload)), patch(
+        "train_model.checkpoint_run_dir",
+        return_value=str(tmp_path / "checkpoints" / "hash123"),
+    ), patch(
+        "train_model.discover_latest_checkpoint",
+        return_value=None,
+    ), patch(
+        "train_model.setup_task",
+        return_value=None,
+    ), patch(
+        "train_model.resolve_dataset",
+        return_value=str(tmp_path / "resolved-data"),
+    ), patch(
+        "train_model.build_dataloader",
+        return_value=[],
+    ), patch(
+        "train_model.instantiate",
+        return_value=lambda key: MagicMock(name="model"),
+    ), patch(
+        "train_model.call",
+        side_effect=fake_call,
+    ), patch(
+        "train_model.seed_everything",
+        return_value=__import__("jax").random.PRNGKey(0),
+    ):
+        import train_model
+
+        train_model.main.__wrapped__(cfg)
+
+    assert train_calls[0]["hash_payload"] is hash_payload

@@ -80,7 +80,6 @@ def main(cfg: DictConfig):
         cfg.data.dataloader.data_dir = dataset_path
         cfg.train.checkpoint_dir = run_checkpoint_dir
         cfg.train.checkpoint_hash = checkpoint_hash
-        cfg.train.hash_payload = hash_payload
         cfg.train.latest_filename = str(cfg.train.resume.latest_filename)
         cfg.train.save_on_sigterm = bool(cfg.train.resume.save_on_sigterm)
 
@@ -111,6 +110,7 @@ def main(cfg: DictConfig):
         dataloader=train_loader,
         val_dataloader=val_loader,
         clearml_task=task,
+        hash_payload=hash_payload,
         resume_checkpoint_path=(
             resume_metadata["payload_path"] if resume_metadata is not None else None
         ),
