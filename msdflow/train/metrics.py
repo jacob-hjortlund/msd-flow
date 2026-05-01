@@ -66,6 +66,38 @@ def _to_velocity(
     return pred
 
 
+def _flow_matching_per_sample_loss_values(
+    model,
+    x_t: jnp.ndarray,
+    u_t: jnp.ndarray,
+    t: jnp.ndarray,
+    cond: jnp.ndarray,
+    cond_mask: jnp.ndarray,
+    key: jax.Array,
+) -> jnp.ndarray:
+    """Compute per-sample flow-matching losses from one model prediction call.
+
+    Args:
+        model: Network accepting ``(t, x_t, cond, cond_mask, key)`` for one
+            sample. Must expose ``prediction_type`` as ``"velocity"`` or
+            ``"image"``.
+        x_t: Interpolated samples with shape ``(B, C, H, W)``.
+        u_t: Target velocity fields with shape ``(B, C, H, W)``.
+        t: Per-sample times with shape ``(B,)``.
+        cond: Conditioning vectors with shape ``(B, cond_dim)``.
+        cond_mask: Per-sample condition mask with shape ``(B,)``.
+        key: Per-sample PRNG keys with leading shape ``(B,)``.
+
+    Returns:
+        Mean squared velocity error for each sample, shape ``(B,)``.
+    """
+    pred = eqx.filter_vmap(model)(t, x_t, cond, cond_mask, key)
+    v_t = _to_velocity(pred, x_t, t, model.prediction_type)
+    squared_error = (v_t - u_t) ** 2
+    reduce_axes = tuple(range(1, squared_error.ndim))
+    return jnp.mean(squared_error, axis=reduce_axes)
+
+
 def flow_matching_loss(
     model,
     x_t: jnp.ndarray,
@@ -96,9 +128,17 @@ def flow_matching_loss(
     Returns:
         Scalar mean squared error between predicted and target velocities.
     """
-    pred = eqx.filter_vmap(model)(t, x_t, cond, cond_mask, key)
-    v_t = _to_velocity(pred, x_t, t, model.prediction_type)
-    return jnp.mean((v_t - u_t) ** 2)
+    return jnp.mean(
+        _flow_matching_per_sample_loss_values(
+            model,
+            x_t,
+            u_t,
+            t,
+            cond,
+            cond_mask,
+            key,
+        )
+    )
 
 
 def flow_matching_per_sample_loss(
@@ -126,11 +166,15 @@ def flow_matching_per_sample_loss(
     Returns:
         Mean squared velocity error for each sample, shape ``(B,)``.
     """
-    pred = eqx.filter_vmap(model)(t, x_t, cond, cond_mask, key)
-    v_t = _to_velocity(pred, x_t, t, model.prediction_type)
-    squared_error = (v_t - u_t) ** 2
-    reduce_axes = tuple(range(1, squared_error.ndim))
-    return jnp.mean(squared_error, axis=reduce_axes)
+    return _flow_matching_per_sample_loss_values(
+        model,
+        x_t,
+        u_t,
+        t,
+        cond,
+        cond_mask,
+        key,
+    )
 
 
 def bin_time_losses(
