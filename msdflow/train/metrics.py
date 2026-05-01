@@ -1,5 +1,6 @@
 import logging
 from collections.abc import Mapping
+from dataclasses import dataclass, field
 from typing import Any
 
 import jax
@@ -98,6 +99,230 @@ def flow_matching_loss(
     pred = eqx.filter_vmap(model)(t, x_t, cond, cond_mask, key)
     v_t = _to_velocity(pred, x_t, t, model.prediction_type)
     return jnp.mean((v_t - u_t) ** 2)
+
+
+def flow_matching_per_sample_loss(
+    model,
+    x_t: jnp.ndarray,
+    u_t: jnp.ndarray,
+    t: jnp.ndarray,
+    cond: jnp.ndarray,
+    cond_mask: jnp.ndarray,
+    key: jax.Array,
+) -> jnp.ndarray:
+    """Compute one flow-matching MSE loss per batch element.
+
+    Args:
+        model: Network accepting ``(t, x_t, cond, cond_mask, key)`` for one
+            sample. Must expose ``prediction_type`` as ``"velocity"`` or
+            ``"image"``.
+        x_t: Interpolated samples with shape ``(B, C, H, W)``.
+        u_t: Target velocity fields with shape ``(B, C, H, W)``.
+        t: Per-sample times with shape ``(B,)``.
+        cond: Conditioning vectors with shape ``(B, cond_dim)``.
+        cond_mask: Per-sample condition mask with shape ``(B,)``.
+        key: Per-sample PRNG keys with leading shape ``(B,)``.
+
+    Returns:
+        Mean squared velocity error for each sample, shape ``(B,)``.
+    """
+    pred = eqx.filter_vmap(model)(t, x_t, cond, cond_mask, key)
+    v_t = _to_velocity(pred, x_t, t, model.prediction_type)
+    squared_error = (v_t - u_t) ** 2
+    reduce_axes = tuple(range(1, squared_error.ndim))
+    return jnp.mean(squared_error, axis=reduce_axes)
+
+
+def bin_time_losses(
+    t: jnp.ndarray,
+    losses: jnp.ndarray,
+    num_bins: int,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Aggregate per-sample losses into equal-width time bins.
+
+    Args:
+        t: Per-sample times with shape ``(B,)``.
+        losses: Per-sample losses with shape ``(B,)``.
+        num_bins: Number of equal-width bins over ``[0, 1]``.
+
+    Returns:
+        Tuple of ``(loss_sums, counts)`` where both arrays have shape
+        ``(num_bins,)``. ``loss_sums`` uses the same dtype as ``losses`` and
+        ``counts`` uses ``int32``.
+
+    Raises:
+        ValueError: If ``num_bins`` is less than one.
+    """
+    num_bins = int(num_bins)
+    if num_bins < 1:
+        raise ValueError(f"num_bins must be >= 1, got {num_bins}")
+
+    clipped_t = jnp.clip(t, 0.0, 1.0)
+    bin_indices = jnp.floor(clipped_t * num_bins).astype(jnp.int32)
+    bin_indices = jnp.minimum(bin_indices, num_bins - 1)
+
+    loss_sums = jnp.zeros((num_bins,), dtype=losses.dtype)
+    counts = jnp.zeros((num_bins,), dtype=jnp.int32)
+    loss_sums = loss_sums.at[bin_indices].add(losses)
+    counts = counts.at[bin_indices].add(1)
+    return loss_sums, counts
+
+
+@dataclass
+class TimeBinnedLossResult:
+    """Host-side accumulated loss statistics for time bins.
+
+    Attributes:
+        bin_edges: Bin edges over ``[0, 1]`` with shape ``(num_bins + 1,)``.
+        loss_sums: Loss sums per bin with shape ``(num_bins,)``.
+        counts: Sample counts per bin with shape ``(num_bins,)``.
+    """
+
+    bin_edges: np.ndarray
+    loss_sums: np.ndarray
+    counts: np.ndarray
+
+    @classmethod
+    def empty(cls, num_bins: int) -> "TimeBinnedLossResult":
+        """Create an empty accumulator with equally spaced time bins.
+
+        Args:
+            num_bins: Number of equal-width bins over ``[0, 1]``.
+
+        Returns:
+            Empty result accumulator.
+
+        Raises:
+            ValueError: If ``num_bins`` is less than one.
+        """
+        num_bins = int(num_bins)
+        if num_bins < 1:
+            raise ValueError(f"num_bins must be >= 1, got {num_bins}")
+        return cls(
+            bin_edges=np.linspace(0.0, 1.0, num_bins + 1, dtype=np.float64),
+            loss_sums=np.zeros((num_bins,), dtype=np.float64),
+            counts=np.zeros((num_bins,), dtype=np.int64),
+        )
+
+    @property
+    def mean_loss(self) -> np.ndarray:
+        """Return mean loss per bin, using NaN for empty bins."""
+        return np.divide(
+            self.loss_sums,
+            self.counts,
+            out=np.full_like(self.loss_sums, np.nan, dtype=np.float64),
+            where=self.counts > 0,
+        )
+
+    def add_batch(self, loss_sums: np.ndarray, counts: np.ndarray) -> None:
+        """Add one batch of bin sums and counts.
+
+        Args:
+            loss_sums: Batch loss sums per bin.
+            counts: Batch sample counts per bin.
+
+        Raises:
+            ValueError: If input arrays do not match the accumulator shape.
+        """
+        loss_sums = np.asarray(loss_sums, dtype=np.float64)
+        counts = np.asarray(counts, dtype=np.int64)
+        if loss_sums.shape != self.loss_sums.shape:
+            raise ValueError(
+                "loss_sums shape must match time bins; "
+                f"got {loss_sums.shape}, expected {self.loss_sums.shape}"
+            )
+        if counts.shape != self.counts.shape:
+            raise ValueError(
+                "counts shape must match time bins; "
+                f"got {counts.shape}, expected {self.counts.shape}"
+            )
+        self.loss_sums += loss_sums
+        self.counts += counts
+
+
+@dataclass
+class TimeBinnedLossHistory:
+    """In-memory history for cumulative time-binned loss heatmaps.
+
+    Attributes:
+        bin_edges: Time-bin edges shared by all appended results.
+        epochs: Epoch numbers in append order.
+        mean_losses: Mean-loss arrays in append order.
+        counts: Count arrays in append order.
+    """
+
+    bin_edges: np.ndarray
+    epochs: list[int] = field(default_factory=list)
+    mean_losses: list[np.ndarray] = field(default_factory=list)
+    counts: list[np.ndarray] = field(default_factory=list)
+
+    def append(self, epoch: int, result: TimeBinnedLossResult) -> None:
+        """Append one epoch result to the history.
+
+        Args:
+            epoch: One-indexed epoch number.
+            result: Time-binned loss result for this epoch.
+
+        Raises:
+            ValueError: If the result bin edges differ from the history edges.
+        """
+        if not np.allclose(np.asarray(result.bin_edges), np.asarray(self.bin_edges)):
+            raise ValueError("result bin_edges must match history bin_edges")
+        self.epochs.append(int(epoch))
+        self.mean_losses.append(np.asarray(result.mean_loss, dtype=np.float64))
+        self.counts.append(np.asarray(result.counts, dtype=np.int64))
+
+
+def make_time_binned_loss_step(
+    num_bins: int,
+    data_parallel: DataParallelConfig | None = None,
+):
+    """Return a JIT-compiled step for time-binned flow-matching loss.
+
+    Args:
+        num_bins: Number of equal-width bins over ``[0, 1]``.
+        data_parallel: Optional data-parallel runtime configuration.
+
+    Returns:
+        A callable with the same batch arguments as batch metrics. It returns
+        ``(loss_sums, counts)`` arrays with shape ``(num_bins,)``.
+
+    Raises:
+        ValueError: If ``num_bins`` is less than one.
+    """
+    num_bins = int(num_bins)
+    if num_bins < 1:
+        raise ValueError(f"num_bins must be >= 1, got {num_bins}")
+    data_parallel = resolve_data_parallel_config(data_parallel)
+
+    @eqx.filter_jit(donate="all-except-first")
+    def time_binned_loss_step(
+        model,
+        x_t: jax.Array,
+        u_t: jax.Array,
+        t: jax.Array,
+        cond: jax.Array,
+        cond_mask: jax.Array,
+        key: jax.Array,
+    ) -> tuple[jax.Array, jax.Array]:
+        if data_parallel.enabled:
+            model = eqx.filter_shard(model, data_parallel.model_sharding)
+            x_t, u_t, t, cond, cond_mask, key = eqx.filter_shard(
+                (x_t, u_t, t, cond, cond_mask, key),
+                data_parallel.data_sharding,
+            )
+        losses = flow_matching_per_sample_loss(
+            model,
+            x_t,
+            u_t,
+            t,
+            cond,
+            cond_mask,
+            key,
+        )
+        return bin_time_losses(t, losses, num_bins)
+
+    return time_binned_loss_step
 
 
 def _frechet_distance(
