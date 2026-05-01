@@ -811,8 +811,8 @@ def morphology_metrics(img, eps=1e-12):
 
     Returns a dict of JAX scalars.
     """
-    # xc, yc = centroid(img, eps=eps)
-    xc, yc = (256, 256)
+    mid_idx = img.shape[0] // 2
+    xc, yc = (mid_idx, mid_idx)
     r50 = half_light_radius(img, eps=eps)
     C, r20, r80 = concentration(img, eps=eps)
     q, e, theta, a, b = shape_metrics(img, eps=eps)
