@@ -349,6 +349,20 @@ def make_time_binned_loss_step(
         cond_mask: jax.Array,
         key: jax.Array,
     ) -> tuple[jax.Array, jax.Array]:
+        """Aggregate one prepared batch into time-binned loss statistics.
+
+        Args:
+            model: Flow-matching model evaluated on the prepared batch.
+            x_t: Interpolated samples.
+            u_t: Target velocity fields.
+            t: Per-sample times.
+            cond: Conditioning vectors.
+            cond_mask: Per-sample conditioning mask.
+            key: Per-sample dropout keys.
+
+        Returns:
+            Tuple of ``(loss_sums, counts)`` arrays with shape ``(num_bins,)``.
+        """
         if data_parallel.enabled:
             model = eqx.filter_shard(model, data_parallel.model_sharding)
             x_t, u_t, t, cond, cond_mask, key = eqx.filter_shard(
