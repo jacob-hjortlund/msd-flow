@@ -1,6 +1,7 @@
 """Tests for msdflow.train.trainer."""
 
 import json
+from decimal import Decimal
 
 import jax
 import jax.numpy as jnp
@@ -1715,6 +1716,14 @@ def test_resolve_time_loss_diagnostic_config_rejects_fractional_num_bins():
         resolve_time_loss_diagnostic_config({"enabled": True, "num_bins": 1.9})
 
 
+def test_resolve_time_loss_diagnostic_config_rejects_decimal_fractional_num_bins():
+    """Diagnostic bin count should reject fractional Decimal values."""
+    with pytest.raises(ValueError, match="num_bins"):
+        resolve_time_loss_diagnostic_config(
+            {"enabled": True, "num_bins": Decimal("1.9")}
+        )
+
+
 @pytest.mark.parametrize("num_batches", [-1, "bad", None])
 def test_resolve_time_loss_diagnostic_config_rejects_invalid_num_batches(num_batches):
     """Diagnostic batch limit errors should name num_batches."""
@@ -1736,6 +1745,14 @@ def test_resolve_time_loss_diagnostic_config_rejects_fractional_num_batches():
     """Diagnostic batch limit should reject fractional numeric values."""
     with pytest.raises(ValueError, match="num_batches"):
         resolve_time_loss_diagnostic_config({"enabled": True, "num_batches": 2.5})
+
+
+def test_resolve_time_loss_diagnostic_config_rejects_decimal_fractional_num_batches():
+    """Diagnostic batch limit should reject fractional Decimal values."""
+    with pytest.raises(ValueError, match="num_batches"):
+        resolve_time_loss_diagnostic_config(
+            {"enabled": True, "num_batches": Decimal("2.5")}
+        )
 
 
 def test_time_binned_loss_loop_returns_result_with_counts():

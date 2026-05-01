@@ -6,6 +6,7 @@ the main training loop with periodic checkpointing.
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any
 
 import inspect
@@ -142,15 +143,16 @@ def _parse_diagnostic_int(value: Any, name: str) -> int:
         if float(value).is_integer():
             return int(value)
         raise ValueError(f"{name} must be an integer; got {value!r}")
+    if isinstance(value, Decimal):
+        if value == value.to_integral_value():
+            return int(value)
+        raise ValueError(f"{name} must be an integer; got {value!r}")
     if isinstance(value, str):
         stripped = value.strip()
         if stripped and stripped.lstrip("+-").isdigit():
             return int(stripped)
         raise ValueError(f"{name} must be an integer; got {value!r}")
-    try:
-        return int(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{name} must be an integer; got {value!r}") from exc
+    raise ValueError(f"{name} must be an integer; got {value!r}")
 
 
 def resolve_time_loss_diagnostic_config(
