@@ -41,6 +41,17 @@ def test_train_config_contains_resume_defaults():
     assert cfg.resume.save_on_sigterm is True
 
 
+def test_train_config_enables_time_loss_diagnostic_by_default():
+    """Default train config should enable validation time-binned loss logging."""
+    cfg = OmegaConf.create({"train": OmegaConf.load("configs/train/train.yaml")})
+
+    assert cfg.train.time_loss_diagnostic.enabled is True
+    assert cfg.train.time_loss_diagnostic.split == "val"
+    assert cfg.train.time_loss_diagnostic.num_bins == 20
+    assert cfg.train.time_loss_diagnostic.num_batches == cfg.train.num_train_eval_batches
+    assert cfg.train.time_loss_diagnostic.log_heatmap is True
+
+
 def test_run_sh_uses_stable_checkpoint_root():
     """NERSC run script should not put resumable checkpoints in per-job RUN_DIR."""
     text = open("run.sh").read()
