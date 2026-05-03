@@ -496,7 +496,7 @@ def plot_time_binned_loss_histogram(
         Matplotlib figure.
     """
     bin_edges = np.asarray(result.bin_edges, dtype=np.float64)
-    mean_loss = np.log10(np.asarray(result.mean_loss, dtype=np.float64))
+    mean_loss = np.asarray(result.mean_loss, dtype=np.float64)
     counts = np.asarray(result.counts, dtype=np.int64)
     centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
     widths = np.diff(bin_edges)
@@ -530,6 +530,7 @@ def plot_time_binned_loss_histogram(
     )
     ax_count.set_ylabel("Samples per bin")
     ax_count.set_ylim(bottom=0)
+    ax_loss.set_yscale("log")
 
     fig.tight_layout()
     return fig
