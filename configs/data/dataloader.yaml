@@ -57,6 +57,7 @@ train:
   dataset: ${data.dataloader.train_dataset}
   batch_size: ${data.dataloader.batch_size}
   shuffle: true
+  drop_last: true
   num_workers: ${data.dataloader.num_workers}
   prefetch_factor: ${data.dataloader.prefetch_factor}
   persistent_workers: ${data.dataloader.persistent_workers}
@@ -66,6 +67,7 @@ val:
   dataset: ${data.dataloader.val_dataset}
   batch_size: ${data.dataloader.batch_size}
   shuffle: false
+  drop_last: true
   num_workers: ${data.dataloader.num_workers}
   prefetch_factor: ${data.dataloader.prefetch_factor}
   persistent_workers: ${data.dataloader.persistent_workers}
@@ -75,6 +77,7 @@ test:
   dataset: ${data.dataloader.test_dataset}
   batch_size: ${data.dataloader.batch_size}
   shuffle: false
+  drop_last: true
   num_workers: ${data.dataloader.num_workers}
   prefetch_factor: ${data.dataloader.prefetch_factor}
   persistent_workers: ${data.dataloader.persistent_workers}

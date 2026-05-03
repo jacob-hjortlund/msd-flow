@@ -27,6 +27,7 @@ def build_dataloader(loader_cfg, *, seed: int) -> DataLoader:
         dataset=dataset,
         batch_size=int(loader_cfg.batch_size),
         shuffle=bool(loader_cfg.shuffle),
+        drop_last=bool(loader_cfg.drop_last),
         num_workers=num_workers,
         generator=generator,
     )
