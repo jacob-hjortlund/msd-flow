@@ -636,6 +636,14 @@ def time_binned_loss_loop(
     model = shard_model(model, data_parallel)
     result = TimeBinnedLossResult.empty(num_bins)
 
+    n_dl = len(dataloader)
+    num_batches_given = num_batches > 0
+    num_batches_valid = num_batches <= n_dl and num_batches_given
+    if not num_batches_valid:
+        logger.warning(
+            f"Invalid num_batches: {num_batches}. Using full dataloader with {n_dl} batches."
+        )
+        num_batches = 0
     total = num_batches if num_batches > 0 else len(dataloader)
     data_iter = iter(dataloader)
     for _ in tqdm(
