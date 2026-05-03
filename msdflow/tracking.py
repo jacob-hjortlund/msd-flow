@@ -496,7 +496,7 @@ def plot_time_binned_loss_histogram(
         Matplotlib figure.
     """
     bin_edges = np.asarray(result.bin_edges, dtype=np.float64)
-    mean_loss = np.asarray(result.mean_loss, dtype=np.float64)
+    mean_loss = np.log10(np.asarray(result.mean_loss, dtype=np.float64))
     counts = np.asarray(result.counts, dtype=np.int64)
     centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
     widths = np.diff(bin_edges)
@@ -557,7 +557,7 @@ def plot_time_binned_loss_heatmap(
     if epochs.size == 0:
         raise ValueError("Cannot plot empty time-binned loss history.")
 
-    mean_losses = np.asarray(history.mean_losses, dtype=np.float64)
+    mean_losses = np.log10(np.asarray(history.mean_losses, dtype=np.float64))
     masked_losses = np.ma.masked_invalid(mean_losses)
     row_indices = np.arange(epochs.size)
 
