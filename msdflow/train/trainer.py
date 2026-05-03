@@ -571,6 +571,14 @@ def batch_metric_loop(
 
     totals: dict = {}
     n_batches = 0
+    n_dl = len(dataloader)
+    num_batches_given = num_batches > 0
+    num_batches_valid = num_batches <= n_dl and num_batches_given
+    if not num_batches_valid:
+        logger.warning(
+            f"Invalid num_batches: {num_batches}. Using full dataloader with {n_dl} batches."
+        )
+        num_batches = 0
     total = num_batches if num_batches > 0 else len(dataloader)
     data_iter = iter(dataloader)
 
@@ -1181,19 +1189,17 @@ def train(
             source_checkpoint_path=source_checkpoint_path or resume_checkpoint_path,
             hash_payload=hash_payload or {},
         )
-        logger.info("Saved full-state %s checkpoint: %s", kind, metadata["payload_path"])
+        logger.info(
+            "Saved full-state %s checkpoint: %s", kind, metadata["payload_path"]
+        )
         return metadata
 
     with sigterm_flag_factory(
         save_on_sigterm and checkpoint_hash is not None
     ) as sigterm_flag:
         for epoch in range(start_epoch, num_epochs):
-            is_resumed_epoch = (
-                epoch == start_epoch and resume_completed_microsteps > 0
-            )
-            epoch_loss = jnp.float32(
-                resume_epoch_loss if is_resumed_epoch else 0.0
-            )
+            is_resumed_epoch = epoch == start_epoch and resume_completed_microsteps > 0
+            epoch_loss = jnp.float32(resume_epoch_loss if is_resumed_epoch else 0.0)
             epoch_loss_denominator = (
                 resume_completed_microsteps if is_resumed_epoch else 0
             )
@@ -1276,8 +1282,7 @@ def train(
                                     and checkpoint_microsteps < epoch_loss_denominator
                                 ):
                                     checkpoint_epoch_loss *= (
-                                        checkpoint_microsteps
-                                        / epoch_loss_denominator
+                                        checkpoint_microsteps / epoch_loss_denominator
                                     )
                             _save_full_checkpoint(
                                 kind="sigterm",
