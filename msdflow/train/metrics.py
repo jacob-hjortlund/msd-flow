@@ -344,6 +344,7 @@ def make_time_binned_loss_step(
     data_parallel = resolve_data_parallel_config(data_parallel)
 
     @eqx.filter_jit(donate="all-except-first")
+    @eqx.debug.assert_max_traces(max_traces=1)
     def time_binned_loss_step(
         model,
         x_t: jax.Array,
@@ -412,6 +413,7 @@ def _frechet_distance(
 
 
 @eqx.filter_jit
+@eqx.debug.assert_max_traces(max_traces=1)
 def _extract_batch(encoder, images):
     """Encode a batch of images into feature vectors.
 
@@ -623,11 +625,13 @@ def _log_parallel_gen_batch_size_adjustment(
 
 
 @eqx.filter_jit(donate="all-except-first")
+@eqx.debug.assert_max_traces(max_traces=1)
 def _batched_generate(model, keys, generate_fn):
     return jax.vmap(lambda key: generate_fn(model, key=key))(keys)
 
 
 @eqx.filter_jit
+@eqx.debug.assert_max_traces(max_traces=1)
 def _parallel_batched_generate(model, keys, generate_fn):
     """Generate a sharded fake-image batch without donating the model.
 

@@ -275,6 +275,7 @@ def make_train_step(
     data_parallel = resolve_data_parallel_config(data_parallel)
 
     @eqx.filter_jit(donate="all")
+    @eqx.debug.assert_max_traces(max_traces=1)
     def train_step(
         state: TrainState,
         x_t: jax.Array,
@@ -306,6 +307,7 @@ def make_train_step(
 
 
 @eqx.filter_jit
+@eqx.debug.assert_max_traces(max_traces=1)
 def ema_update(ema_model, new_model, decay: float):
     """Update EMA model weights using exponential moving average.
 
@@ -516,6 +518,7 @@ def make_batch_metric_step(
         )
 
     @eqx.filter_jit(donate="all-except-first")
+    @eqx.debug.assert_max_traces(max_traces=1)
     def batch_metric_step(
         model,
         x_t: jax.Array,
@@ -939,9 +942,12 @@ def train(
 
         single_sample_fn = sample_fn
         batched_sample_fn = eqx.filter_jit(
-            eqx.filter_vmap(
-                lambda model, key: single_sample_fn(model=model, key=key),
-                in_axes=(None, 0),
+            eqx.debug.assert_max_traces(
+                eqx.filter_vmap(
+                    lambda model, key: single_sample_fn(model=model, key=key),
+                    in_axes=(None, 0),
+                ),
+                max_traces=1,
             )
         )
 
