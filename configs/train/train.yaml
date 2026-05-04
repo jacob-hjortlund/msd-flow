@@ -3,11 +3,11 @@ _partial_: true
 loss_fn:
   _target_: msdflow.train.metrics.flow_matching_loss
   _partial_: true
-  project_velocity: false
+  project_velocity: ${..project_velocity}
 batch_metrics:
   - _target_: msdflow.train.metrics.flow_matching_loss
     _partial_: true
-    project_velocity: false
+    project_velocity: ${...project_velocity}
 num_train_eval_batches: ${train.num_steps_per_epoch} #0
 time_loss_diagnostic:
   enabled: true
@@ -37,8 +37,8 @@ _epoch_metrics_dict:
       t1: 1.0
       stepsize_controller:
         _target_: diffrax.ConstantStepSize
-      x0_mode: gaussian
-      project_velocity: false
+      x0_mode: ${....x0_mode}
+      project_velocity: ${....project_velocity}
     n_samples: null
     gen_batch_size: ${data.dataloader.batch_size}
     n_real: null
@@ -104,8 +104,8 @@ sample_fn:
     _target_: diffrax.PIDController
     rtol: 1e-3
     atol: 1e-6
-  x0_mode: gaussian
-  project_velocity: false
+  x0_mode: ${..x0_mode}
+  project_velocity: ${..project_velocity}
 sample_every: ${train.val_every}
 num_samples: 16
 samples_share_clim: false

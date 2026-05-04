@@ -240,10 +240,6 @@ def test_composed_config_hash_changes_for_clr_opt_in():
                 "work_dir=/tmp/msdflow-test",
                 "train.x0_mode=clr",
                 "train.project_velocity=true",
-                "train.loss_fn.project_velocity=true",
-                "train.batch_metrics.0.project_velocity=true",
-                "train.sample_fn.x0_mode=clr",
-                "train.sample_fn.project_velocity=true",
             ],
         )
 
@@ -263,6 +259,11 @@ def test_composed_config_hash_changes_for_clr_opt_in():
     assert payload_clr["train"]["project_velocity"] is True
     assert payload_clr["train"]["loss_fn"]["project_velocity"] is True
     assert payload_clr["train"]["batch_metrics"][0]["project_velocity"] is True
+    assert payload_clr["train"]["epoch_metrics"][0]["generate_fn"]["x0_mode"] == "clr"
+    assert (
+        payload_clr["train"]["epoch_metrics"][0]["generate_fn"]["project_velocity"]
+        is True
+    )
     assert payload_clr["train"]["sample_fn"]["x0_mode"] == "clr"
     assert payload_clr["train"]["sample_fn"]["project_velocity"] is True
 
