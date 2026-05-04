@@ -182,9 +182,13 @@ def build_image_percentiles(
 def parse_transform_names(
     transform,
 ):
-    """
-    Recursively extract transform class names from torchvision Compose objects
-    and transform-like objects that themselves contain a `.transforms` attribute.
+    """Recursively extract transform tokens used in TDigest cache filenames.
+
+    Args:
+        transform: Transform object or torchvision ``Compose`` pipeline.
+
+    Returns:
+        List of transform name tokens.
     """
     names = []
 
@@ -192,6 +196,10 @@ def parse_transform_names(
         for t in transform.transforms:
             names.extend(parse_transform_names(t))
         return names
+    elif transform is _identity:
+        names.append("function")
+    elif getattr(transform, "__class__", None).__name__ == "function":
+        names.append(f"function_{transform.__name__.lstrip('_')}")
     elif transform is not None:
         names.append(transform.__class__.__name__)
     return names
@@ -823,34 +831,167 @@ class GlobalNorm:
 
 
 class StandardizeTransform:
-    """Normalize images with explicit mean and standard deviation.
+    """Normalize images with explicit or dataset-derived mean and standard deviation.
+
+    Applies ``(img - mu) / sigma``. The statistics can be supplied directly or
+    derived from a TDigest built over transformed dataset pixels. Dataset-derived
+    mode mirrors `ArcsinhStretch` and `GlobalNorm`: it reads `metadata.csv`,
+    filters by split, supports optional file sampling and multiprocessing, and
+    caches the TDigest on disk.
 
     Args:
-        mu: Mean used for centering. Requires ``sigma``.
-        sigma: Standard deviation used for scaling. Must be finite and
-            positive.
+        mu: Mean used for centering. Direct mode requires both ``mu`` and
+            ``sigma``. Dataset-derived mode requires this to be ``None``.
+        sigma: Standard deviation used for scaling. Direct mode requires both
+            ``mu`` and ``sigma``. Must resolve to a finite positive value.
+        transforms: Pipeline applied to each image before accumulating into the
+            TDigest. Defaults to identity.
+        data_dir: Directory containing ``metadata.csv`` and ``.npy`` files.
+            Required for dataset-derived mode.
+        split: Split name used to filter ``metadata.csv`` when building the
+            TDigest. Defaults to ``"train"``. Pass ``None`` to use all rows.
+        sample_fraction: Fraction of the filtered file list to use when
+            building the TDigest. ``None`` uses all files. Defaults to
+            ``None``.
+        sample_seed: RNG seed for reproducible sampling. Only used when
+            ``sample_fraction`` is set. Defaults to ``42``.
+        n_workers: Number of multiprocessing workers for TDigest computation.
+            ``0`` means serial. Defaults to ``0``.
+        cache_dir: Directory for writing/reading TDigest cache files. Falls back
+            to ``data_dir`` when ``None``. Defaults to ``None``.
     """
 
-    def __init__(self, mu: float | None = None, sigma: float | None = None):
-        """Initialize direct standardization parameters.
+    def __init__(
+        self,
+        mu: float | None = None,
+        sigma: float | None = None,
+        transforms=None,
+        data_dir: str | None = None,
+        split: str | None = "train",
+        sample_fraction: float | None = None,
+        sample_seed: int = 42,
+        n_workers: int = 0,
+        cache_dir: str | None = None,
+    ):
+        """Initialize standardization parameters.
 
         Args:
             mu: Mean used for centering.
             sigma: Standard deviation used for scaling.
+            transforms: Pipeline applied before fitting TDigest statistics.
+            data_dir: Dataset directory for derived statistics.
+            split: Metadata split used for derived statistics.
+            sample_fraction: Optional fraction of files used for fitting.
+            sample_seed: RNG seed used for sampling.
+            n_workers: Number of multiprocessing workers.
+            cache_dir: Directory for TDigest cache files.
 
         Raises:
-            ValueError: If ``mu`` or ``sigma`` is missing, or if ``sigma`` is
-                not finite and positive.
+            ValueError: If construction mode is incomplete or mixed, or if the
+                resolved ``sigma`` is not finite and positive.
         """
-        if mu is None or sigma is None:
-            raise ValueError("Direct mode requires both mu and sigma.")
+        has_any_stat = (mu is not None) or (sigma is not None)
+        has_both_stats = (mu is not None) and (sigma is not None)
+        use_dataset = data_dir is not None
 
+        if (use_dataset and has_any_stat) or (not use_dataset and not has_both_stats):
+            raise ValueError(
+                "Must use either provided mu/sigma or dataset-derived statistics. "
+                + "You have provided:\n"
+                + f"   - mu: {mu}\n"
+                + f"   - sigma: {sigma}\n"
+                + f"   - data_dir: {data_dir}"
+            )
+
+        if transforms is None:
+            transforms = _identity
+        self.transforms = transforms
+        self.data_dir = data_dir
+        self.split = split
+        self.sample_fraction = sample_fraction
+        self.sample_seed = sample_seed
+        self.n_workers = n_workers
+        self.cache_dir = cache_dir if cache_dir is not None else data_dir
+
+        if has_both_stats:
+            self.mu = float(mu)
+            self.sigma = self._validate_sigma(sigma)
+            return
+
+        csv_path = os.path.join(data_dir, "metadata.csv")
+        metadata = pd.read_csv(csv_path)
+        filename = metadata["filename"].iloc[0]
+        img_size = _process_single_file(
+            data_dir=data_dir,
+            filename=filename,
+            transforms=transforms,
+        ).shape[-1]
+
+        suffix = _tdigest_cache_suffix(
+            img_size,
+            split,
+            sample_fraction,
+            sample_seed,
+            transforms,
+        )
+        os.makedirs(self.cache_dir, exist_ok=True)
+        tdigest_path = os.path.join(self.cache_dir, f"standardize_tdigest{suffix}.json")
+
+        if os.path.isfile(tdigest_path):
+            with open(tdigest_path, "r") as fp:
+                digest_dict = json.load(fp)
+            digest = TDigest.from_dict(digest_dict)
+        else:
+            digest = self._build_tdigest()
+            digest_dict = digest.to_dict()
+            with open(tdigest_path, "w") as fp:
+                json.dump(digest_dict, fp, indent=2)
+
+        self.mu = float(digest.mean())
+        self.sigma = self._validate_sigma(digest.std())
+
+    @staticmethod
+    def _validate_sigma(sigma: float) -> float:
+        """Return ``sigma`` as a float after validating it.
+
+        Args:
+            sigma: Candidate standard deviation.
+
+        Returns:
+            Validated standard deviation as a Python ``float``.
+
+        Raises:
+            ValueError: If ``sigma`` is not finite and positive.
+        """
         sigma = float(sigma)
         if not np.isfinite(sigma) or sigma <= 0.0:
             raise ValueError(f"sigma must be finite and positive, got {sigma}")
+        return sigma
 
-        self.mu = float(mu)
-        self.sigma = sigma
+    def _build_tdigest(self) -> TDigest:
+        """Build a TDigest over all transformed pixel values in the dataset.
+
+        Reads filenames from ``metadata.csv`` (filtered to ``self.split`` if
+        set), applies ``self.transforms`` to each image, and accumulates all
+        pixels into the digest to estimate global mean and standard deviation.
+
+        Returns:
+            Fitted ``TDigest`` instance.
+        """
+        csv_path = os.path.join(self.data_dir, "metadata.csv")
+        metadata = pd.read_csv(csv_path)
+        if self.split is not None:
+            metadata = metadata[metadata["split"] == self.split]
+        filenames = metadata["filename"].tolist()
+        filenames = _sample_filenames(filenames, self.sample_fraction, self.sample_seed)
+
+        return build_tdigest(
+            data_dir=self.data_dir,
+            filenames=filenames,
+            transforms=self.transforms,
+            pixel_filter=_flatten,
+            n_workers=self.n_workers,
+        )
 
     def __call__(self, img: np.ndarray) -> np.ndarray:
         """Apply mu-sigma standardization.

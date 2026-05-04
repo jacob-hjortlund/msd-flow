@@ -27,6 +27,18 @@ from msdflow.data.preprocess import (
 )
 
 
+def _double_image(img):
+    """Return an image with all pixel values doubled.
+
+    Args:
+        img: Input image array.
+
+    Returns:
+        Image array with each value multiplied by two.
+    """
+    return img * 2.0
+
+
 class TestSurfaceBrightnessToNanomaggies:
     """Tests for SurfaceBrightnessToNanomaggies transform."""
 
@@ -363,7 +375,7 @@ class TestStandardizeTransformDirect:
     )
     def test_rejects_missing_direct_parameters(self, kwargs):
         """Verify direct mode requires explicit mu and sigma."""
-        with pytest.raises(ValueError, match="Direct mode requires both mu and sigma"):
+        with pytest.raises(ValueError, match="Must use either"):
             StandardizeTransform(**kwargs)
 
     @pytest.mark.parametrize("sigma", [0.0, -1.0, np.inf, np.nan])
@@ -371,6 +383,203 @@ class TestStandardizeTransformDirect:
         """Verify invalid sigma values are rejected."""
         with pytest.raises(ValueError, match="sigma must be finite and positive"):
             StandardizeTransform(mu=0.0, sigma=sigma)
+
+
+class TestStandardizeTransformSplit:
+    """Tests for StandardizeTransform split-aware TDigest computation."""
+
+    @pytest.fixture
+    def split_dataset(self, tmp_path):
+        """Create dataset with train and validation rows."""
+        import pandas as pd
+
+        records = []
+        for i, value in enumerate([1.0, 3.0]):
+            name = f"galaxy_{i:05d}.npy"
+            np.save(tmp_path / name, np.full((1, 4, 4), value))
+            records.append({"filename": name, "split": "train"})
+
+        name = "galaxy_00002.npy"
+        np.save(tmp_path / name, np.full((1, 4, 4), 100.0))
+        records.append({"filename": name, "split": "val"})
+
+        pd.DataFrame(records).to_csv(tmp_path / "metadata.csv", index=False)
+        return str(tmp_path)
+
+    def test_tdigest_uses_train_only(self, split_dataset):
+        """Verify derived mu and sigma come from train data only."""
+        t = StandardizeTransform(
+            mu=None,
+            sigma=None,
+            data_dir=split_dataset,
+            split="train",
+        )
+
+        np.testing.assert_allclose(t.mu, 2.0)
+        np.testing.assert_allclose(t.sigma, 1.0)
+        np.testing.assert_allclose(
+            t(np.array([[[1.0, 2.0, 3.0]]])), [[[-1.0, 0.0, 1.0]]]
+        )
+
+    def test_tdigest_applies_transforms(self, split_dataset):
+        """Verify derived statistics come from transformed train data."""
+        t = StandardizeTransform(
+            mu=None,
+            sigma=None,
+            transforms=_double_image,
+            data_dir=split_dataset,
+            split="train",
+        )
+
+        np.testing.assert_allclose(t.mu, 4.0)
+        np.testing.assert_allclose(t.sigma, 2.0)
+
+    def test_tdigest_cache_distinguishes_bare_function_transforms(self, split_dataset):
+        """Verify custom bare functions do not reuse the identity TDigest cache."""
+        StandardizeTransform(
+            mu=None,
+            sigma=None,
+            data_dir=split_dataset,
+            split="train",
+        )
+        t = StandardizeTransform(
+            mu=None,
+            sigma=None,
+            transforms=_double_image,
+            data_dir=split_dataset,
+            split="train",
+        )
+
+        np.testing.assert_allclose(t.mu, 4.0)
+        np.testing.assert_allclose(t.sigma, 2.0)
+        assert os.path.isfile(
+            os.path.join(split_dataset, "standardize_tdigest_4_train_function.json")
+        )
+        assert os.path.isfile(
+            os.path.join(
+                split_dataset,
+                "standardize_tdigest_4_train_function_double_image.json",
+            )
+        )
+
+    def test_tdigest_cache_includes_split(self, split_dataset):
+        """Verify TDigest cache file includes image size, split, and transform name."""
+        StandardizeTransform(
+            mu=None,
+            sigma=None,
+            data_dir=split_dataset,
+            split="train",
+        )
+
+        assert os.path.isfile(
+            os.path.join(split_dataset, "standardize_tdigest_4_train_function.json")
+        )
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {},
+            {"mu": 0.0},
+            {"sigma": 1.0},
+            {"mu": 0.0, "sigma": 1.0, "data_dir": "/unused"},
+            {"mu": 0.0, "data_dir": "/unused"},
+            {"sigma": 1.0, "data_dir": "/unused"},
+        ],
+    )
+    def test_rejects_incomplete_or_mixed_modes(self, kwargs):
+        """Verify callers must choose direct mode or dataset-derived mode."""
+        with pytest.raises(ValueError, match="Must use either"):
+            StandardizeTransform(**kwargs)
+
+
+class TestStandardizeTransformCacheDir:
+    """Tests for StandardizeTransform cache_dir behavior."""
+
+    @pytest.fixture
+    def split_dirs(self, tmp_path):
+        """Create data_dir with .npy files and a separate empty cache_dir."""
+        import pandas as pd
+
+        data_dir = tmp_path / "data"
+        cache_dir = tmp_path / "cache"
+        data_dir.mkdir()
+        cache_dir.mkdir()
+
+        records = []
+        for i, value in enumerate([1.0, 3.0]):
+            name = f"galaxy_{i:05d}.npy"
+            np.save(data_dir / name, np.full((1, 4, 4), value))
+            records.append({"filename": name, "split": "train"})
+
+        pd.DataFrame(records).to_csv(data_dir / "metadata.csv", index=False)
+        return str(data_dir), str(cache_dir)
+
+    def test_writes_cache_to_cache_dir(self, split_dirs):
+        """Verify StandardizeTransform writes TDigest JSON to cache_dir."""
+        data_dir, cache_dir = split_dirs
+
+        StandardizeTransform(
+            mu=None,
+            sigma=None,
+            data_dir=data_dir,
+            split="train",
+            cache_dir=cache_dir,
+        )
+
+        assert os.path.isfile(
+            os.path.join(cache_dir, "standardize_tdigest_4_train_function.json")
+        )
+        assert not os.path.isfile(
+            os.path.join(data_dir, "standardize_tdigest_4_train_function.json")
+        )
+
+    def test_reads_existing_cache_from_cache_dir(self, split_dirs, monkeypatch):
+        """Verify repeated instantiation reads compatible statistics from cache_dir."""
+        data_dir, cache_dir = split_dirs
+
+        t1 = StandardizeTransform(
+            mu=None,
+            sigma=None,
+            data_dir=data_dir,
+            split="train",
+            cache_dir=cache_dir,
+        )
+
+        def fail_build_tdigest(self):
+            """Fail if cache lookup falls through to TDigest construction."""
+            raise AssertionError("cache was not read")
+
+        monkeypatch.setattr(
+            StandardizeTransform, "_build_tdigest", fail_build_tdigest
+        )
+
+        t2 = StandardizeTransform(
+            mu=None,
+            sigma=None,
+            data_dir=data_dir,
+            split="train",
+            cache_dir=cache_dir,
+        )
+
+        np.testing.assert_allclose(t1.mu, t2.mu)
+        np.testing.assert_allclose(t1.sigma, t2.sigma)
+
+    def test_creates_missing_cache_dir(self, split_dirs):
+        """Verify StandardizeTransform creates cache_dir before writing JSON."""
+        data_dir, _ = split_dirs
+        cache_dir = os.path.join(os.path.dirname(data_dir), "new_cache")
+
+        StandardizeTransform(
+            mu=None,
+            sigma=None,
+            data_dir=data_dir,
+            split="train",
+            cache_dir=cache_dir,
+        )
+
+        assert os.path.isfile(
+            os.path.join(cache_dir, "standardize_tdigest_4_train_function.json")
+        )
 
 
 class TestPercentileClip:
