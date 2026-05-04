@@ -822,6 +822,48 @@ class GlobalNorm:
         return img_norm * (self.norm_max - self.norm_min) + self.norm_min
 
 
+class StandardizeTransform:
+    """Normalize images with explicit mean and standard deviation.
+
+    Args:
+        mu: Mean used for centering. Requires ``sigma``.
+        sigma: Standard deviation used for scaling. Must be finite and
+            positive.
+    """
+
+    def __init__(self, mu: float | None = None, sigma: float | None = None):
+        """Initialize direct standardization parameters.
+
+        Args:
+            mu: Mean used for centering.
+            sigma: Standard deviation used for scaling.
+
+        Raises:
+            ValueError: If ``mu`` or ``sigma`` is missing, or if ``sigma`` is
+                not finite and positive.
+        """
+        if mu is None or sigma is None:
+            raise ValueError("Direct mode requires both mu and sigma.")
+
+        sigma = float(sigma)
+        if not np.isfinite(sigma) or sigma <= 0.0:
+            raise ValueError(f"sigma must be finite and positive, got {sigma}")
+
+        self.mu = float(mu)
+        self.sigma = sigma
+
+    def __call__(self, img: np.ndarray) -> np.ndarray:
+        """Apply mu-sigma standardization.
+
+        Args:
+            img: ``(C, H, W)`` array.
+
+        Returns:
+            Standardized array with the same shape as ``img``.
+        """
+        return (img - self.mu) / self.sigma
+
+
 class PercentileClip:
     """Clip image intensity by percentile value and normalize to [0, 1].
 

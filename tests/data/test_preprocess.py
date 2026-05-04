@@ -18,6 +18,7 @@ from msdflow.data.preprocess import (
     RandomHorizontalFlip,
     RandomRotation90,
     RandomVerticalFlip,
+    StandardizeTransform,
     SurfaceBrightnessToNanomaggies,
     _identity,
     build_tdigest,
@@ -329,6 +330,47 @@ class TestGlobalNormSplit:
         t = GlobalNorm(global_min=0.0, global_max=1.0)
         assert t.global_min == 0.0
         assert t.global_max == 1.0
+
+
+class TestStandardizeTransformDirect:
+    """Tests for direct StandardizeTransform parameters."""
+
+    def test_known_value(self):
+        """Verify direct standardization applies ``(img - mu) / sigma``."""
+        t = StandardizeTransform(mu=2.0, sigma=2.0)
+        img = np.array([[[0.0, 2.0, 4.0]]])
+
+        out = t(img)
+
+        np.testing.assert_allclose(out, [[[-1.0, 0.0, 1.0]]])
+
+    def test_preserves_shape(self):
+        """Verify output shape matches input."""
+        t = StandardizeTransform(mu=2.0, sigma=0.5)
+        img = np.ones((3, 8, 9))
+
+        out = t(img)
+
+        assert out.shape == img.shape
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"mu": None, "sigma": 1.0},
+            {"mu": 0.0, "sigma": None},
+            {},
+        ],
+    )
+    def test_rejects_missing_direct_parameters(self, kwargs):
+        """Verify direct mode requires explicit mu and sigma."""
+        with pytest.raises(ValueError, match="Direct mode requires both mu and sigma"):
+            StandardizeTransform(**kwargs)
+
+    @pytest.mark.parametrize("sigma", [0.0, -1.0, np.inf, np.nan])
+    def test_rejects_invalid_sigma(self, sigma):
+        """Verify invalid sigma values are rejected."""
+        with pytest.raises(ValueError, match="sigma must be finite and positive"):
+            StandardizeTransform(mu=0.0, sigma=sigma)
 
 
 class TestPercentileClip:
