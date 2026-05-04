@@ -10,6 +10,7 @@ from torchvision.transforms import Compose
 from msdflow.data.preprocess import (
     ArcsinhStretch,
     ClipAndPad,
+    CLRTransform,
     GlobalNorm,
     LinearNormalize,
     PDFNorm,
@@ -140,6 +141,60 @@ class TestPDFNorm:
         img = np.full((1, 4, 4), 1e-35)
         out = t(img)
         np.testing.assert_array_equal(out, img)
+
+
+class TestCLRTransform:
+    """Tests for CLRTransform."""
+
+    def test_handles_zero_pixels_and_returns_finite_output(self):
+        """CLRTransform should smooth exact zero pixels before taking logs."""
+        transform = CLRTransform(eps_mass=1e-6)
+        img = np.array(
+            [
+                [[0.0, 0.2], [0.3, 0.5]],
+                [[0.1, 0.0], [0.4, 0.5]],
+            ],
+            dtype=np.float32,
+        )
+
+        out = transform(img)
+
+        assert np.all(np.isfinite(out))
+
+    def test_preserves_input_shape(self):
+        """CLRTransform should preserve the input ``(C, H, W)`` shape."""
+        transform = CLRTransform(eps_mass=1e-6)
+        img = np.ones((3, 4, 5), dtype=np.float32) / 20.0
+
+        out = transform(img)
+
+        assert out.shape == img.shape
+
+    def test_output_is_sum_zero_per_channel(self):
+        """CLRTransform should center each channel independently."""
+        transform = CLRTransform(eps_mass=1e-6)
+        img = np.array(
+            [
+                [[0.1, 0.2], [0.3, 0.4]],
+                [[0.4, 0.3], [0.2, 0.1]],
+            ],
+            dtype=np.float32,
+        )
+
+        out = transform(img)
+
+        np.testing.assert_allclose(
+            np.sum(out, axis=(-2, -1)),
+            np.zeros((2,), dtype=out.dtype),
+            atol=1e-6,
+        )
+
+    def test_rejects_non_image_input(self):
+        """CLRTransform should require ``(C, H, W)`` input."""
+        transform = CLRTransform(eps_mass=1e-6)
+
+        with pytest.raises(ValueError, match="Expected image with shape"):
+            transform(np.ones((4, 4), dtype=np.float32))
 
 
 class TestArcsinhStretch:

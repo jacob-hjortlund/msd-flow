@@ -377,6 +377,46 @@ class PDFNorm:
         return img / total
 
 
+class CLRTransform:
+    """Apply centered log-ratio preprocessing per image channel.
+
+    Input is assumed to be normalized linear flux with shape ``(C, H, W)``.
+    Exact zero pixels are handled by epsilon mass smoothing before the log is
+    taken. Each channel is centered independently by subtracting its spatial
+    mean over ``H`` and ``W``.
+
+    Args:
+        eps_mass: Mass assigned to a uniform spatial background before taking
+            logs. Must be in ``[0, 1]``. Defaults to ``1e-6``.
+    """
+
+    def __init__(self, eps_mass: float = 1e-6):
+        if eps_mass < 0.0 or eps_mass > 1.0:
+            raise ValueError(f"eps_mass must be in [0, 1], got {eps_mass}")
+        self.eps_mass = float(eps_mass)
+
+    def __call__(self, img: np.ndarray) -> np.ndarray:
+        """Apply centered log-ratio preprocessing.
+
+        Args:
+            img: Input normalized linear flux image with shape ``(C, H, W)``.
+
+        Returns:
+            CLR-transformed image with the same shape as ``img``.
+
+        Raises:
+            ValueError: If ``img`` does not have shape ``(C, H, W)``.
+        """
+        if img.ndim != 3:
+            raise ValueError(f"Expected image with shape (C, H, W), got {img.shape}")
+
+        h, w = img.shape[-2:]
+        q = 1.0 / float(h * w)
+        smoothed = (1.0 - self.eps_mass) * img + self.eps_mass * q
+        log_img = np.log(smoothed)
+        return log_img - np.mean(log_img, axis=(-2, -1), keepdims=True)
+
+
 class ArcsinhStretch:
     """Apply arcsinh stretch to compress dynamic range.
 
