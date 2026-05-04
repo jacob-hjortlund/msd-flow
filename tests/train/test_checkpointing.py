@@ -57,6 +57,20 @@ def test_train_config_enables_time_loss_diagnostic_by_default():
     assert cfg.train.time_loss_diagnostic.log_heatmap is True
 
 
+def test_train_config_exposes_clr_defaults():
+    """Default train config should expose opt-in CLR controls as no-ops."""
+    cfg = OmegaConf.load("configs/train/train.yaml")
+
+    assert cfg.loss_fn.project_velocity is False
+    assert cfg.batch_metrics[0].project_velocity is False
+    assert cfg.x0_mode == "gaussian"
+    assert cfg.project_velocity is False
+    assert cfg["_epoch_metrics_dict"].fid_metric.generate_fn.x0_mode == "gaussian"
+    assert cfg["_epoch_metrics_dict"].fid_metric.generate_fn.project_velocity is False
+    assert cfg.sample_fn.x0_mode == "gaussian"
+    assert cfg.sample_fn.project_velocity is False
+
+
 def test_run_sh_uses_stable_checkpoint_root():
     """NERSC run script should not put resumable checkpoints in per-job RUN_DIR."""
     text = open("run.sh").read()
