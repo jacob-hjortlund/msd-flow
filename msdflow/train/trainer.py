@@ -840,7 +840,6 @@ def train(
     early_stopping_patience: int | None = None,
     grad_accum_steps: int = 1,
     buffer_size: int = 4,
-    x0_mode: str = "gaussian",
     data_parallel: Any = None,
     checkpoint_hash: str | None = None,
     hash_payload: dict | None = None,
@@ -852,6 +851,7 @@ def train(
     source_checkpoint_path: str | None = None,
     sigterm_flag_factory=SigtermFlag,
     *args,
+    x0_mode: str = "gaussian",
     time_loss_diagnostic: Any = None,
     **kwargs,
 ):

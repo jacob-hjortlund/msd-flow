@@ -2429,16 +2429,67 @@ def test_train_time_loss_diagnostic_keeps_positional_checkpoint_hash_binding():
         None,
         1,
         4,
-        "gaussian",
         None,
         sentinel_hash,
     ]
 
     bound = inspect.signature(train).bind_partial(*positional_args)
 
-    assert bound.arguments["x0_mode"] == "gaussian"
     assert bound.arguments["checkpoint_hash"] == sentinel_hash
+    assert "x0_mode" not in bound.arguments
     assert "time_loss_diagnostic" not in bound.arguments
+
+
+def test_train_forwards_x0_mode_to_prepare_batch(tmp_path):
+    """train() should forward keyword-only x0_mode to batch preparation."""
+
+    def fake_prepare_jax(images_np, cond_np, key):
+        batch_size = images_np.shape[0]
+        return (
+            jnp.zeros((batch_size,)),
+            jnp.zeros((batch_size, 1, 8, 8)),
+            jnp.zeros((batch_size, 1, 8, 8)),
+            jnp.zeros((batch_size, 0)),
+            jnp.zeros((batch_size,), dtype=bool),
+            jnp.zeros((batch_size, 2), dtype=jnp.uint32),
+        )
+
+    def fake_train_step(state, x_t, u_t, t, cond, cond_mask, key):
+        return state, jnp.array(0.0)
+
+    with (
+        patch("msdflow.train.trainer.make_train_step", return_value=fake_train_step),
+        patch(
+            "msdflow.train.trainer.make_prepare_batch_jax",
+            return_value=fake_prepare_jax,
+        ) as mock_make_prepare_batch_jax,
+        patch("msdflow.train.trainer.batch_metric_loop", return_value={}),
+    ):
+        train(
+            key=jax.random.PRNGKey(42),
+            model=_make_small_model(),
+            dataloader=_make_dataloader(steps=1),
+            val_dataloader=_make_dataloader(steps=1),
+            optimizer=OPTIMIZER,
+            loss_fn=lambda model, x_t, u_t, t, cond, cond_mask, key: jnp.mean(x_t),
+            batch_metrics=[],
+            epoch_metrics=[],
+            coupling=_COUPLING,
+            time_sampler=_time_sampler,
+            path_sampler=_PATH_SAMPLER,
+            num_epochs=1,
+            num_steps_per_epoch=1,
+            p_uncond=1.0,
+            ema_decay=0.999,
+            log_every=1,
+            val_every=1,
+            checkpoint_every=10,
+            checkpoint_dir=str(tmp_path),
+            clearml_task=None,
+            x0_mode="clr",
+        )
+
+    assert mock_make_prepare_batch_jax.call_args.kwargs["x0_mode"] == "clr"
 
 
 def test_train_time_loss_diagnostic_disabled_preserves_epoch_metric_key(tmp_path):
