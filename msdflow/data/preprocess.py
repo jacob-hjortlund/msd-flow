@@ -5,8 +5,10 @@ Each transform is a callable class with ``__init__`` for parameters and
 ``torchvision.transforms.Compose``.
 """
 
+import functools
 import os
 import json
+import types
 import torchvision
 
 import numpy as np
@@ -17,6 +19,11 @@ from tqdm import tqdm
 from fastdigest import TDigest
 from sklearn.cluster import KMeans
 from msdflow.data.random import WorkerSeededTransform
+
+
+_STANDARDIZE_TRANSFORM_METADATA_KEY = "_standardize_transform_metadata"
+_NON_CACHEABLE_TRANSFORM_METADATA = object()
+_UNSUPPORTED_METADATA_VALUE = object()
 
 
 def _identity(x):
@@ -203,6 +210,320 @@ def parse_transform_names(
     elif transform is not None:
         names.append(transform.__class__.__name__)
     return names
+
+
+def _json_safe_metadata_value(value):
+    """Convert a simple transform attribute value to JSON-safe metadata.
+
+    Args:
+        value: Attribute value to convert.
+
+    Returns:
+        JSON-safe value, or an internal sentinel when the value is not a simple
+        metadata value.
+    """
+    if isinstance(value, np.ndarray):
+        return _json_safe_metadata_value(value.tolist())
+
+    if isinstance(value, np.generic):
+        value = value.item()
+
+    if value is None or isinstance(value, (str, bool)):
+        return value
+    if isinstance(value, int):
+        return int(value)
+    if isinstance(value, float):
+        if not np.isfinite(value):
+            return _UNSUPPORTED_METADATA_VALUE
+        return float(value)
+    if isinstance(value, (list, tuple)):
+        converted = []
+        for item in value:
+            item_metadata = _json_safe_metadata_value(item)
+            if item_metadata is _UNSUPPORTED_METADATA_VALUE:
+                return _UNSUPPORTED_METADATA_VALUE
+            converted.append(item_metadata)
+        return converted
+    if isinstance(value, dict):
+        converted = {}
+        if any(not isinstance(key, str) for key in value):
+            return _UNSUPPORTED_METADATA_VALUE
+        for key in sorted(value):
+            item_metadata = _json_safe_metadata_value(value[key])
+            if item_metadata is _UNSUPPORTED_METADATA_VALUE:
+                return _UNSUPPORTED_METADATA_VALUE
+            converted[key] = item_metadata
+        return converted
+    return _UNSUPPORTED_METADATA_VALUE
+
+
+def _public_slot_names(transform) -> list[str]:
+    """Return public slot names defined across a transform class hierarchy.
+
+    Args:
+        transform: Transform instance whose class MRO should be inspected.
+
+    Returns:
+        Sorted public slot names, excluding private and special slots.
+    """
+    slot_names = set()
+    for cls in type(transform).__mro__:
+        slots = getattr(cls, "__slots__", ())
+        if isinstance(slots, str):
+            slots = (slots,)
+        for name in slots:
+            if (
+                isinstance(name, str)
+                and not name.startswith("_")
+                and name not in {"__dict__", "__weakref__"}
+            ):
+                slot_names.add(name)
+    return sorted(slot_names)
+
+
+def _public_transform_attributes(transform) -> dict | object:
+    """Build JSON-safe metadata for public transform instance attributes.
+
+    Args:
+        transform: Transform instance whose public attributes should be
+            inspected.
+
+    Returns:
+        Mapping of public attribute names to JSON-safe metadata values, or an
+        internal sentinel when any public attribute is not representable.
+    """
+    attrs = {}
+    for name, value in sorted(getattr(transform, "__dict__", {}).items()):
+        if name.startswith("_"):
+            continue
+        metadata_value = _json_safe_metadata_value(value)
+        if metadata_value is _UNSUPPORTED_METADATA_VALUE:
+            return _UNSUPPORTED_METADATA_VALUE
+        attrs[name] = metadata_value
+
+    for name in _public_slot_names(transform):
+        if name in attrs:
+            continue
+        try:
+            value = getattr(transform, name)
+        except AttributeError:
+            continue
+        metadata_value = _json_safe_metadata_value(value)
+        if metadata_value is _UNSUPPORTED_METADATA_VALUE:
+            return _UNSUPPORTED_METADATA_VALUE
+        attrs[name] = metadata_value
+    return attrs
+
+
+def _function_metadata(transform) -> dict | object:
+    """Build metadata for a Python function and its JSON-safe state.
+
+    Args:
+        transform: Python function to describe.
+
+    Returns:
+        JSON-safe function metadata, or an internal sentinel if function state
+        is not safely representable.
+    """
+    metadata = {
+        "type": "function",
+        "module": transform.__module__,
+        "name": transform.__qualname__,
+    }
+
+    defaults = getattr(transform, "__defaults__", None)
+    if defaults is not None:
+        defaults_metadata = _json_safe_metadata_value(defaults)
+        if defaults_metadata is _UNSUPPORTED_METADATA_VALUE:
+            return _NON_CACHEABLE_TRANSFORM_METADATA
+        metadata["defaults"] = defaults_metadata
+
+    kwdefaults = getattr(transform, "__kwdefaults__", None)
+    if kwdefaults is not None:
+        kwdefaults_metadata = _json_safe_metadata_value(kwdefaults)
+        if kwdefaults_metadata is _UNSUPPORTED_METADATA_VALUE:
+            return _NON_CACHEABLE_TRANSFORM_METADATA
+        metadata["kwdefaults"] = kwdefaults_metadata
+
+    closure = getattr(transform, "__closure__", None)
+    if closure:
+        closure_metadata = []
+        for cell in closure:
+            try:
+                cell_value = cell.cell_contents
+            except ValueError:
+                return _NON_CACHEABLE_TRANSFORM_METADATA
+            cell_metadata = _json_safe_metadata_value(cell_value)
+            if cell_metadata is _UNSUPPORTED_METADATA_VALUE:
+                return _NON_CACHEABLE_TRANSFORM_METADATA
+            closure_metadata.append(cell_metadata)
+        metadata["closure"] = closure_metadata
+
+    return metadata
+
+
+def _partial_metadata(transform: functools.partial) -> dict | object:
+    """Build metadata for a ``functools.partial`` transform.
+
+    Args:
+        transform: Partial callable to describe.
+
+    Returns:
+        JSON-safe partial metadata, or an internal sentinel if wrapped function
+        or partial state is not safely representable.
+    """
+    func_metadata = _transform_metadata(transform.func)
+    if func_metadata is _NON_CACHEABLE_TRANSFORM_METADATA:
+        return _NON_CACHEABLE_TRANSFORM_METADATA
+
+    args_metadata = _json_safe_metadata_value(transform.args)
+    if args_metadata is _UNSUPPORTED_METADATA_VALUE:
+        return _NON_CACHEABLE_TRANSFORM_METADATA
+
+    keywords_metadata = _json_safe_metadata_value(transform.keywords or {})
+    if keywords_metadata is _UNSUPPORTED_METADATA_VALUE:
+        return _NON_CACHEABLE_TRANSFORM_METADATA
+
+    attrs = _public_transform_attributes(transform)
+    if attrs is _UNSUPPORTED_METADATA_VALUE:
+        return _NON_CACHEABLE_TRANSFORM_METADATA
+
+    return {
+        "type": "partial",
+        "module": transform.__class__.__module__,
+        "class": transform.__class__.__qualname__,
+        "func": func_metadata,
+        "args": args_metadata,
+        "keywords": keywords_metadata,
+        "attrs": attrs,
+    }
+
+
+def _builtin_function_metadata(transform) -> dict:
+    """Build metadata for an unbound builtin function.
+
+    Args:
+        transform: Builtin function to describe.
+
+    Returns:
+        JSON-safe builtin function metadata.
+    """
+    return {
+        "type": "builtin_function_or_method",
+        "module": getattr(transform, "__module__", None),
+        "name": transform.__name__,
+        "qualname": getattr(transform, "__qualname__", transform.__name__),
+    }
+
+
+def _is_cacheable_stateless_transform(transform) -> bool:
+    """Return whether a no-attrs transform has a safe stateless identity.
+
+    Args:
+        transform: Transform object to inspect.
+
+    Returns:
+        ``True`` when the transform is a first-party stateless transform whose
+        module and class identity safely represent its behavior.
+    """
+    transform_class = transform.__class__
+    return (
+        callable(transform)
+        and transform_class.__module__ == __name__
+        and transform_class.__init__ is object.__init__
+    )
+
+
+def _transform_metadata(transform) -> dict | object:
+    """Build JSON-stable metadata describing a transform pipeline.
+
+    Args:
+        transform: Transform object, bare function, or torchvision
+            ``Compose`` pipeline.
+
+    Returns:
+        JSON-safe metadata describing transform identity and simple public
+        configuration, or an internal sentinel if any public configuration is
+        not safely representable.
+    """
+    if isinstance(transform, torchvision.transforms.Compose):
+        transform_metadata = [_transform_metadata(t) for t in transform.transforms]
+        if any(
+            metadata is _NON_CACHEABLE_TRANSFORM_METADATA
+            for metadata in transform_metadata
+        ):
+            return _NON_CACHEABLE_TRANSFORM_METADATA
+        return {
+            "type": "compose",
+            "module": transform.__class__.__module__,
+            "class": transform.__class__.__qualname__,
+            "transforms": transform_metadata,
+        }
+
+    if isinstance(transform, functools.partial):
+        return _partial_metadata(transform)
+
+    if isinstance(transform, np.ufunc):
+        return {
+            "type": "ufunc",
+            "module": getattr(transform, "__module__", np.__name__) or np.__name__,
+            "name": transform.__name__,
+        }
+
+    if getattr(transform, "__class__", None).__name__ == "function":
+        return _function_metadata(transform)
+
+    if isinstance(transform, types.MethodType):
+        return _NON_CACHEABLE_TRANSFORM_METADATA
+
+    if isinstance(transform, types.BuiltinFunctionType):
+        bound_self = getattr(transform, "__self__", None)
+        if bound_self is not None and not isinstance(bound_self, types.ModuleType):
+            return _NON_CACHEABLE_TRANSFORM_METADATA
+        return _builtin_function_metadata(transform)
+
+    if isinstance(transform, type):
+        attrs = _public_transform_attributes(transform)
+        if attrs is _UNSUPPORTED_METADATA_VALUE:
+            return _NON_CACHEABLE_TRANSFORM_METADATA
+        return {
+            "type": "class",
+            "module": transform.__module__,
+            "class": transform.__qualname__,
+            "attrs": attrs,
+        }
+
+    if transform is None:
+        return {"type": "none"}
+
+    transform_class = transform.__class__
+    attrs = _public_transform_attributes(transform)
+    if attrs is _UNSUPPORTED_METADATA_VALUE:
+        return _NON_CACHEABLE_TRANSFORM_METADATA
+    if callable(transform) and not attrs and not _is_cacheable_stateless_transform(
+        transform
+    ):
+        return _NON_CACHEABLE_TRANSFORM_METADATA
+    return {
+        "type": "object",
+        "module": transform_class.__module__,
+        "class": transform_class.__qualname__,
+        "attrs": attrs,
+    }
+
+
+def _tdigest_payload_without_private_metadata(digest_dict: dict) -> dict:
+    """Return a TDigest payload with StandardizeTransform metadata removed.
+
+    Args:
+        digest_dict: Loaded TDigest cache dictionary.
+
+    Returns:
+        Copy of ``digest_dict`` without private standardization metadata.
+    """
+    payload = dict(digest_dict)
+    payload.pop(_STANDARDIZE_TRANSFORM_METADATA_KEY, None)
+    return payload
 
 
 def _tdigest_cache_suffix(
@@ -936,16 +1257,28 @@ class StandardizeTransform:
         )
         os.makedirs(self.cache_dir, exist_ok=True)
         tdigest_path = os.path.join(self.cache_dir, f"standardize_tdigest{suffix}.json")
+        expected_metadata = _transform_metadata(self.transforms)
+        cacheable_metadata = expected_metadata is not _NON_CACHEABLE_TRANSFORM_METADATA
+        digest = None
 
-        if os.path.isfile(tdigest_path):
+        if cacheable_metadata and os.path.isfile(tdigest_path):
             with open(tdigest_path, "r") as fp:
                 digest_dict = json.load(fp)
-            digest = TDigest.from_dict(digest_dict)
-        else:
+            if (
+                digest_dict.get(_STANDARDIZE_TRANSFORM_METADATA_KEY)
+                == expected_metadata
+            ):
+                digest = TDigest.from_dict(
+                    _tdigest_payload_without_private_metadata(digest_dict)
+                )
+
+        if digest is None:
             digest = self._build_tdigest()
-            digest_dict = digest.to_dict()
-            with open(tdigest_path, "w") as fp:
-                json.dump(digest_dict, fp, indent=2)
+            if cacheable_metadata:
+                digest_dict = digest.to_dict()
+                digest_dict[_STANDARDIZE_TRANSFORM_METADATA_KEY] = expected_metadata
+                with open(tdigest_path, "w") as fp:
+                    json.dump(digest_dict, fp, indent=2)
 
         self.mu = float(digest.mean())
         self.sigma = self._validate_sigma(digest.std())

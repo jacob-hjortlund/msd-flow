@@ -1,10 +1,13 @@
 """Tests for msdflow.data.preprocess."""
 
+import functools
+import json
 import os
 from pathlib import Path
 
 from hydra import compose, initialize_config_dir
 from hydra.utils import instantiate
+from fastdigest import TDigest
 import numpy as np
 import pytest
 
@@ -28,6 +31,7 @@ from msdflow.data.preprocess import (
     build_tdigest,
     _filter_positive,
     _flatten,
+    _transform_metadata,
 )
 
 
@@ -41,6 +45,170 @@ def _double_image(img):
         Image array with each value multiplied by two.
     """
     return img * 2.0
+
+
+def _scale_image_for_cache_test(img, factor: float = 1.0):
+    """Scale an image by a configurable factor for cache tests.
+
+    Args:
+        img: Input image array.
+        factor: Multiplicative scale applied to input images.
+
+    Returns:
+        Scaled image array.
+    """
+    return img * factor
+
+
+def _make_default_scale_image_for_cache_test(factor: float):
+    """Create a function transform with scale stored in defaults.
+
+    Args:
+        factor: Multiplicative scale applied to input images.
+
+    Returns:
+        Function transform with the scale stored in ``__defaults__``.
+    """
+
+    def scale(img, factor=factor):
+        """Scale an image using a default argument.
+
+        Args:
+            img: Input image array.
+            factor: Multiplicative scale applied to input images.
+
+        Returns:
+            Scaled image array.
+        """
+        return img * factor
+
+    return scale
+
+
+class ScaleImageForCacheTest:
+    """Scale images by a constant factor for standardization cache tests.
+
+    Args:
+        factor: Multiplicative scale applied to input images.
+    """
+
+    def __init__(self, factor: float):
+        """Initialize the scale transform.
+
+        Args:
+            factor: Multiplicative scale applied to input images.
+        """
+        self.factor = factor
+
+    def __call__(self, img: np.ndarray) -> np.ndarray:
+        """Scale an image.
+
+        Args:
+            img: Input image array.
+
+        Returns:
+            Scaled image array.
+        """
+        return img * self.factor
+
+
+class SlottedScaleImageForCacheTest:
+    """Scale images using a slot-only public factor.
+
+    Args:
+        factor: Multiplicative scale applied to input images.
+    """
+
+    __slots__ = ("factor",)
+
+    def __init__(self, factor: float):
+        """Initialize the slotted scale transform.
+
+        Args:
+            factor: Multiplicative scale applied to input images.
+        """
+        self.factor = factor
+
+    def __call__(self, img: np.ndarray) -> np.ndarray:
+        """Scale an image.
+
+        Args:
+            img: Input image array.
+
+        Returns:
+            Scaled image array.
+        """
+        return img * self.factor
+
+
+class ArrayScaleImageForCacheTest:
+    """Scale images using an ndarray-valued public config.
+
+    Args:
+        scale_config: Array whose first value is the multiplicative scale.
+    """
+
+    def __init__(self, scale_config: np.ndarray):
+        """Initialize the ndarray-configured scale transform.
+
+        Args:
+            scale_config: Array whose first value is the multiplicative scale.
+        """
+        self.scale_config = scale_config
+
+    def __call__(self, img: np.ndarray) -> np.ndarray:
+        """Scale an image.
+
+        Args:
+            img: Input image array.
+
+        Returns:
+            Scaled image array.
+        """
+        return img * float(self.scale_config[0])
+
+
+class UnsupportedMetadataTransformForCacheTest:
+    """Scale images while exposing unsupported public metadata.
+
+    Args:
+        factor: Multiplicative scale applied to input images.
+    """
+
+    def __init__(self, factor: float):
+        """Initialize the transform with an unsupported public attr.
+
+        Args:
+            factor: Multiplicative scale applied to input images.
+        """
+        self.factor = factor
+        self.unsupported_config = object()
+
+    def __call__(self, img: np.ndarray) -> np.ndarray:
+        """Scale an image.
+
+        Args:
+            img: Input image array.
+
+        Returns:
+            Scaled image array.
+        """
+        return img * self.factor
+
+
+class NoPublicAttrsCallableForCacheTest:
+    """Scale images without exposing public cache metadata attrs."""
+
+    def __call__(self, img: np.ndarray) -> np.ndarray:
+        """Scale an image.
+
+        Args:
+            img: Input image array.
+
+        Returns:
+            Scaled image array.
+        """
+        return img * 2.0
 
 
 class TestSurfaceBrightnessToNanomaggies:
@@ -567,6 +735,356 @@ class TestStandardizeTransformCacheDir:
 
         np.testing.assert_allclose(t1.mu, t2.mu)
         np.testing.assert_allclose(t1.sigma, t2.sigma)
+
+    def test_rebuilds_cache_when_transform_configuration_changes(self, split_dirs):
+        """Verify transform parameter changes invalidate StandardizeTransform cache."""
+        data_dir, cache_dir = split_dirs
+
+        t1 = StandardizeTransform(
+            mu=None,
+            sigma=None,
+            transforms=ScaleImageForCacheTest(2.0),
+            data_dir=data_dir,
+            split="train",
+            cache_dir=cache_dir,
+        )
+        t2 = StandardizeTransform(
+            mu=None,
+            sigma=None,
+            transforms=ScaleImageForCacheTest(3.0),
+            data_dir=data_dir,
+            split="train",
+            cache_dir=cache_dir,
+        )
+
+        np.testing.assert_allclose(t1.mu, 4.0)
+        np.testing.assert_allclose(t1.sigma, 2.0)
+        np.testing.assert_allclose(t2.mu, 6.0)
+        np.testing.assert_allclose(t2.sigma, 3.0)
+        assert os.path.isfile(
+            os.path.join(
+                cache_dir,
+                "standardize_tdigest_4_train_ScaleImageForCacheTest.json",
+            )
+        )
+
+    def test_same_metadata_custom_object_reuses_cache(
+        self,
+        split_dirs,
+        monkeypatch,
+    ):
+        """Verify public-attr callable objects with same metadata reuse cache."""
+        data_dir, cache_dir = split_dirs
+
+        t1 = StandardizeTransform(
+            mu=None,
+            sigma=None,
+            transforms=ScaleImageForCacheTest(2.0),
+            data_dir=data_dir,
+            split="train",
+            cache_dir=cache_dir,
+        )
+
+        def fail_build_tdigest(self):
+            """Fail if compatible custom object cache is not read."""
+            raise AssertionError("cache was not read")
+
+        monkeypatch.setattr(
+            StandardizeTransform, "_build_tdigest", fail_build_tdigest
+        )
+
+        t2 = StandardizeTransform(
+            mu=None,
+            sigma=None,
+            transforms=ScaleImageForCacheTest(2.0),
+            data_dir=data_dir,
+            split="train",
+            cache_dir=cache_dir,
+        )
+
+        np.testing.assert_allclose(t1.mu, t2.mu)
+        np.testing.assert_allclose(t1.sigma, t2.sigma)
+
+    def test_rebuilds_cache_when_slotted_transform_configuration_changes(
+        self,
+        split_dirs,
+    ):
+        """Verify slot-only public attrs participate in cache metadata."""
+        data_dir, cache_dir = split_dirs
+
+        t1 = StandardizeTransform(
+            mu=None,
+            sigma=None,
+            transforms=SlottedScaleImageForCacheTest(2.0),
+            data_dir=data_dir,
+            split="train",
+            cache_dir=cache_dir,
+        )
+        t2 = StandardizeTransform(
+            mu=None,
+            sigma=None,
+            transforms=SlottedScaleImageForCacheTest(3.0),
+            data_dir=data_dir,
+            split="train",
+            cache_dir=cache_dir,
+        )
+
+        np.testing.assert_allclose(t1.mu, 4.0)
+        np.testing.assert_allclose(t1.sigma, 2.0)
+        np.testing.assert_allclose(t2.mu, 6.0)
+        np.testing.assert_allclose(t2.sigma, 3.0)
+        assert os.path.isfile(
+            os.path.join(
+                cache_dir,
+                "standardize_tdigest_4_train_SlottedScaleImageForCacheTest.json",
+            )
+        )
+
+    def test_rebuilds_cache_when_ndarray_transform_configuration_changes(
+        self,
+        split_dirs,
+    ):
+        """Verify ndarray public attrs participate in cache metadata."""
+        data_dir, cache_dir = split_dirs
+
+        t1 = StandardizeTransform(
+            mu=None,
+            sigma=None,
+            transforms=ArrayScaleImageForCacheTest(np.array([2.0])),
+            data_dir=data_dir,
+            split="train",
+            cache_dir=cache_dir,
+        )
+        t2 = StandardizeTransform(
+            mu=None,
+            sigma=None,
+            transforms=ArrayScaleImageForCacheTest(np.array([3.0])),
+            data_dir=data_dir,
+            split="train",
+            cache_dir=cache_dir,
+        )
+
+        np.testing.assert_allclose(t1.mu, 4.0)
+        np.testing.assert_allclose(t1.sigma, 2.0)
+        np.testing.assert_allclose(t2.mu, 6.0)
+        np.testing.assert_allclose(t2.sigma, 3.0)
+        assert os.path.isfile(
+            os.path.join(
+                cache_dir,
+                "standardize_tdigest_4_train_ArrayScaleImageForCacheTest.json",
+            )
+        )
+
+    def test_rebuilds_cache_when_partial_transform_configuration_changes(
+        self,
+        split_dirs,
+    ):
+        """Verify ``functools.partial`` state participates in cache metadata."""
+        data_dir, cache_dir = split_dirs
+
+        t1 = StandardizeTransform(
+            mu=None,
+            sigma=None,
+            transforms=functools.partial(_scale_image_for_cache_test, factor=2.0),
+            data_dir=data_dir,
+            split="train",
+            cache_dir=cache_dir,
+        )
+        t2 = StandardizeTransform(
+            mu=None,
+            sigma=None,
+            transforms=functools.partial(_scale_image_for_cache_test, factor=3.0),
+            data_dir=data_dir,
+            split="train",
+            cache_dir=cache_dir,
+        )
+
+        np.testing.assert_allclose(t1.mu, 4.0)
+        np.testing.assert_allclose(t1.sigma, 2.0)
+        np.testing.assert_allclose(t2.mu, 6.0)
+        np.testing.assert_allclose(t2.sigma, 3.0)
+        assert os.path.isfile(
+            os.path.join(cache_dir, "standardize_tdigest_4_train_partial.json")
+        )
+
+    def test_rebuilds_cache_when_function_defaults_change(self, split_dirs):
+        """Verify function default state participates in cache metadata."""
+        data_dir, cache_dir = split_dirs
+
+        t1 = StandardizeTransform(
+            mu=None,
+            sigma=None,
+            transforms=_make_default_scale_image_for_cache_test(2.0),
+            data_dir=data_dir,
+            split="train",
+            cache_dir=cache_dir,
+        )
+        t2 = StandardizeTransform(
+            mu=None,
+            sigma=None,
+            transforms=_make_default_scale_image_for_cache_test(3.0),
+            data_dir=data_dir,
+            split="train",
+            cache_dir=cache_dir,
+        )
+
+        np.testing.assert_allclose(t1.mu, 4.0)
+        np.testing.assert_allclose(t1.sigma, 2.0)
+        np.testing.assert_allclose(t2.mu, 6.0)
+        np.testing.assert_allclose(t2.sigma, 3.0)
+        assert os.path.isfile(
+            os.path.join(cache_dir, "standardize_tdigest_4_train_function_scale.json")
+        )
+
+    def test_ufunc_metadata_includes_function_name(self):
+        """Verify NumPy ufunc metadata distinguishes functions by name."""
+        log_metadata = _transform_metadata(np.log)
+        sqrt_metadata = _transform_metadata(np.sqrt)
+
+        assert log_metadata != sqrt_metadata
+        assert log_metadata["type"] == "ufunc"
+        assert log_metadata["name"] == "log"
+        assert sqrt_metadata["name"] == "sqrt"
+
+    def test_builtin_callable_metadata_includes_function_name(self):
+        """Verify builtin callable metadata distinguishes functions by name."""
+        abs_metadata = _transform_metadata(abs)
+        round_metadata = _transform_metadata(round)
+
+        assert abs_metadata != round_metadata
+        assert abs_metadata["type"] == "builtin_function_or_method"
+        assert abs_metadata["name"] == "abs"
+        assert round_metadata["name"] == "round"
+
+    def test_unsupported_transform_metadata_does_not_trust_cache(
+        self,
+        split_dirs,
+        monkeypatch,
+    ):
+        """Verify unsupported public attrs make metadata non-cacheable."""
+        data_dir, cache_dir = split_dirs
+        cache_path = os.path.join(
+            cache_dir,
+            "standardize_tdigest_4_train_UnsupportedMetadataTransformForCacheTest.json",
+        )
+
+        StandardizeTransform(
+            mu=None,
+            sigma=None,
+            transforms=UnsupportedMetadataTransformForCacheTest(2.0),
+            data_dir=data_dir,
+            split="train",
+            cache_dir=cache_dir,
+        )
+        assert not os.path.exists(cache_path)
+
+        def fail_build_tdigest(self):
+            """Fail when cache lookup correctly falls through to rebuilding."""
+            raise AssertionError("cache was intentionally not trusted")
+
+        monkeypatch.setattr(
+            StandardizeTransform, "_build_tdigest", fail_build_tdigest
+        )
+
+        with pytest.raises(AssertionError, match="cache was intentionally not trusted"):
+            StandardizeTransform(
+                mu=None,
+                sigma=None,
+                transforms=UnsupportedMetadataTransformForCacheTest(2.0),
+                data_dir=data_dir,
+                split="train",
+                cache_dir=cache_dir,
+            )
+
+    def test_unknown_callable_without_public_attrs_does_not_trust_cache(
+        self,
+        split_dirs,
+        monkeypatch,
+    ):
+        """Verify callable objects without public state are non-cacheable."""
+        data_dir, cache_dir = split_dirs
+        cache_path = os.path.join(
+            cache_dir,
+            "standardize_tdigest_4_train_NoPublicAttrsCallableForCacheTest.json",
+        )
+
+        StandardizeTransform(
+            mu=None,
+            sigma=None,
+            transforms=NoPublicAttrsCallableForCacheTest(),
+            data_dir=data_dir,
+            split="train",
+            cache_dir=cache_dir,
+        )
+        assert not os.path.exists(cache_path)
+
+        digest = TDigest()
+        digest.batch_update(np.array([100.0, 101.0]))
+        digest_payload = digest.to_dict()
+        digest_payload["_standardize_transform_metadata"] = {
+            "type": "object",
+            "module": NoPublicAttrsCallableForCacheTest.__module__,
+            "class": NoPublicAttrsCallableForCacheTest.__qualname__,
+            "attrs": {},
+        }
+        with open(cache_path, "w") as fp:
+            json.dump(digest_payload, fp, indent=2)
+        assert os.path.exists(cache_path)
+
+        def fail_build_tdigest(self):
+            """Fail when cache lookup correctly falls through to rebuilding."""
+            raise AssertionError("cache was intentionally not trusted")
+
+        monkeypatch.setattr(
+            StandardizeTransform, "_build_tdigest", fail_build_tdigest
+        )
+
+        with pytest.raises(AssertionError, match="cache was intentionally not trusted"):
+            StandardizeTransform(
+                mu=None,
+                sigma=None,
+                transforms=NoPublicAttrsCallableForCacheTest(),
+                data_dir=data_dir,
+                split="train",
+                cache_dir=cache_dir,
+            )
+
+    def test_legacy_cache_without_metadata_is_rebuilt(self, split_dirs):
+        """Verify metadata-free legacy cache payloads are overwritten."""
+        data_dir, cache_dir = split_dirs
+        cache_path = os.path.join(
+            cache_dir,
+            "standardize_tdigest_4_train_ScaleImageForCacheTest.json",
+        )
+
+        legacy = StandardizeTransform(
+            mu=None,
+            sigma=None,
+            transforms=ScaleImageForCacheTest(2.0),
+            data_dir=data_dir,
+            split="train",
+            cache_dir=cache_dir,
+        )
+        with open(cache_path, "r") as fp:
+            legacy_payload = json.load(fp)
+        legacy_payload.pop("_standardize_transform_metadata")
+        with open(cache_path, "w") as fp:
+            json.dump(legacy_payload, fp, indent=2)
+
+        rebuilt = StandardizeTransform(
+            mu=None,
+            sigma=None,
+            transforms=ScaleImageForCacheTest(3.0),
+            data_dir=data_dir,
+            split="train",
+            cache_dir=cache_dir,
+        )
+
+        np.testing.assert_allclose(legacy.mu, 4.0)
+        np.testing.assert_allclose(rebuilt.mu, 6.0)
+        with open(cache_path, "r") as fp:
+            rebuilt_payload = json.load(fp)
+        assert "_standardize_transform_metadata" in rebuilt_payload
 
     def test_creates_missing_cache_dir(self, split_dirs):
         """Verify StandardizeTransform creates cache_dir before writing JSON."""
