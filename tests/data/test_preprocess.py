@@ -1,10 +1,14 @@
 """Tests for msdflow.data.preprocess."""
 
 import os
+from pathlib import Path
 
+from hydra import compose, initialize_config_dir
+from hydra.utils import instantiate
 import numpy as np
 import pytest
 
+from omegaconf import OmegaConf
 from torchvision.transforms import Compose
 
 from msdflow.data.preprocess import (
@@ -1382,3 +1386,107 @@ class TestClusterClipDerived:
         )
         assert t_pos.max > t_all.max
         np.testing.assert_allclose(t_pos.max, np.sqrt(10.0), rtol=1e-3)
+
+
+def test_clr_transform_config_defines_standardized_pipeline():
+    """Verify the CLR transform config wires the expected deterministic pipeline."""
+    cfg = OmegaConf.load("configs/data/transforms/clr.yaml")
+    raw = OmegaConf.to_container(cfg, resolve=False)
+
+    pre_clr_transforms = raw["pre_clr_transforms"]["transforms"]
+    assert [
+        transform["_target_"] for transform in pre_clr_transforms
+    ] == [
+        "msdflow.data.preprocess.SurfaceBrightnessToNanomaggies",
+        "msdflow.data.preprocess.ClipAndPad",
+        "msdflow.data.preprocess.Downsample",
+        "msdflow.data.preprocess.PDFNorm",
+    ]
+    assert pre_clr_transforms[0]["mag_threshold"] == 99.0
+    assert pre_clr_transforms[1]["n"] == "${clip_pad_size}"
+    assert pre_clr_transforms[2]["target_size"] == "${image_size}"
+    assert raw["sample_fraction"] == 0.1
+    assert raw["sample_seed"] == 42
+    assert raw["n_workers"] == 10
+
+    clr_cfg = raw["clr_transform"]["transforms"][0]
+    assert clr_cfg["_target_"] == "msdflow.data.preprocess.CLRTransform"
+    assert clr_cfg["eps_mass"] == 1e-6
+
+    standardize_cfg = raw["standardize_transform"]["transforms"][0]
+    assert standardize_cfg["_target_"] == "msdflow.data.preprocess.StandardizeTransform"
+    assert standardize_cfg["mu"] is None
+    assert standardize_cfg["sigma"] is None
+    assert standardize_cfg["data_dir"] == "${data.dataloader.data_dir}"
+    assert standardize_cfg["cache_dir"] == "${data.dataloader.cache_dir}"
+    assert standardize_cfg["transforms"]["transforms"] == [
+        "${data.dataloader.transforms.pre_clr_transforms}",
+        "${data.dataloader.transforms.clr_transform}",
+    ]
+    assert standardize_cfg["split"] == "train"
+    assert (
+        standardize_cfg["sample_fraction"]
+        == "${data.dataloader.transforms.sample_fraction}"
+    )
+    assert standardize_cfg["sample_seed"] == "${data.dataloader.transforms.sample_seed}"
+    assert standardize_cfg["n_workers"] == "${data.dataloader.transforms.n_workers}"
+
+    assert raw["deterministic"]["transforms"] == [
+        "${data.dataloader.transforms.pre_clr_transforms}",
+        "${data.dataloader.transforms.clr_transform}",
+        "${data.dataloader.transforms.standardize_transform}",
+    ]
+
+
+def test_clr_transform_config_instantiates_val_dataset(tmp_path):
+    """Verify Hydra can instantiate the CLR val dataset and fit standardization."""
+    import pandas as pd
+
+    data_dir = tmp_path / "data"
+    cache_dir = tmp_path / "cache"
+    data_dir.mkdir()
+    cache_dir.mkdir()
+
+    pattern = np.array(
+        [
+            [22.0, 22.1, 22.2, 22.3],
+            [22.2, 22.0, 22.3, 22.1],
+            [22.4, 22.1, 22.0, 22.2],
+            [22.3, 22.2, 22.1, 22.0],
+        ],
+        dtype=np.float32,
+    )
+    records = [
+        ("galaxy_train_00000.npy", "train", pattern),
+        ("galaxy_train_00001.npy", "train", pattern.T + 0.05),
+        ("galaxy_val_00000.npy", "val", np.flip(pattern, axis=0) + 0.1),
+    ]
+    for filename, split, image in records:
+        np.save(data_dir / filename, image[np.newaxis, :, :])
+    pd.DataFrame(
+        [{"filename": filename, "split": split} for filename, split, _ in records]
+    ).to_csv(data_dir / "metadata.csv", index=False)
+
+    with initialize_config_dir(
+        config_dir=str(Path("configs").resolve()),
+        version_base=None,
+    ):
+        cfg = compose(
+            config_name="config",
+            overrides=[
+                "data/transforms@data.dataloader.transforms=clr",
+                f"data.dataloader.data_dir={data_dir}",
+                f"data.dataloader.cache_dir={cache_dir}",
+                "clip_pad_size=4",
+                "image_size=4",
+                "data.dataloader.transforms.n_workers=0",
+                "data.dataloader.transforms.sample_fraction=null",
+            ],
+        )
+
+    dataset = instantiate(cfg.data.dataloader.val_dataset)
+    image, _ = dataset[0]
+
+    assert image.shape == (1, 4, 4)
+    assert np.isfinite(image.numpy()).all()
+    assert list(cache_dir.glob("standardize_tdigest*.json"))

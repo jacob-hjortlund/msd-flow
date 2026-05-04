@@ -1,0 +1,47 @@
+# data/transforms/clr.yaml
+
+pre_clr_transforms:
+  _target_: torchvision.transforms.Compose
+  transforms:
+    - _target_: msdflow.data.preprocess.SurfaceBrightnessToNanomaggies
+      mag_threshold: 99.0
+    - _target_: msdflow.data.preprocess.ClipAndPad
+      n: ${clip_pad_size}
+    - _target_: msdflow.data.preprocess.Downsample
+      target_size: ${image_size}
+    - _target_: msdflow.data.preprocess.PDFNorm
+
+sample_fraction: 0.1
+sample_seed: 42
+n_workers: 10
+
+clr_transform:
+  _target_: torchvision.transforms.Compose
+  transforms:
+    - _target_: msdflow.data.preprocess.CLRTransform
+      eps_mass: 1e-6
+
+standardize_transform:
+  _target_: torchvision.transforms.Compose
+  transforms:
+    - _target_: msdflow.data.preprocess.StandardizeTransform
+      mu: null
+      sigma: null
+      transforms:
+        _target_: torchvision.transforms.Compose
+        transforms:
+          - ${data.dataloader.transforms.pre_clr_transforms}
+          - ${data.dataloader.transforms.clr_transform}
+      data_dir: ${data.dataloader.data_dir}
+      split: train
+      sample_fraction: ${data.dataloader.transforms.sample_fraction}
+      sample_seed: ${data.dataloader.transforms.sample_seed}
+      n_workers: ${data.dataloader.transforms.n_workers}
+      cache_dir: ${data.dataloader.cache_dir}
+
+deterministic:
+  _target_: torchvision.transforms.Compose
+  transforms:
+    - ${data.dataloader.transforms.pre_clr_transforms}
+    - ${data.dataloader.transforms.clr_transform}
+    - ${data.dataloader.transforms.standardize_transform}
