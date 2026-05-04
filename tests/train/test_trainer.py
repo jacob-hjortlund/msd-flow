@@ -2393,7 +2393,7 @@ def test_train_time_loss_diagnostic_noop_ignores_malformed_config_without_clearm
 
 
 def test_train_time_loss_diagnostic_keeps_positional_checkpoint_hash_binding():
-    """Old positional checkpoint_hash calls should not bind to diagnostics."""
+    """Positional checkpoint_hash calls should not bind to diagnostics."""
     sentinel_hash = "old-positional-hash"
     positional_args = [
         jax.random.PRNGKey(41),
@@ -2429,12 +2429,14 @@ def test_train_time_loss_diagnostic_keeps_positional_checkpoint_hash_binding():
         None,
         1,
         4,
+        "gaussian",
         None,
         sentinel_hash,
     ]
 
     bound = inspect.signature(train).bind_partial(*positional_args)
 
+    assert bound.arguments["x0_mode"] == "gaussian"
     assert bound.arguments["checkpoint_hash"] == sentinel_hash
     assert "time_loss_diagnostic" not in bound.arguments
 
@@ -3538,6 +3540,53 @@ def test_make_prepare_batch_jax_output_shapes():
     assert cond.shape == (B, 0)
     assert cond_mask.shape == (B,)
     assert dropout_keys.shape[0] == B
+
+
+def test_make_prepare_batch_jax_clr_mode_returns_clr_compatible_path():
+    """CLR x0 mode should keep x_t and u_t sum-zero per sample and channel."""
+    batch_size = 4
+    images_np = np.random.default_rng(0).normal(
+        size=(batch_size, 2, 8, 8),
+    ).astype(np.float32)
+    images_np = images_np - images_np.mean(axis=(-2, -1), keepdims=True)
+    cond_np = np.empty((batch_size, 0), dtype=np.float32)
+
+    prepare_jax = make_prepare_batch_jax(
+        coupling=independent_coupling,
+        time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
+        path_sampler=partial(sample_path),
+        p_uncond=0.0,
+        x0_mode="clr",
+    )
+
+    _, x_t, u_t, _, _, _ = prepare_jax(
+        images_np,
+        cond_np,
+        jax.random.PRNGKey(0),
+    )
+
+    np.testing.assert_allclose(
+        np.asarray(jnp.sum(x_t, axis=(-2, -1))),
+        np.zeros((batch_size, 2), dtype=np.float32),
+        atol=1e-5,
+    )
+    np.testing.assert_allclose(
+        np.asarray(jnp.sum(u_t, axis=(-2, -1))),
+        np.zeros((batch_size, 2), dtype=np.float32),
+        atol=1e-5,
+    )
+
+
+def test_make_prepare_batch_jax_rejects_invalid_x0_mode():
+    """Unsupported x0 modes should fail before JIT execution."""
+    with pytest.raises(ValueError, match="x0_mode must be one of"):
+        make_prepare_batch_jax(
+            coupling=independent_coupling,
+            time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
+            path_sampler=partial(sample_path),
+            p_uncond=0.0,
+            x0_mode="bad-mode",
+        )
 
 
 def test_make_prepare_batch_jax_times_in_range():

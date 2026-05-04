@@ -27,6 +27,7 @@ import numpy as np
 from tqdm import tqdm
 from msdflow.utils import register_all_resolvers
 from tqdm.contrib.logging import logging_redirect_tqdm
+from msdflow.flow.clr import sample_x0, validate_x0_mode
 from msdflow.tracking import (
     log_checkpoint,
     log_metrics,
@@ -358,11 +359,12 @@ def make_prepare_batch_jax(
     time_sampler: callable,
     path_sampler: callable,
     p_uncond: float,
+    x0_mode: str = "gaussian",
 ):
     """Return a JIT-compiled batch preparation function.
 
-    Closes over coupling, time_sampler, path_sampler, and p_uncond as static
-    Python objects, following the ``make_train_step`` closure pattern.
+    Closes over coupling, time_sampler, path_sampler, p_uncond, and x0_mode as
+    static Python objects, following the ``make_train_step`` closure pattern.
 
     Args:
         coupling:     Callable ``(x0, x1) -> x0_paired``. Must be JIT-compatible
@@ -370,13 +372,18 @@ def make_prepare_batch_jax(
         time_sampler: Callable ``(key, batch_size) -> t``.
         path_sampler: Callable ``(x0, x1, t, *, key) -> (x_t, u_t)``.
         p_uncond:     Probability of dropping the condition per sample.
+        x0_mode:      Initial-noise mode. ``"gaussian"`` preserves the current
+                      standard Gaussian behavior. ``"clr"`` samples Gaussian
+                      noise and projects each sample/channel to zero spatial
+                      mean.
 
     Returns:
         A ``jax.jit``-compiled callable with signature
         ``(images_np, cond_np, key) -> (t, x_t, u_t, cond, cond_mask, dropout_keys)``.
 
     Raises:
-        ValueError: If ``coupling`` is ``ot_coupling`` (not JIT-compatible).
+        ValueError: If ``coupling`` is ``ot_coupling`` (not JIT-compatible) or
+            ``x0_mode`` is unsupported.
     """
     from msdflow.flow.coupling import ot_coupling
 
@@ -385,6 +392,7 @@ def make_prepare_batch_jax(
             "ot_coupling requires scipy and is not JIT-able. "
             "Use independent_coupling or implement a JAX-native OT coupling."
         )
+    validate_x0_mode(x0_mode)
 
     @jax.jit
     def prepare_batch_jax(
@@ -398,7 +406,7 @@ def make_prepare_batch_jax(
         x1 = jnp.asarray(images_np)
         cond = jnp.asarray(cond_np)
 
-        x0 = jax.random.normal(key_noise, x1.shape)
+        x0 = sample_x0(key_noise, x1.shape, x0_mode=x0_mode)
         x0 = coupling(x0, x1)
         t = time_sampler(key_time, B)
         cond_mask = jax.random.bernoulli(key_cfg, 1.0 - p_uncond, shape=(B,))
@@ -832,6 +840,7 @@ def train(
     early_stopping_patience: int | None = None,
     grad_accum_steps: int = 1,
     buffer_size: int = 4,
+    x0_mode: str = "gaussian",
     data_parallel: Any = None,
     checkpoint_hash: str | None = None,
     hash_payload: dict | None = None,
@@ -877,6 +886,10 @@ def train(
         num_epochs:             Total number of training epochs.
         num_steps_per_epoch:    Steps per epoch. ``0`` = full dataloader.
         p_uncond:               Probability of dropping the condition per sample.
+        x0_mode:                Initial-noise mode for training batch
+                                preparation. ``"gaussian"`` preserves current
+                                behavior; ``"clr"`` projects Gaussian noise to
+                                zero spatial mean per sample and channel.
         ema_decay:              EMA decay rate (typical: 0.9999).
         log_every:              Log metrics every this many epochs.
         val_every:              Run validation every this many epochs.
@@ -1011,7 +1024,13 @@ def train(
             time_loss_config.num_bins,
             data_parallel=data_parallel_config,
         )
-    prepare_jax = make_prepare_batch_jax(coupling, time_sampler, path_sampler, p_uncond)
+    prepare_jax = make_prepare_batch_jax(
+        coupling,
+        time_sampler,
+        path_sampler,
+        p_uncond,
+        x0_mode=x0_mode,
+    )
 
     if num_steps_per_epoch == 0:
         microsteps_per_epoch = (len(dataloader) // grad_accum_steps) * grad_accum_steps
