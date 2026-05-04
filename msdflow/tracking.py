@@ -341,6 +341,9 @@ def prepare_images_for_plotting(
 
     images = images.copy()
 
+    if plot_method == "identity":
+        return images
+
     # If values look like they are in [-1, 1], map to [0, 1]
     if images.min() < 0:
         images = (images + 1.0) / 2.0
@@ -586,7 +589,7 @@ def plot_time_binned_loss_heatmap(
         )
     ax.set_yticks(tick_indices)
     ax.set_yticklabels([str(epochs[index]) for index in tick_indices])
-    fig.colorbar(image, ax=ax, label="Mean flow-matching loss")
+    fig.colorbar(image, ax=ax, label="log10 mean flow-matching loss")
     fig.tight_layout()
     return fig
 
