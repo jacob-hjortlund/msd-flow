@@ -11,6 +11,7 @@ from scipy.linalg import sqrtm
 from jax.scipy.ndimage import map_coordinates
 from tqdm import tqdm
 
+from msdflow.flow.clr import project_channel_mean_zero
 from msdflow.train.parallel import DataParallelConfig
 from msdflow.train.parallel import make_data_parallel_config
 from msdflow.train.parallel import resolve_data_parallel_config
@@ -74,6 +75,7 @@ def _flow_matching_per_sample_loss_values(
     cond: jnp.ndarray,
     cond_mask: jnp.ndarray,
     key: jax.Array,
+    project_velocity: bool = False,
 ) -> jnp.ndarray:
     """Compute per-sample flow-matching losses from one model prediction call.
 
@@ -87,12 +89,17 @@ def _flow_matching_per_sample_loss_values(
         cond: Conditioning vectors with shape ``(B, cond_dim)``.
         cond_mask: Per-sample condition mask with shape ``(B,)``.
         key: Per-sample PRNG keys with leading shape ``(B,)``.
+        project_velocity: If ``True``, project predicted velocities to zero
+            spatial mean independently per sample and channel before computing
+            the loss. Target velocities are not projected.
 
     Returns:
         Mean squared velocity error for each sample, shape ``(B,)``.
     """
     pred = eqx.filter_vmap(model)(t, x_t, cond, cond_mask, key)
     v_t = _to_velocity(pred, x_t, t, model.prediction_type)
+    if project_velocity:
+        v_t = project_channel_mean_zero(v_t)
     squared_error = (v_t - u_t) ** 2
     reduce_axes = tuple(range(1, squared_error.ndim))
     return jnp.mean(squared_error, axis=reduce_axes)
@@ -106,6 +113,7 @@ def flow_matching_loss(
     cond: jnp.ndarray,
     cond_mask: jnp.ndarray,
     key: jax.Array,
+    project_velocity: bool = False,
 ) -> jnp.ndarray:
     """Compute the flow matching MSE loss.
 
@@ -124,6 +132,10 @@ def flow_matching_loss(
             ``jnp.empty((B, 0))`` when the model is unconditional.
         cond_mask: shape (B,) bool — per-sample mask. ``True`` = use
             the real condition; ``False`` = use the null embedding.
+        key: Per-sample PRNG keys with leading shape ``(B,)``.
+        project_velocity: If ``True``, project predicted velocities to zero
+            spatial mean independently per sample and channel before computing
+            the loss. Target velocities are not projected.
 
     Returns:
         Scalar mean squared error between predicted and target velocities.
@@ -137,6 +149,7 @@ def flow_matching_loss(
             cond,
             cond_mask,
             key,
+            project_velocity=project_velocity,
         )
     )
 
@@ -149,6 +162,7 @@ def flow_matching_per_sample_loss(
     cond: jnp.ndarray,
     cond_mask: jnp.ndarray,
     key: jax.Array,
+    project_velocity: bool = False,
 ) -> jnp.ndarray:
     """Compute one flow-matching MSE loss per batch element.
 
@@ -162,6 +176,9 @@ def flow_matching_per_sample_loss(
         cond: Conditioning vectors with shape ``(B, cond_dim)``.
         cond_mask: Per-sample condition mask with shape ``(B,)``.
         key: Per-sample PRNG keys with leading shape ``(B,)``.
+        project_velocity: If ``True``, project predicted velocities to zero
+            spatial mean independently per sample and channel before computing
+            the loss. Target velocities are not projected.
 
     Returns:
         Mean squared velocity error for each sample, shape ``(B,)``.
@@ -174,6 +191,7 @@ def flow_matching_per_sample_loss(
         cond,
         cond_mask,
         key,
+        project_velocity=project_velocity,
     )
 
 

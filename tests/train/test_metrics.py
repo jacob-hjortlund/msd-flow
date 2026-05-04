@@ -57,6 +57,17 @@ class ZeroVelocityModel(eqx.Module):
         return jnp.zeros_like(x_t)
 
 
+class ConstantVelocityModel(eqx.Module):
+    """Model that predicts a constant velocity bias."""
+
+    prediction_type: str = "velocity"
+    value: float = 1.0
+
+    def __call__(self, t, x_t, cond, cond_mask, key):
+        """Return a constant velocity field with the same shape as input."""
+        return jnp.ones_like(x_t) * self.value
+
+
 def test_flow_matching_loss_is_scalar():
     """Verify flow matching loss is a scalar."""
     B = 2
@@ -87,6 +98,68 @@ def test_flow_matching_per_sample_loss_returns_one_loss_per_example():
     assert losses.shape == (batch_size,)
     assert jnp.all(jnp.isfinite(losses))
     assert jnp.allclose(losses, jnp.ones((batch_size,)))
+
+
+def test_flow_matching_loss_project_velocity_removes_constant_bias():
+    """Projecting velocity should remove spatially constant channel bias."""
+    model = ConstantVelocityModel(value=2.0)
+    batch_size = 3
+    x_t = jnp.zeros((batch_size, 2, 4, 4))
+    u_t = jnp.zeros((batch_size, 2, 4, 4))
+    t = jnp.array([0.0, 0.5, 0.9])
+    cond = jnp.empty((batch_size, 0))
+    cond_mask = jnp.zeros((batch_size,), dtype=bool)
+    keys = jax.random.split(jax.random.PRNGKey(0), batch_size)
+
+    unprojected = flow_matching_loss(
+        model,
+        x_t,
+        u_t,
+        t,
+        cond,
+        cond_mask,
+        keys,
+        project_velocity=False,
+    )
+    projected = flow_matching_loss(
+        model,
+        x_t,
+        u_t,
+        t,
+        cond,
+        cond_mask,
+        keys,
+        project_velocity=True,
+    )
+
+    assert jnp.allclose(unprojected, 4.0)
+    assert jnp.allclose(projected, 0.0)
+
+
+def test_flow_matching_per_sample_loss_project_velocity_removes_constant_bias():
+    """Per-sample projected velocity losses should satisfy the same constraint."""
+    model = ConstantVelocityModel(value=3.0)
+    batch_size = 2
+    x_t = jnp.zeros((batch_size, 1, 4, 4))
+    u_t = jnp.zeros((batch_size, 1, 4, 4))
+    t = jnp.array([0.25, 0.75])
+    cond = jnp.empty((batch_size, 0))
+    cond_mask = jnp.zeros((batch_size,), dtype=bool)
+    keys = jax.random.split(jax.random.PRNGKey(1), batch_size)
+
+    losses = flow_matching_per_sample_loss(
+        model,
+        x_t,
+        u_t,
+        t,
+        cond,
+        cond_mask,
+        keys,
+        project_velocity=True,
+    )
+
+    assert losses.shape == (batch_size,)
+    assert jnp.allclose(losses, jnp.zeros((batch_size,)))
 
 
 def test_bin_time_losses_assigns_t_one_to_final_bin():
