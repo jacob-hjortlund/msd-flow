@@ -20,7 +20,6 @@ from omegaconf import OmegaConf
 
 CHECKPOINT_SCHEMA_VERSION = 1
 CHECKPOINT_KINDS = frozenset({"periodic", "sigterm", "manual"})
-_MISSING = object()
 
 
 class SigtermFlag:
@@ -146,45 +145,6 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
-def _path_part(container: Any, part: str) -> Any:
-    """Return one dotted-path part from a mapping or sequence.
-
-    Args:
-        container: Current container while traversing a normalized payload.
-        part: Dotted-path component to read as a mapping key or list index.
-
-    Returns:
-        The value at the requested part, or a missing-value sentinel when the
-        path cannot be traversed.
-    """
-    if isinstance(container, dict):
-        return container.get(part, _MISSING)
-    if isinstance(container, list) and part.isdecimal():
-        index = int(part)
-        if 0 <= index < len(container):
-            return container[index]
-    return _MISSING
-
-
-def _get_path(payload: dict[str, Any], dotted_path: str) -> Any:
-    """Return a dotted path from a normalized payload when present.
-
-    Args:
-        payload: Normalized configuration payload to inspect.
-        dotted_path: Dot-separated key path such as
-            ``"train.batch_metrics.0.project_velocity"``.
-
-    Returns:
-        The value at the path, or a missing-value sentinel when absent.
-    """
-    current: Any = payload
-    for part in (part for part in dotted_path.split(".") if part):
-        current = _path_part(current, part)
-        if current is _MISSING:
-            return _MISSING
-    return current
-
-
 def _drop_path(payload: dict[str, Any], dotted_path: str) -> None:
     """Remove a dotted path from a nested container if it is present.
 
@@ -199,55 +159,12 @@ def _drop_path(payload: dict[str, Any], dotted_path: str) -> None:
 
     current: Any = payload
     for part in parts[:-1]:
-        current = _path_part(current, part)
-        if current is _MISSING:
+        if not isinstance(current, dict) or part not in current:
             return
+        current = current[part]
 
     if isinstance(current, dict):
         current.pop(parts[-1], None)
-    elif isinstance(current, list) and parts[-1].isdecimal():
-        index = int(parts[-1])
-        if 0 <= index < len(current):
-            current.pop(index)
-
-
-def _drop_path_if_default(
-    payload: dict[str, Any],
-    dotted_path: str,
-    default_value: Any,
-) -> None:
-    """Drop a path only when its normalized value equals a default.
-
-    Args:
-        payload: Normalized configuration payload to mutate.
-        dotted_path: Dot-separated key path to conditionally remove.
-        default_value: Default value to compare against after normalization.
-    """
-    current_value = _get_path(payload, dotted_path)
-    if current_value is _MISSING:
-        return
-    if current_value == _json_safe(default_value):
-        _drop_path(payload, dotted_path)
-
-
-def _drop_default_excluded_paths(payload: dict[str, Any]) -> None:
-    """Apply config-driven conditional default exclusions.
-
-    Args:
-        payload: Normalized configuration payload to mutate.
-    """
-    train = payload.get("train")
-    if not isinstance(train, dict):
-        return
-    resume = train.get("resume")
-    if not isinstance(resume, dict):
-        return
-    default_excludes = resume.get("hash_exclude_if_default", {})
-    if not isinstance(default_excludes, Mapping):
-        return
-
-    for path, default_value in default_excludes.items():
-        _drop_path_if_default(payload, str(path), default_value)
 
 
 def normalized_config_payload(
@@ -269,8 +186,6 @@ def normalized_config_payload(
     payload = _json_safe(cfg)
     if not isinstance(payload, dict):
         raise TypeError("Stable checkpoint config hash requires a mapping root.")
-
-    _drop_default_excluded_paths(payload)
 
     for path in exclude_paths or ():
         _drop_path(payload, path)
