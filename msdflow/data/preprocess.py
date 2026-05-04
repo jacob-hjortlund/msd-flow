@@ -391,7 +391,7 @@ class CLRTransform:
     """
 
     def __init__(self, eps_mass: float = 1e-6):
-        if eps_mass < 0.0 or eps_mass > 1.0:
+        if not np.isfinite(eps_mass) or eps_mass < 0.0 or eps_mass > 1.0:
             raise ValueError(f"eps_mass must be in [0, 1], got {eps_mass}")
         self.eps_mass = float(eps_mass)
 

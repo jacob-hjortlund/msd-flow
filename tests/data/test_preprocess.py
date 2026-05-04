@@ -175,8 +175,8 @@ class TestCLRTransform:
         transform = CLRTransform(eps_mass=1e-6)
         img = np.array(
             [
-                [[0.1, 0.2], [0.3, 0.4]],
-                [[0.4, 0.3], [0.2, 0.1]],
+                [[0.25, 0.25], [0.25, 0.25]],
+                [[0.7, 0.1], [0.1, 0.1]],
             ],
             dtype=np.float32,
         )
@@ -195,6 +195,12 @@ class TestCLRTransform:
 
         with pytest.raises(ValueError, match="Expected image with shape"):
             transform(np.ones((4, 4), dtype=np.float32))
+
+    @pytest.mark.parametrize("eps_mass", [-1e-6, 1.0 + 1e-6, np.nan])
+    def test_rejects_invalid_eps_mass(self, eps_mass):
+        """CLRTransform should require ``eps_mass`` in ``[0, 1]``."""
+        with pytest.raises(ValueError, match="eps_mass must be in \\[0, 1\\]"):
+            CLRTransform(eps_mass=eps_mass)
 
 
 class TestArcsinhStretch:
