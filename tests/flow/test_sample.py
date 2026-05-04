@@ -23,6 +23,27 @@ SMALL_MODEL_COND = UNet(
 )
 
 
+class ZeroSampleVelocityModel(eqx.Module):
+    """Model that predicts zero velocity during sampling."""
+
+    prediction_type: str = "velocity"
+
+    def __call__(self, t, x_t, cond, cond_mask, key):
+        """Return zero velocity with the same shape as ``x_t``."""
+        return jnp.zeros_like(x_t)
+
+
+class ConstantSampleVelocityModel(eqx.Module):
+    """Model that predicts spatially constant velocity during sampling."""
+
+    prediction_type: str = "velocity"
+    value: float = 1.0
+
+    def __call__(self, t, x_t, cond, cond_mask, key):
+        """Return constant velocity with the same shape as ``x_t``."""
+        return jnp.ones_like(x_t) * self.value
+
+
 def test_sample_output_shape():
     """Verify sample output shape matches the requested shape."""
     out = sample(
@@ -83,6 +104,59 @@ def test_sample_conditional():
     )
     assert out.shape == (1, 8, 8)
     assert jnp.all(jnp.isfinite(out))
+
+
+def test_sample_clr_x0_mode_preserves_channel_sum_with_zero_velocity():
+    """CLR x0 mode should start sampling from per-channel sum-zero noise."""
+    out = sample(
+        model=ZeroSampleVelocityModel(),
+        shape=(2, 8, 8),
+        key=KEY,
+        solver=diffrax.Euler(),
+        dt0=1.0,
+        t0=0.0,
+        t1=1.0,
+        stepsize_controller=diffrax.ConstantStepSize(),
+        x0_mode="clr",
+    )
+
+    assert out.shape == (2, 8, 8)
+    assert jnp.allclose(jnp.sum(out, axis=(-2, -1)), 0.0, atol=1e-5)
+
+
+def test_sample_project_velocity_preserves_clr_constraint_for_constant_velocity():
+    """Projected sampling drift should keep CLR-compatible samples constrained."""
+    out = sample(
+        model=ConstantSampleVelocityModel(value=5.0),
+        shape=(2, 8, 8),
+        key=KEY,
+        solver=diffrax.Euler(),
+        dt0=1.0,
+        t0=0.0,
+        t1=1.0,
+        stepsize_controller=diffrax.ConstantStepSize(),
+        x0_mode="clr",
+        project_velocity=True,
+    )
+
+    assert out.shape == (2, 8, 8)
+    assert jnp.allclose(jnp.sum(out, axis=(-2, -1)), 0.0, atol=1e-5)
+
+
+def test_sample_rejects_invalid_x0_mode():
+    """Sampling should reject unsupported initial-noise modes."""
+    with pytest.raises(ValueError, match="x0_mode must be one of"):
+        sample(
+            model=ZeroSampleVelocityModel(),
+            shape=(1, 8, 8),
+            key=KEY,
+            solver=diffrax.Euler(),
+            dt0=1.0,
+            t0=0.0,
+            t1=1.0,
+            stepsize_controller=diffrax.ConstantStepSize(),
+            x0_mode="bad-mode",
+        )
 
 
 def test_sample_guided():

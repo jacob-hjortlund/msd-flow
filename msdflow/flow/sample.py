@@ -10,6 +10,7 @@ import diffrax
 import equinox as eqx
 import jax.numpy as jnp
 
+from msdflow.flow.clr import project_channel_mean_zero, sample_x0
 from msdflow.train.metrics import _to_velocity
 
 # TODO: Move to inference
@@ -26,6 +27,8 @@ def sample(
     stepsize_controller,
     cond: jax.Array | None = None,
     guidance_scale: float = 1.0,
+    x0_mode: str = "gaussian",
+    project_velocity: bool = False,
 ) -> jax.Array:
     """Draw one sample by integrating the learned ODE from t0 to t1.
 
@@ -47,9 +50,19 @@ def sample(
             a single conditional forward pass; values ``> 1.0`` blend the
             conditional and unconditional predictions via
             ``v_uncond + guidance_scale * (v_cond - v_uncond)``.
+        x0_mode:              Initial-noise mode handled by
+            ``msdflow.flow.clr.sample_x0``. ``"gaussian"`` preserves standard
+            Gaussian sampling; ``"clr"`` projects Gaussian noise to zero
+            spatial mean independently per channel.
+        project_velocity:     Whether to project drift velocities to zero
+            spatial mean per channel after conversion to velocity. Treat as a
+            Python/static bool under JIT-like use.
 
     Returns:
         Sample array of shape `shape`.
+
+    Raises:
+        ValueError: If ``x0_mode`` is unsupported.
     """
 
     if cond is None and guidance_scale != 1.0:
@@ -89,7 +102,15 @@ def sample(
 
         if guidance_scale == 1.0:
             pred = model(t, y, _cond, _mask, model_key)
-            return _to_velocity(pred[None], y_batch, t_batch, model.prediction_type)[0]
+            velocity = _to_velocity(
+                pred[None],
+                y_batch,
+                t_batch,
+                model.prediction_type,
+            )[0]
+            if project_velocity:
+                velocity = project_channel_mean_zero(velocity)
+            return velocity
 
         pred_cond = model(t, y, _cond, mask_true, model_key)
         pred_uncond = model(t, y, _cond, mask_false, model_key)
@@ -99,9 +120,12 @@ def sample(
         v_uncond = _to_velocity(
             pred_uncond[None], y_batch, t_batch, model.prediction_type
         )[0]
-        return v_uncond + guidance_scale * (v_cond - v_uncond)
+        velocity = v_uncond + guidance_scale * (v_cond - v_uncond)
+        if project_velocity:
+            velocity = project_channel_mean_zero(velocity)
+        return velocity
 
-    x0 = jax.random.normal(key, shape)
+    x0 = sample_x0(key, shape, x0_mode=x0_mode)
     term = diffrax.ODETerm(drift)
     saveat = diffrax.SaveAt(ts=jnp.array([t1]))
     solution = diffrax.diffeqsolve(
