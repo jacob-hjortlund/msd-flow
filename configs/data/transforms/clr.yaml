@@ -19,7 +19,7 @@ clr_transform:
   _target_: torchvision.transforms.Compose
   transforms:
     - _target_: msdflow.data.preprocess.CLRTransform
-      eps_mass: 1e-8
+      eps_mass: 1e-2
 
 standardize_transform:
   _target_: torchvision.transforms.Compose
