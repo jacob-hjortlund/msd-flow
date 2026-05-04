@@ -40,6 +40,7 @@ def test_train_config_contains_resume_defaults():
     assert "train.resume" in list(cfg.resume.hash_exclude)
     assert "train.num_epochs" in list(cfg.resume.hash_exclude)
     assert "train.time_loss_diagnostic" in list(cfg.resume.hash_exclude)
+    assert cfg.resume.hash_exclude_if_default["train.x0_mode"] == "gaussian"
     assert cfg.resume.latest_filename == "latest.json"
     assert cfg.resume.save_on_sigterm is True
 
@@ -161,6 +162,99 @@ def test_composed_config_hash_ignores_time_loss_diagnostic_defaults():
     assert hash_a == hash_b
     assert payload_a == payload_b
     assert "time_loss_diagnostic" not in payload_a["train"]
+
+
+def test_composed_config_hash_ignores_noop_clr_defaults():
+    """No-op CLR defaults should not change stable checkpoint hashes."""
+    with initialize_config_dir(
+        config_dir=str(Path("configs").resolve()),
+        version_base=None,
+    ):
+        cfg_with_defaults = compose(
+            config_name="config",
+            overrides=["work_dir=/tmp/msdflow-test"],
+        )
+        cfg_without_defaults = compose(
+            config_name="config",
+            overrides=["work_dir=/tmp/msdflow-test"],
+        )
+
+    without_payload = OmegaConf.to_container(cfg_without_defaults, resolve=True)
+    without_train = without_payload["train"]
+    without_train["loss_fn"].pop("project_velocity")
+    without_train["batch_metrics"][0].pop("project_velocity")
+    without_train["_epoch_metrics_dict"]["fid_metric"]["generate_fn"].pop("x0_mode")
+    without_train["_epoch_metrics_dict"]["fid_metric"]["generate_fn"].pop(
+        "project_velocity"
+    )
+    without_train.pop("x0_mode")
+    without_train.pop("project_velocity")
+    without_train["sample_fn"].pop("x0_mode")
+    without_train["sample_fn"].pop("project_velocity")
+    cfg_without_defaults = OmegaConf.create(
+        without_payload,
+        flags={"allow_objects": True},
+    )
+
+    hash_with, payload_with = compute_config_hash(
+        cfg_with_defaults,
+        exclude_paths=list(cfg_with_defaults.train.resume.hash_exclude),
+    )
+    hash_without, payload_without = compute_config_hash(
+        cfg_without_defaults,
+        exclude_paths=list(cfg_without_defaults.train.resume.hash_exclude),
+    )
+
+    assert hash_with == hash_without
+    assert payload_with == payload_without
+    assert "x0_mode" not in payload_with["train"]
+    assert "project_velocity" not in payload_with["train"]
+    assert "project_velocity" not in payload_with["train"]["loss_fn"]
+    assert "project_velocity" not in payload_with["train"]["batch_metrics"][0]
+    assert "x0_mode" not in payload_with["train"]["sample_fn"]
+    assert "project_velocity" not in payload_with["train"]["sample_fn"]
+
+
+def test_composed_config_hash_changes_for_clr_opt_in():
+    """CLR opt-ins should remain compatibility-relevant in stable hashes."""
+    with initialize_config_dir(
+        config_dir=str(Path("configs").resolve()),
+        version_base=None,
+    ):
+        cfg_default = compose(
+            config_name="config",
+            overrides=["work_dir=/tmp/msdflow-test"],
+        )
+        cfg_clr = compose(
+            config_name="config",
+            overrides=[
+                "work_dir=/tmp/msdflow-test",
+                "train.x0_mode=clr",
+                "train.project_velocity=true",
+                "train.loss_fn.project_velocity=true",
+                "train.batch_metrics.0.project_velocity=true",
+                "train.sample_fn.x0_mode=clr",
+                "train.sample_fn.project_velocity=true",
+            ],
+        )
+
+    hash_default, payload_default = compute_config_hash(
+        cfg_default,
+        exclude_paths=list(cfg_default.train.resume.hash_exclude),
+    )
+    hash_clr, payload_clr = compute_config_hash(
+        cfg_clr,
+        exclude_paths=list(cfg_clr.train.resume.hash_exclude),
+    )
+
+    assert hash_default != hash_clr
+    assert "x0_mode" not in payload_default["train"]
+    assert payload_clr["train"]["x0_mode"] == "clr"
+    assert payload_clr["train"]["project_velocity"] is True
+    assert payload_clr["train"]["loss_fn"]["project_velocity"] is True
+    assert payload_clr["train"]["batch_metrics"][0]["project_velocity"] is True
+    assert payload_clr["train"]["sample_fn"]["x0_mode"] == "clr"
+    assert payload_clr["train"]["sample_fn"]["project_velocity"] is True
 
 
 def test_compute_config_hash_changes_for_model_fields():

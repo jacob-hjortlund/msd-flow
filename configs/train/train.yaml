@@ -82,6 +82,15 @@ resume:
     - train.resume
     - train.num_epochs
     - train.time_loss_diagnostic
+  hash_exclude_if_default:
+    train.loss_fn.project_velocity: false
+    train.batch_metrics.0.project_velocity: false
+    train._epoch_metrics_dict.fid_metric.generate_fn.x0_mode: gaussian
+    train._epoch_metrics_dict.fid_metric.generate_fn.project_velocity: false
+    train.x0_mode: gaussian
+    train.project_velocity: false
+    train.sample_fn.x0_mode: gaussian
+    train.sample_fn.project_velocity: false
   latest_filename: latest.json
   save_on_sigterm: true
 val_every: 1
