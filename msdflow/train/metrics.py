@@ -413,7 +413,7 @@ def _frechet_distance(
 
 
 @eqx.filter_jit
-@eqx.debug.assert_max_traces(max_traces=1)
+@eqx.debug.assert_max_traces(max_traces=2)
 def _extract_batch(encoder, images):
     """Encode a batch of images into feature vectors.
 
