@@ -606,6 +606,43 @@ def _fake_val_dataloader(B=2):
     return [(images, meta)]
 
 
+class _TinyDropoutFlow(eqx.Module):
+    """Tiny flow model with dropout static state for EMA trace tests."""
+
+    scale: jax.Array
+    dropout: eqx.nn.Dropout
+    prediction_type: str = eqx.field(static=True)
+
+    def __init__(self):
+        """Initialize a single-parameter velocity model."""
+        self.scale = jnp.array(0.5, dtype=jnp.float32)
+        self.dropout = eqx.nn.Dropout(0.0)
+        self.prediction_type = "velocity"
+
+    def __call__(
+        self,
+        t: jax.Array,
+        x_t: jax.Array,
+        cond: jax.Array,
+        cond_mask: jax.Array,
+        key: jax.Array,
+    ) -> jax.Array:
+        """Predict a scaled velocity field.
+
+        Args:
+            t: Scalar time value for one sample.
+            x_t: Interpolated sample image.
+            cond: Conditioning vector for one sample.
+            cond_mask: Whether the conditioning vector is active.
+            key: PRNG key for dropout.
+
+        Returns:
+            Velocity prediction with the same shape as ``x_t``.
+        """
+        del t, cond, cond_mask
+        return self.dropout(self.scale * x_t, key=key)
+
+
 def _make_train_kwargs(num_epochs=1, num_steps_per_epoch=3, p_uncond=0.0):
     """Return default keyword args matching the current train() signature."""
     return dict(
@@ -1344,6 +1381,63 @@ def test_train_returns_ema_model_not_live_model():
     )
     trained_leaves = jax.tree_util.tree_leaves(eqx.filter(trained, eqx.is_array))
     assert any(not jnp.allclose(i, t) for i, t in zip(init_leaves, trained_leaves))
+
+
+def test_train_validates_between_ema_updates_without_retracing(tmp_path):
+    """Validation should not mutate EMA static state before later updates."""
+    dataloader = list(_make_fake_dataloader(B=2, num_batches=4))
+    val_dataloader = _fake_val_dataloader(B=2)
+    kwargs = _make_train_kwargs(num_epochs=2, num_steps_per_epoch=2)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+
+    with patch("msdflow.train.trainer.log_time_binned_loss"):
+        trained = train(
+            model=_TinyDropoutFlow(),
+            dataloader=dataloader,
+            val_dataloader=val_dataloader,
+            clearml_task=MagicMock(),
+            time_loss_diagnostic={
+                "enabled": True,
+                "split": "val",
+                "num_bins": 4,
+                "num_batches": 1,
+            },
+            **kwargs,
+        )
+
+    assert trained.dropout.inference is True
+
+
+def test_train_full_state_checkpoint_keeps_ema_out_of_inference_mode(tmp_path):
+    """Full-state checkpoints should preserve the EMA accumulator static state."""
+    captured_checkpoints = []
+
+    def capture_checkpoint(**kwargs):
+        """Capture checkpoint payloads without writing full-state files."""
+        captured_checkpoints.append(kwargs["checkpoint"])
+        return {"payload_path": str(tmp_path / "captured.eqx")}
+
+    dataloader = list(_make_fake_dataloader(B=2, num_batches=2))
+    val_dataloader = _fake_val_dataloader(B=2)
+    kwargs = _make_train_kwargs(num_epochs=1, num_steps_per_epoch=2)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+    kwargs["checkpoint_every"] = 1
+    kwargs["checkpoint_hash"] = "hash123"
+
+    with patch(
+        "msdflow.train.trainer.save_training_checkpoint",
+        side_effect=capture_checkpoint,
+    ):
+        trained = train(
+            model=_TinyDropoutFlow(),
+            dataloader=dataloader,
+            val_dataloader=val_dataloader,
+            **kwargs,
+        )
+
+    assert captured_checkpoints
+    assert captured_checkpoints[-1].ema_model.dropout.inference is False
+    assert trained.dropout.inference is True
 
 
 def test_train_loop_completes_without_error():
@@ -2707,6 +2801,74 @@ def test_train_generates_samples_to_disk(tmp_path):
         if "reference" not in p
     ]
     assert len(npy_files) == 4  # 2 epochs x 2 samples (reference samples excluded)
+
+
+def test_train_sampling_uses_inference_mode_copy(tmp_path):
+    """Sampling should receive an inference-mode model without mutating EMA."""
+    seen_inference_flags = []
+
+    def fake_sample_fn(model, key):
+        """Record model inference state and return a dummy sample."""
+        del key
+        seen_inference_flags.append(model.dropout.inference)
+        return jnp.zeros((1, 8, 8), dtype=jnp.float32)
+
+    train(
+        key=jax.random.PRNGKey(51),
+        model=_TinyDropoutFlow(),
+        dataloader=_make_dataloader(),
+        val_dataloader=_make_dataloader(),
+        optimizer=OPTIMIZER,
+        loss_fn=_fml,
+        batch_metrics=[],
+        epoch_metrics=[],
+        coupling=_COUPLING,
+        time_sampler=_time_sampler,
+        path_sampler=_PATH_SAMPLER,
+        num_epochs=1,
+        num_steps_per_epoch=1,
+        p_uncond=1.0,
+        ema_decay=0.999,
+        log_every=1,
+        val_every=1,
+        checkpoint_every=10,
+        checkpoint_dir=str(tmp_path / "ckpt"),
+        clearml_task=None,
+        sample_fn=fake_sample_fn,
+        sample_every=1,
+        num_samples=2,
+        samples_dir=str(tmp_path / "samples"),
+    )
+
+    assert seen_inference_flags == [True]
+
+
+def test_train_returns_inference_mode_model_without_ema_initialization(tmp_path):
+    """train() should return an inference-mode model even before EMA exists."""
+    trained = train(
+        key=jax.random.PRNGKey(52),
+        model=_TinyDropoutFlow(),
+        dataloader=_make_dataloader(),
+        val_dataloader=_make_dataloader(),
+        optimizer=OPTIMIZER,
+        loss_fn=_fml,
+        batch_metrics=[],
+        epoch_metrics=[],
+        coupling=_COUPLING,
+        time_sampler=_time_sampler,
+        path_sampler=_PATH_SAMPLER,
+        num_epochs=0,
+        num_steps_per_epoch=1,
+        p_uncond=1.0,
+        ema_decay=0.999,
+        log_every=1,
+        val_every=1,
+        checkpoint_every=10,
+        checkpoint_dir=str(tmp_path / "ckpt"),
+        clearml_task=None,
+    )
+
+    assert trained.dropout.inference is True
 
 
 def test_train_logs_samples_to_clearml_without_samples_dir(tmp_path):

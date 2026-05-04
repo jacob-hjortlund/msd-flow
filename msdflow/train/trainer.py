@@ -1145,6 +1145,16 @@ def train(
         """Return a JSON-friendly float copy of a metric dictionary."""
         return {str(k): float(v) for k, v in metrics.items()}
 
+    def _inference_model(model_to_use):
+        """Return an inference-mode copy of a model for evaluation or export."""
+        return eqx.nn.inference_mode(model_to_use, value=True)
+
+    def _model_to_return():
+        """Return the trained model without mutating trainer state."""
+        if ema_model is not None:
+            return _inference_model(ema_model)
+        return _inference_model(state.model)
+
     def _make_checkpoint(
         *,
         epoch_to_resume: int,
@@ -1304,13 +1314,11 @@ def train(
                                 completed_microsteps=checkpoint_microsteps,
                                 current_epoch_loss=checkpoint_epoch_loss,
                             )
-                            return ema_model if ema_model is not None else state.model
+                            return _model_to_return()
             finally:
                 prefetcher.shutdown()
 
             epoch_loss = float(epoch_loss)
-            if ema_model is not None:
-                ema_model = eqx.nn.inference_mode(ema_model, value=True)
             train_loss_denominator = max(epoch_loss_denominator, 1)
             train_time = time.perf_counter() - epoch_start_time
             total_train_time += train_time
@@ -1323,7 +1331,7 @@ def train(
                     completed_microsteps=0,
                     current_epoch_loss=0.0,
                 )
-                return ema_model if ema_model is not None else state.model
+                return _model_to_return()
 
             if (epoch + 1) % val_every == 0:
                 val_start_time = time.perf_counter()
@@ -1334,6 +1342,7 @@ def train(
                     key_time_loss = jax.random.fold_in(key, epoch + 1)
 
                 eval_model = ema_model if ema_model is not None else state.model
+                eval_model = _inference_model(eval_model)
                 val_metrics = batch_metric_loop(
                     key=key_val,
                     ema_model=eval_model,
@@ -1464,7 +1473,10 @@ def train(
                         )
                         eqx.tree_serialise_leaves(best_raw_path, state.model)
                         if ema_model is not None:
-                            eqx.tree_serialise_leaves(best_ema_path, ema_model)
+                            eqx.tree_serialise_leaves(
+                                best_ema_path,
+                                _inference_model(ema_model),
+                            )
                             log_checkpoint(clearml_task, best_ema_path, epoch + 1)
                         best_metric_value = current_monitor
                         best_epoch = epoch + 1
@@ -1479,7 +1491,7 @@ def train(
                             completed_microsteps=0,
                             current_epoch_loss=0.0,
                         )
-                        return ema_model if ema_model is not None else state.model
+                        return _model_to_return()
 
                     if (
                         early_stopping_patience is not None
@@ -1504,7 +1516,7 @@ def train(
                 )
                 eqx.tree_serialise_leaves(raw_path, state.model)
                 if ema_model is not None:
-                    eqx.tree_serialise_leaves(ema_path, ema_model)
+                    eqx.tree_serialise_leaves(ema_path, _inference_model(ema_model))
                     logger.info(f"Saved checkpoint: {ema_path}")
                     log_checkpoint(clearml_task, ema_path, epoch + 1)
                 if checkpoint_hash is not None:
@@ -1522,6 +1534,7 @@ def train(
             ):
 
                 sample_model = ema_model if ema_model is not None else state.model
+                sample_model = _inference_model(sample_model)
                 sample_keys = jax.random.split(sampling_key, num_samples)
                 images = batched_sample_fn(sample_model, sample_keys)
                 images = np.asarray(images).squeeze()
@@ -1590,6 +1603,6 @@ def train(
                     completed_microsteps=0,
                     current_epoch_loss=0.0,
                 )
-                return ema_model if ema_model is not None else state.model
+                return _model_to_return()
 
-    return ema_model if ema_model is not None else state.model
+    return _model_to_return()
