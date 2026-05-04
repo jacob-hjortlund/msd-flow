@@ -256,6 +256,46 @@ def test_make_time_binned_loss_step_returns_bin_sums_and_counts():
     assert np.array_equal(np.asarray(counts), np.array([2, 0, 1, 1]))
 
 
+def test_make_time_binned_loss_step_project_velocity_removes_constant_bias():
+    """Projected diagnostic losses should remove spatially constant bias."""
+    model = ConstantVelocityModel(value=2.0)
+    batch_size = 3
+
+    def make_batch():
+        """Create fresh arrays because the diagnostic step donates inputs."""
+        return (
+            jnp.zeros((batch_size, 1, 4, 4)),
+            jnp.zeros((batch_size, 1, 4, 4)),
+            jnp.array([0.1, 0.3, 0.8]),
+            jnp.empty((batch_size, 0)),
+            jnp.zeros((batch_size,), dtype=bool),
+            jax.random.split(jax.random.PRNGKey(2), batch_size),
+        )
+
+    unprojected_step = make_time_binned_loss_step(
+        num_bins=2,
+        project_velocity=False,
+    )
+    unprojected_sums, unprojected_counts = unprojected_step(
+        model,
+        *make_batch(),
+    )
+
+    projected_step = make_time_binned_loss_step(
+        num_bins=2,
+        project_velocity=True,
+    )
+    projected_sums, projected_counts = projected_step(
+        model,
+        *make_batch(),
+    )
+
+    assert np.allclose(np.asarray(unprojected_sums), np.array([8.0, 4.0]))
+    assert np.array_equal(np.asarray(unprojected_counts), np.array([2, 1]))
+    assert np.allclose(np.asarray(projected_sums), np.array([0.0, 0.0]))
+    assert np.array_equal(np.asarray(projected_counts), np.array([2, 1]))
+
+
 def test_make_time_binned_loss_step_rejects_nonpositive_num_bins():
     """Diagnostic step creation should reject nonpositive bin counts."""
     with pytest.raises(ValueError, match="num_bins must be >= 1"):

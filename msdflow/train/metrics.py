@@ -91,7 +91,9 @@ def _flow_matching_per_sample_loss_values(
         key: Per-sample PRNG keys with leading shape ``(B,)``.
         project_velocity: If ``True``, project predicted velocities to zero
             spatial mean independently per sample and channel before computing
-            the loss. Target velocities are not projected.
+            the loss. Target velocities are not projected. When used under
+            JAX JIT or Equinox JIT, this must be a Python/static bool rather
+            than a traced JAX value.
 
     Returns:
         Mean squared velocity error for each sample, shape ``(B,)``.
@@ -135,7 +137,9 @@ def flow_matching_loss(
         key: Per-sample PRNG keys with leading shape ``(B,)``.
         project_velocity: If ``True``, project predicted velocities to zero
             spatial mean independently per sample and channel before computing
-            the loss. Target velocities are not projected.
+            the loss. Target velocities are not projected. When used under
+            JAX JIT or Equinox JIT, this must be a Python/static bool rather
+            than a traced JAX value.
 
     Returns:
         Scalar mean squared error between predicted and target velocities.
@@ -178,7 +182,9 @@ def flow_matching_per_sample_loss(
         key: Per-sample PRNG keys with leading shape ``(B,)``.
         project_velocity: If ``True``, project predicted velocities to zero
             spatial mean independently per sample and channel before computing
-            the loss. Target velocities are not projected.
+            the loss. Target velocities are not projected. When used under
+            JAX JIT or Equinox JIT, this must be a Python/static bool rather
+            than a traced JAX value.
 
     Returns:
         Mean squared velocity error for each sample, shape ``(B,)``.
@@ -342,12 +348,18 @@ class TimeBinnedLossHistory:
 def make_time_binned_loss_step(
     num_bins: int,
     data_parallel: DataParallelConfig | None = None,
+    project_velocity: bool = False,
 ):
     """Return a JIT-compiled step for time-binned flow-matching loss.
 
     Args:
         num_bins: Number of equal-width bins over ``[0, 1]``.
         data_parallel: Optional data-parallel runtime configuration.
+        project_velocity: If ``True``, project predicted velocities to zero
+            spatial mean independently per sample and channel before binning
+            losses. Target velocities are not projected. This is captured by
+            the returned Equinox JIT step and must be a Python/static bool,
+            not a traced JAX value.
 
     Returns:
         A callable with the same batch arguments as batch metrics. It returns
@@ -385,6 +397,7 @@ def make_time_binned_loss_step(
 
         Returns:
             Tuple of ``(loss_sums, counts)`` arrays with shape ``(num_bins,)``.
+            Losses use the factory's static ``project_velocity`` setting.
         """
         if data_parallel.enabled:
             model = eqx.filter_shard(model, data_parallel.model_sharding)
@@ -400,6 +413,7 @@ def make_time_binned_loss_step(
             cond,
             cond_mask,
             key,
+            project_velocity=project_velocity,
         )
         return bin_time_losses(t, losses, num_bins)
 
