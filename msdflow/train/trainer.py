@@ -852,6 +852,7 @@ def train(
     sigterm_flag_factory=SigtermFlag,
     *args,
     x0_mode: str = "gaussian",
+    project_velocity: bool = False,
     time_loss_diagnostic: Any = None,
     **kwargs,
 ):
@@ -890,6 +891,9 @@ def train(
                                 preparation. ``"gaussian"`` preserves current
                                 behavior; ``"clr"`` projects Gaussian noise to
                                 zero spatial mean per sample and channel.
+        project_velocity:       Whether time-binned diagnostic step construction
+                                should project velocities. Must match projected
+                                loss configs when projected losses are used.
         ema_decay:              EMA decay rate (typical: 0.9999).
         log_every:              Log metrics every this many epochs.
         val_every:              Run validation every this many epochs.
@@ -1023,6 +1027,7 @@ def train(
         time_binned_loss_step = make_time_binned_loss_step(
             time_loss_config.num_bins,
             data_parallel=data_parallel_config,
+            project_velocity=project_velocity,
         )
     prepare_jax = make_prepare_batch_jax(
         coupling,

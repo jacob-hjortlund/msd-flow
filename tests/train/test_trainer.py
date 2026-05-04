@@ -2492,6 +2492,77 @@ def test_train_forwards_x0_mode_to_prepare_batch(tmp_path):
     assert mock_make_prepare_batch_jax.call_args.kwargs["x0_mode"] == "clr"
 
 
+def test_train_forwards_project_velocity_to_time_binned_loss_step(tmp_path):
+    """train() should forward project_velocity to time-binned diagnostics."""
+
+    def fake_prepare_jax(images_np, cond_np, key):
+        batch_size = images_np.shape[0]
+        return (
+            jnp.zeros((batch_size,)),
+            jnp.zeros((batch_size, 1, 8, 8)),
+            jnp.zeros((batch_size, 1, 8, 8)),
+            jnp.zeros((batch_size, 0)),
+            jnp.zeros((batch_size,), dtype=bool),
+            jnp.zeros((batch_size, 2), dtype=jnp.uint32),
+        )
+
+    def fake_train_step(state, x_t, u_t, t, cond, cond_mask, key):
+        return state, jnp.array(0.0)
+
+    diagnostic_result = TimeBinnedLossResult.empty(num_bins=4)
+
+    with (
+        patch("msdflow.train.trainer.make_train_step", return_value=fake_train_step),
+        patch(
+            "msdflow.train.trainer.make_prepare_batch_jax",
+            return_value=fake_prepare_jax,
+        ),
+        patch("msdflow.train.trainer.batch_metric_loop", return_value={}),
+        patch("msdflow.train.trainer.make_time_binned_loss_step") as mock_make_step,
+        patch(
+            "msdflow.train.trainer.time_binned_loss_loop",
+            return_value=diagnostic_result,
+        ),
+        patch("msdflow.train.trainer.log_time_binned_loss"),
+    ):
+        mock_make_step.return_value = lambda *args, **kwargs: (
+            jnp.zeros((4,)),
+            jnp.zeros((4,), dtype=jnp.int32),
+        )
+        train(
+            key=jax.random.PRNGKey(44),
+            model=_make_small_model(),
+            dataloader=_make_dataloader(steps=1),
+            val_dataloader=_make_dataloader(steps=1),
+            optimizer=OPTIMIZER,
+            loss_fn=lambda model, x_t, u_t, t, cond, cond_mask, key: jnp.mean(x_t),
+            batch_metrics=[],
+            epoch_metrics=[],
+            coupling=_COUPLING,
+            time_sampler=_time_sampler,
+            path_sampler=_PATH_SAMPLER,
+            num_epochs=1,
+            num_steps_per_epoch=1,
+            p_uncond=1.0,
+            ema_decay=0.999,
+            log_every=1,
+            val_every=1,
+            checkpoint_every=10,
+            checkpoint_dir=str(tmp_path),
+            clearml_task=MagicMock(),
+            project_velocity=True,
+            time_loss_diagnostic={
+                "enabled": True,
+                "split": "val",
+                "num_bins": 4,
+                "num_batches": 1,
+                "log_heatmap": True,
+            },
+        )
+
+    assert mock_make_step.call_args.kwargs["project_velocity"] is True
+
+
 def test_train_time_loss_diagnostic_disabled_preserves_epoch_metric_key(tmp_path):
     """Disabled diagnostics should preserve pre-diagnostic epoch metric keys."""
     def run_and_capture(time_loss_diagnostic=None):
