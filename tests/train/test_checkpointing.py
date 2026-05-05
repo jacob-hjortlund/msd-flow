@@ -46,15 +46,19 @@ def test_train_config_contains_resume_defaults():
 
 def test_train_config_enables_time_loss_diagnostic_by_default():
     """Default train config should enable validation time-binned loss logging."""
-    with initialize_config_dir(config_dir=str(Path("configs").resolve()), version_base=None):
-        cfg = compose(config_name="config", overrides=["train.num_train_eval_batches=7"])
+    with initialize_config_dir(
+        config_dir=str(Path("configs").resolve()), version_base=None
+    ):
+        cfg = compose(
+            config_name="config", overrides=["train.num_train_eval_batches=7"]
+        )
 
-    assert cfg.train.time_loss_diagnostic.enabled is True
-    assert cfg.train.time_loss_diagnostic.split == "val"
-    assert cfg.train.time_loss_diagnostic.num_bins == 20
-    assert cfg.train.num_train_eval_batches == 7
-    assert cfg.train.time_loss_diagnostic.num_batches == 7
-    assert cfg.train.time_loss_diagnostic.log_heatmap is True
+    assert cfg.train.trainer.time_loss_diagnostic.enabled is True
+    assert cfg.train.trainer.time_loss_diagnostic.split == "val"
+    assert cfg.train.trainer.time_loss_diagnostic.num_bins == 20
+    assert cfg.train.trainer.num_train_eval_batches == 7
+    assert cfg.train.trainer.time_loss_diagnostic.num_batches == 7
+    assert cfg.train.trainer.time_loss_diagnostic.log_heatmap is True
 
 
 def test_train_config_exposes_clr_defaults():
@@ -652,10 +656,7 @@ def test_save_with_relative_run_dir_discovers_absolute_metadata(tmp_path, monkey
     assert discovered["metadata_path"] == metadata["metadata_path"]
     assert discovered["payload_path"] == metadata["payload_path"]
     assert not (
-        tmp_path
-        / run_dir
-        / run_dir
-        / "checkpoint_epoch0004_step0005.json"
+        tmp_path / run_dir / run_dir / "checkpoint_epoch0004_step0005.json"
     ).exists()
 
 

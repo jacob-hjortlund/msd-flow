@@ -29,29 +29,29 @@ def main(cfg: DictConfig):
     Args:
         cfg: Hydra configuration for the training entrypoint.
     """
-    hash_exclude = list(cfg.train.resume.hash_exclude)
-    if cfg.train.resume.hash is None:
+    hash_exclude = list(cfg.train.trainer.resume.hash_exclude)
+    if cfg.train.trainer.resume.hash is None:
         checkpoint_hash, hash_payload = compute_config_hash(
             cfg,
             exclude_paths=hash_exclude,
         )
     else:
-        checkpoint_hash = str(cfg.train.resume.hash)
+        checkpoint_hash = str(cfg.train.trainer.resume.hash)
         _, hash_payload = compute_config_hash(
             cfg,
             exclude_paths=hash_exclude,
         )
 
     run_checkpoint_dir = checkpoint_run_dir(
-        cfg.train.checkpoint_dir,
+        cfg.train.trainer.checkpoint_dir,
         checkpoint_hash,
     )
     resume_metadata = None
-    if cfg.train.resume.auto:
+    if cfg.train.trainer.resume.auto:
         resume_metadata = discover_latest_checkpoint(
             run_checkpoint_dir,
-            latest_filename=str(cfg.train.resume.latest_filename),
-            restart=bool(cfg.train.resume.restart),
+            latest_filename=str(cfg.train.trainer.resume.latest_filename),
+            restart=bool(cfg.train.trainer.resume.restart),
         )
 
     # 0. ClearML setup
@@ -78,10 +78,14 @@ def main(cfg: DictConfig):
     with open_dict(cfg):
         cfg.data.dataloader.cache_dir = cfg.data.dataloader.data_dir
         cfg.data.dataloader.data_dir = dataset_path
-        cfg.train.checkpoint_dir = run_checkpoint_dir
-        cfg.train.checkpoint_hash = checkpoint_hash
-        cfg.train.latest_filename = str(cfg.train.resume.latest_filename)
-        cfg.train.save_on_sigterm = bool(cfg.train.resume.save_on_sigterm)
+        cfg.train.trainer.checkpoint_dir = run_checkpoint_dir
+        cfg.train.trainer.checkpoint_hash = checkpoint_hash
+        cfg.train.trainer.latest_filename = str(
+            cfg.train.trainer.resume.latest_filename
+        )
+        cfg.train.trainer.save_on_sigterm = bool(
+            cfg.train.trainer.resume.save_on_sigterm
+        )
 
     # 3. Seed
     log.info("--- Step 3: Seeding ---")
