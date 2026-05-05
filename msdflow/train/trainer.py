@@ -620,8 +620,8 @@ def batch_metric_loop(
     n_batches = 0
     n_dl = len(dataloader)
     num_batches_given = num_batches > 0
-    num_batches_valid = num_batches <= n_dl and num_batches_given
-    if not num_batches_valid:
+    num_batches_invalid = num_batches > n_dl and num_batches_given
+    if not num_batches_invalid:
         logger.warning(
             f"Invalid num_batches: {num_batches}. Using full dataloader with {n_dl} batches."
         )
@@ -650,7 +650,7 @@ def batch_metric_loop(
 
     if n_batches == 0:
         return {}
-    return {k: v / n_batches for k, v in totals.items()}
+    return {k: v / n_batches for k, v in totals.items()}, num_batches
 
 
 def time_binned_loss_loop(
@@ -863,7 +863,7 @@ def train(
     checkpoint_every: int,
     checkpoint_dir: str,
     lr_schedule: callable,
-    num_train_eval_batches: int = 0,
+    num_eval_batches: int = 0,
     clearml_task: Any = None,
     sample_fn=None,
     sample_every: int = 0,
@@ -1426,23 +1426,23 @@ def train(
 
                 eval_model = ema_model if ema_model is not None else state.model
                 eval_model = _inference_model(eval_model)
-                val_metrics = batch_metric_loop(
+                val_metrics, num_eval_batches = batch_metric_loop(
                     key=key_val,
                     ema_model=eval_model,
                     dataloader=val_dataloader,
                     step_fn=batch_metric_step,
                     prepare_jax=prepare_jax,
-                    num_batches=num_train_eval_batches,
+                    num_batches=num_eval_batches,
                     data_parallel=data_parallel_config,
                 )
 
-                train_metrics = batch_metric_loop(
+                train_metrics, _ = batch_metric_loop(
                     key=key_train,
                     ema_model=eval_model,
                     dataloader=dataloader,
                     step_fn=batch_metric_step,
                     prepare_jax=prepare_jax,
-                    num_batches=num_train_eval_batches,
+                    num_batches=num_eval_batches,
                     data_parallel=data_parallel_config,
                 )
 

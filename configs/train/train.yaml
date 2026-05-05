@@ -13,12 +13,12 @@ trainer:
     - _target_: msdflow.train.metrics.flow_matching_loss
       _partial_: true
       project_velocity: ${...project_velocity}
-  num_train_eval_batches: ${train.trainer.num_steps_per_epoch} #0
+  num_eval_batches: ${train.trainer.num_steps_per_epoch} #0
   time_loss_diagnostic:
     enabled: true
     split: val
     num_bins: 20
-    num_batches: ${train.trainer.num_train_eval_batches}
+    num_batches: ${train.trainer.num_eval_batches}
     log_heatmap: true
   _epoch_metrics_dict:
     fid_metric:
@@ -50,7 +50,7 @@ trainer:
       parallel_generation:
         enabled: ${train.trainer.data_parallel.enabled}
         min_devices: ${train.trainer.data_parallel.min_devices}
-  epoch_metrics: "${oc.dict.values: train._epoch_metrics_dict}"
+  epoch_metrics: "${oc.dict.values: train.trainer._epoch_metrics_dict}"
   optimizer: ${train.optimizer.optimizer}
   grad_accum_steps: 1
   data_parallel:
