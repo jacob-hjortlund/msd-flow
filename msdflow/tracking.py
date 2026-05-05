@@ -284,16 +284,44 @@ def get_dataset_path(task: Any, dataset_id: str, *args, **kwargs) -> str:
 def log_metrics(task: Any, scalars: dict, epoch: int) -> None:
     """Log scalar metrics to ClearML.
 
+    For keys like:
+        train/loss
+        val/loss
+
+    ClearML logs them to the same plot with:
+        title = loss
+        series = train/loss or val/loss
+
     Args:
         task: Active ClearML Task, or None (no-op).
         scalars: Dict mapping metric name to float value.
-        epoch: Current epoch number (used as iteration index).
+        epoch: Current epoch number used as iteration index.
     """
     if task is None:
         return
+
     cl_logger = task.get_logger()
+
     for key, value in scalars.items():
-        cl_logger.report_scalar(title=key, series=key, value=value, iteration=epoch)
+        if "/" in key:
+            prefix, metric_name = key.split("/", maxsplit=1)
+
+            if prefix in {"train", "val"}:
+                title = metric_name
+                series = key
+            else:
+                title = key
+                series = key
+        else:
+            title = key
+            series = key
+
+        cl_logger.report_scalar(
+            title=title,
+            series=series,
+            value=float(value),
+            iteration=epoch,
+        )
 
 
 def log_checkpoint(task: Any, path: str, epoch: int) -> None:

@@ -254,7 +254,10 @@ def _time_loss_diagnostic_splits(config: TimeLossDiagnosticConfig) -> tuple[str,
 def make_train_state(model, optimizer: optax.GradientTransformation) -> TrainState:
     """Initialise training state from a model and an Optax optimizer."""
     opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
-    return TrainState(model=model, opt_state=opt_state)
+    return TrainState(
+        model=model,
+        opt_state=opt_state,
+    )
 
 
 def make_train_step(
@@ -295,6 +298,15 @@ def make_train_step(
         loss, grads = eqx.filter_value_and_grad(loss_fn)(
             state.model, x_t, u_t, t, cond, cond_mask, key
         )
+
+        opt_state = state.opt_state
+        acc_grads = jax.tree.map(
+            lambda grad, acc: acc + (grad - acc) / (opt_state.mini_step + 1),
+            grads,
+            opt_state.acc_grads,
+        )
+        acc_grads = optax.tree.cast_like(acc_grads, grads)
+
         updates, new_opt_state = optimizer.update(
             grads, state.opt_state, eqx.filter(state.model, eqx.is_array)
         )
@@ -302,9 +314,33 @@ def make_train_step(
         new_state = TrainState(model=new_model, opt_state=new_opt_state)
         if data_parallel.enabled:
             new_state = eqx.filter_shard(new_state, data_parallel.model_sharding)
-        return new_state, loss
+        return new_state, loss, acc_grads
 
     return train_step
+
+
+@eqx.filter_jit
+@eqx.debug.assert_max_traces(max_traces=1)
+def grad_clip_diagnostics(grads, global_norm: float | None = None):
+    grad_norm_pre_clip = optax.tree.norm(grads)
+
+    if global_norm is None:
+        was_clipped = jnp.asarray(False)
+        was_clipped_float = jnp.asarray(0.0, dtype=jnp.float32)
+        clip_scale = jnp.asarray(1.0, dtype=grad_norm_pre_clip.dtype)
+    else:
+        max_norm = jnp.asarray(global_norm, dtype=grad_norm_pre_clip.dtype)
+
+        was_clipped = grad_norm_pre_clip > max_norm
+        was_clipped_float = was_clipped.astype(jnp.float32)
+
+        clip_scale = jnp.where(
+            was_clipped,
+            max_norm / (grad_norm_pre_clip + jnp.finfo(grad_norm_pre_clip.dtype).eps),
+            jnp.asarray(1.0, dtype=grad_norm_pre_clip.dtype),
+        )
+
+    return grad_norm_pre_clip, was_clipped_float, clip_scale
 
 
 @eqx.filter_jit
@@ -854,6 +890,7 @@ def train(
     x0_mode: str = "gaussian",
     project_velocity: bool = False,
     time_loss_diagnostic: Any = None,
+    global_norm: float | None = None,
     **kwargs,
 ):
     """Main training loop with EMA and periodic validation.
@@ -996,8 +1033,7 @@ def train(
     if grad_accum_steps < 1:
         raise ValueError(f"grad_accum_steps must be >= 1, got {grad_accum_steps}")
 
-    if grad_accum_steps > 1:
-        optimizer = optax.MultiSteps(optimizer, every_k_schedule=grad_accum_steps)
+    optimizer = optax.MultiSteps(optimizer, every_k_schedule=grad_accum_steps)
 
     data_parallel_config = resolve_data_parallel_config(data_parallel)
     if clearml_task is None:
@@ -1254,6 +1290,10 @@ def train(
             train_time_loss_batches: list[tuple[np.ndarray, np.ndarray]] = []
             epoch_start_time = time.perf_counter()
 
+            epoch_grad_norm = 0.0
+            epoch_clip_count = 0.0
+            epoch_clip_scale = 0.0
+
             prefetcher = BatchPrefetcher(
                 dataloader=dataloader,
                 num_items=microsteps_per_epoch,
@@ -1290,7 +1330,7 @@ def train(
                             data_parallel_config,
                         )
 
-                        state, loss = train_step(
+                        state, loss, acc_grads = train_step(
                             state, x_t, u_t, t, cond, cond_mask, dropout_keys
                         )
                         if (microstep + 1) % grad_accum_steps == 0:
@@ -1303,6 +1343,14 @@ def train(
                                     state.model,
                                     ema_decay,
                                 )
+
+                            grad_norm, was_clipped, clip_scale = grad_clip_diagnostics(
+                                grads=acc_grads, global_norm=global_norm
+                            )
+                            epoch_grad_norm += grad_norm
+                            epoch_clip_count += was_clipped
+                            epoch_clip_scale += clip_scale
+
                         epoch_loss = epoch_loss + loss
                         epoch_loss_denominator += 1
 
@@ -1344,6 +1392,9 @@ def train(
 
             epoch_loss = float(epoch_loss)
             train_loss_denominator = max(epoch_loss_denominator, 1)
+            epoch_avg_grad_norm = float(epoch_grad_norm) / steps_per_epoch
+            epoch_clip_fraction = float(epoch_clip_count) / steps_per_epoch
+            epoch_avg_clip_scale = float(epoch_clip_scale) / steps_per_epoch
             train_time = time.perf_counter() - epoch_start_time
             total_train_time += train_time
             avg_train_time = total_train_time / (epoch + 1)
@@ -1592,6 +1643,9 @@ def train(
                     **{f"val/{k}": v for k, v in val_metrics.items()},
                     **{f"train/{k}": v for k, v in train_metrics.items()},
                     **{f"epoch/{k}": v for k, v in epoch_metric_results.items()},
+                    "epoch/avg_grad_norm": epoch_avg_grad_norm,
+                    "epoch/clip_fraction": epoch_clip_fraction,
+                    "epoch/avg_clip_scale": epoch_avg_clip_scale,
                 }
                 log_metrics(clearml_task, scalars, epoch + 1)
                 all_metrics = {
@@ -1614,6 +1668,9 @@ def train(
                     + f"Train Loss: {train_loss:.4g} | "
                     + metric_str
                     + " | "
+                    + f"Avg Grad Norm: {epoch_avg_grad_norm:.4g} | "
+                    + f"Clip Fraction: {epoch_clip_fraction:.4g} | "
+                    + f"Avg Clip Scale: {epoch_avg_clip_scale:.4g} | "
                     + f"Epoch Time: {epoch_time:.2g}s (avg {avg_epoch_time:.2g}s) | "
                     + f"Train Time: {train_time:.2g}s (avg {avg_train_time:.2g}s) | "
                     + val_time_str
