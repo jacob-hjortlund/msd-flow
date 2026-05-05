@@ -621,7 +621,7 @@ def batch_metric_loop(
     n_dl = len(dataloader)
     num_batches_given = num_batches > 0
     num_batches_invalid = num_batches > n_dl and num_batches_given
-    if not num_batches_invalid:
+    if num_batches_invalid:
         logger.warning(
             f"Invalid num_batches: {num_batches}. Using full dataloader with {n_dl} batches."
         )
@@ -650,7 +650,7 @@ def batch_metric_loop(
 
     if n_batches == 0:
         return {}
-    return {k: v / n_batches for k, v in totals.items()}, num_batches
+    return {k: v / n_batches for k, v in totals.items()}, total
 
 
 def time_binned_loss_loop(
