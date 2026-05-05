@@ -113,6 +113,7 @@ def main(cfg: DictConfig):
         model=model,
         dataloader=train_loader,
         val_dataloader=val_loader,
+        eval_train_dataloader=eval_train_loader,
         clearml_task=task,
         hash_payload=hash_payload,
         resume_checkpoint_path=(
