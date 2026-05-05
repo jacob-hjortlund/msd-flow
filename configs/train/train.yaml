@@ -1,118 +1,122 @@
-_target_: msdflow.train.trainer.train
-_partial_: true
-loss_fn:
-  _target_: msdflow.train.metrics.flow_matching_loss
+defaults:
+  - /train/optimizers@optimizer: constant
+  - _self_
+
+trainer:
+  _target_: msdflow.train.trainer.train
   _partial_: true
-  project_velocity: ${..project_velocity}
-batch_metrics:
-  - _target_: msdflow.train.metrics.flow_matching_loss
+  loss_fn:
+    _target_: msdflow.train.metrics.flow_matching_loss
     _partial_: true
-    project_velocity: ${...project_velocity}
-num_train_eval_batches: ${train.num_steps_per_epoch} #0
-time_loss_diagnostic:
-  enabled: true
-  split: val
-  num_bins: 20
-  num_batches: ${train.num_train_eval_batches}
-  log_heatmap: true
-_epoch_metrics_dict:
-  fid_metric:
-    _target_: msdflow.train.metrics.FIDMetric
-    accumulators:
-      fid_zoobot:
-        _target_: msdflow.train.metrics.FIDAccumulator
-        encoder:
-          _target_: msdflow.model.convnext.build_zoobot_nano
-    generate_fn:
-      _target_: msdflow.flow.sample.sample
+    project_velocity: ${..project_velocity}
+  batch_metrics:
+    - _target_: msdflow.train.metrics.flow_matching_loss
       _partial_: true
-      shape:
-        - 1
-        - ${image_size}
-        - ${image_size}
-      solver:
-        _target_: diffrax.Euler
-      dt0: 0.02
-      t0: 0.0
-      t1: 1.0
-      stepsize_controller:
-        _target_: diffrax.ConstantStepSize
-      x0_mode: ${....x0_mode}
-      project_velocity: ${....project_velocity}
-    n_samples: null
-    gen_batch_size: ${data.dataloader.batch_size}
-    n_real: null
-    parallel_generation:
-      enabled: ${train.data_parallel.enabled}
-      min_devices: ${train.data_parallel.min_devices}
-epoch_metrics: "${oc.dict.values: train._epoch_metrics_dict}"
-optimizer:
-  _target_: optax.adamw
-  learning_rate: 1.0e-4
-grad_accum_steps: 1
-data_parallel:
-  enabled: false
-  axis_name: batch
-  min_devices: 2
-coupling:
-  _target_: msdflow.flow.independent_coupling
-  _partial_: true
-time_sampler:
-  _target_: msdflow.flow.sample_time_uniform
-  _partial_: true
-  t_min: 0.0
-  t_max: 1.0
-path_sampler:
-  _target_: msdflow.flow.sample_path
-  _partial_: true
-  sigma_0: 0.0
-  sigma_1: 0.0
-num_epochs: 100
-num_steps_per_epoch: 0
-p_uncond: "${if_cond: ${metadata_columns}, 0.1, 1.0}"
-x0_mode: gaussian
-project_velocity: false
-checkpoint_dir: ${work_dir}/checkpoints
-resume:
-  restart: false
-  auto: true
-  hash: null
-  hash_exclude:
-    - clearml
-    - train.resume
-    - train.num_epochs
-    - train.time_loss_diagnostic
-  latest_filename: latest.json
-  save_on_sigterm: true
-val_every: 1
-checkpoint_every: 10
-log_every: ${train.val_every}
-ema_decay: 0.9999
-sample_fn:
-  _target_: msdflow.flow.sample.sample
-  _partial_: true
-  shape:
-    - 1
-    - ${image_size}
-    - ${image_size}
-  solver:
-    _target_: diffrax.Heun
-  dt0: null
-  t0: 0.0
-  t1: 1.0
-  stepsize_controller:
-    _target_: diffrax.PIDController
-    rtol: 1e-3
-    atol: 1e-6
-  x0_mode: ${..x0_mode}
-  project_velocity: ${..project_velocity}
-sample_every: ${train.val_every}
-num_samples: 16
-samples_share_clim: false
-samples_plot_method: arcsinh
-samples_arcsinh_percentile: 10.0
-samples_dir: ${work_dir}/samples
-monitor: fid_zoobot
-monitor_mode: min
-early_stopping_patience: 40
-buffer_size: 4
+      project_velocity: ${...project_velocity}
+  num_train_eval_batches: ${train.trainer.num_steps_per_epoch} #0
+  time_loss_diagnostic:
+    enabled: true
+    split: val
+    num_bins: 20
+    num_batches: ${train.trainer.num_train_eval_batches}
+    log_heatmap: true
+  _epoch_metrics_dict:
+    fid_metric:
+      _target_: msdflow.train.metrics.FIDMetric
+      accumulators:
+        fid_zoobot:
+          _target_: msdflow.train.metrics.FIDAccumulator
+          encoder:
+            _target_: msdflow.model.convnext.build_zoobot_nano
+      generate_fn:
+        _target_: msdflow.flow.sample.sample
+        _partial_: true
+        shape:
+          - 1
+          - ${image_size}
+          - ${image_size}
+        solver:
+          _target_: diffrax.Euler
+        dt0: 0.02
+        t0: 0.0
+        t1: 1.0
+        stepsize_controller:
+          _target_: diffrax.ConstantStepSize
+        x0_mode: ${....x0_mode}
+        project_velocity: ${....project_velocity}
+      n_samples: null
+      gen_batch_size: ${data.dataloader.batch_size}
+      n_real: null
+      parallel_generation:
+        enabled: ${train.trainer.data_parallel.enabled}
+        min_devices: ${train.trainer.data_parallel.min_devices}
+  epoch_metrics: "${oc.dict.values: train._epoch_metrics_dict}"
+  optimizer: ${train.optimizer.optimizer}
+  grad_accum_steps: 1
+  data_parallel:
+    enabled: false
+    axis_name: batch
+    min_devices: 2
+  coupling:
+    _target_: msdflow.flow.independent_coupling
+    _partial_: true
+  time_sampler:
+    _target_: msdflow.flow.sample_time_uniform
+    _partial_: true
+    t_min: 0.0
+    t_max: 1.0
+  path_sampler:
+    _target_: msdflow.flow.sample_path
+    _partial_: true
+    sigma_0: 0.0
+    sigma_1: 0.0
+  num_epochs: 100
+  num_steps_per_epoch: 0
+  p_uncond: "${if_cond: ${metadata_columns}, 0.1, 1.0}"
+  x0_mode: gaussian
+  project_velocity: false
+  checkpoint_dir: ${work_dir}/checkpoints
+  resume:
+    restart: false
+    auto: true
+    hash: null
+    hash_exclude:
+      - clearml
+      - train.resume
+      - train.num_epochs
+      - train.time_loss_diagnostic
+    latest_filename: latest.json
+    save_on_sigterm: true
+  val_every: 1
+  checkpoint_every: 10
+  log_every: ${train.trainer.val_every}
+  ema_decay: 0.9999
+  sample_fn:
+    _target_: msdflow.flow.sample.sample
+    _partial_: true
+    shape:
+      - 1
+      - ${image_size}
+      - ${image_size}
+    solver:
+      _target_: diffrax.Heun
+    dt0: null
+    t0: 0.0
+    t1: 1.0
+    stepsize_controller:
+      _target_: diffrax.PIDController
+      rtol: 1e-3
+      atol: 1e-6
+    x0_mode: ${..x0_mode}
+    project_velocity: ${..project_velocity}
+  sample_every: ${train.trainer.val_every}
+  num_samples: 16
+  samples_share_clim: false
+  samples_plot_method: arcsinh
+  samples_arcsinh_percentile: 10.0
+  samples_dir: ${work_dir}/samples
+  monitor: fid_zoobot
+  monitor_mode: min
+  early_stopping_patience: 40
+  buffer_size: 4
+  global_norm: ${train.optimizer.global_norm}

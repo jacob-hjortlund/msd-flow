@@ -104,7 +104,7 @@ def main(cfg: DictConfig):
     # 6. Train model
     log.info("--- Step 6: Model Training ---")
     train_key, rng_key = jr.split(rng_key)
-    trained_model = call(cfg.train)(
+    trained_model = call(cfg.train.trainer)(
         key=train_key,
         model=model,
         dataloader=train_loader,
