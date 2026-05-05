@@ -96,7 +96,7 @@ def main(cfg: DictConfig):
     log.info("--- Step 4: Dataloader Initialization ---")
     train_loader = build_dataloader(cfg.data.dataloader.train, seed=seed)
     val_loader = build_dataloader(cfg.data.dataloader.val, seed=seed + 1)
-    test_loader = build_dataloader(cfg.data.dataloader.test, seed=seed + 2)
+    eval_train_loader = build_dataloader(cfg.data.dataloader.eval_train, seed=seed + 2)
 
     log.info(f"Initialized train loader with {len(train_loader)} batches.")
 

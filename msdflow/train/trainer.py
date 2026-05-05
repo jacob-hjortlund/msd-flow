@@ -847,6 +847,7 @@ def train(
     model,
     dataloader,
     val_dataloader,
+    eval_train_dataloader,
     optimizer: optax.GradientTransformation,
     loss_fn: callable,
     batch_metrics: list,
@@ -1439,7 +1440,7 @@ def train(
                 train_metrics, _ = batch_metric_loop(
                     key=key_train,
                     ema_model=eval_model,
-                    dataloader=dataloader,
+                    dataloader=eval_train_dataloader,
                     step_fn=batch_metric_step,
                     prepare_jax=prepare_jax,
                     num_batches=num_eval_batches,
@@ -1678,7 +1679,7 @@ def train(
                     + f"Train Loss: {train_loss:.4g} | "
                     + metric_str
                     + " | "
-                    + "Epoch Init LR: {epoch_init_lr:.2e} | "
+                    + f"Epoch Init LR: {epoch_init_lr:.2e} | "
                     + f"Epoch End LR: {epoch_end_lr:.2e} | "
                     + f"Avg Grad Norm: {epoch_avg_grad_norm:.4g} | "
                     + f"Clip Fraction: {epoch_clip_fraction:.4g} | "

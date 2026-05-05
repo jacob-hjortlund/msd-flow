@@ -53,6 +53,7 @@ test_dataset:
 
 
 batch_size: 8
+val_batch_size: 16
 train:
   dataset: ${data.dataloader.train_dataset}
   batch_size: ${data.dataloader.batch_size}
@@ -63,9 +64,19 @@ train:
   persistent_workers: ${data.dataloader.persistent_workers}
   multiprocessing_context: ${data.dataloader.multiprocessing_context}
 
+eval_train:
+  dataset: ${data.dataloader.train_dataset}
+  batch_size: ${data.dataloader.val_batch_size}
+  shuffle: true
+  drop_last: true
+  num_workers: ${data.dataloader.num_workers}
+  prefetch_factor: ${data.dataloader.prefetch_factor}
+  persistent_workers: ${data.dataloader.persistent_workers}
+  multiprocessing_context: ${data.dataloader.multiprocessing_context}
+
 val:
   dataset: ${data.dataloader.val_dataset}
-  batch_size: ${data.dataloader.batch_size}
+  batch_size: ${data.dataloader.val_batch_size}
   shuffle: false
   drop_last: true
   num_workers: ${data.dataloader.num_workers}
