@@ -120,3 +120,4 @@ trainer:
   early_stopping_patience: 40
   buffer_size: 4
   global_norm: ${train.optimizer.global_norm}
+  lr_schedule: ${train.optimizer.schedule}

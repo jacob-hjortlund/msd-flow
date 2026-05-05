@@ -309,6 +309,9 @@ def log_metrics(task: Any, scalars: dict, epoch: int) -> None:
             if prefix in {"train", "val"}:
                 title = metric_name
                 series = key
+            elif metric_name in {"init_lr", "end_lr"}:
+                title = "Learning Rate Span"
+                series = metric_name
             else:
                 title = key
                 series = key

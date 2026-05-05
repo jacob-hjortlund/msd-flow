@@ -862,6 +862,7 @@ def train(
     val_every: int,
     checkpoint_every: int,
     checkpoint_dir: str,
+    lr_schedule: callable,
     num_train_eval_batches: int = 0,
     clearml_task: Any = None,
     sample_fn=None,
@@ -1113,6 +1114,7 @@ def train(
     start_epoch = 0
     resume_completed_microsteps = 0
     resume_epoch_loss = 0.0
+    lr_schedule_step = 0
 
     if resume_checkpoint_path is not None and resume_metadata is None:
         resume_metadata_path = os.path.splitext(os.fspath(resume_checkpoint_path))[0]
@@ -1293,6 +1295,8 @@ def train(
             epoch_grad_norm = 0.0
             epoch_clip_count = 0.0
             epoch_clip_scale = 0.0
+            epoch_init_lr_step = lr_schedule_step
+            epoch_end_lr_step = lr_schedule_step
 
             prefetcher = BatchPrefetcher(
                 dataloader=dataloader,
@@ -1350,6 +1354,7 @@ def train(
                             epoch_grad_norm += grad_norm
                             epoch_clip_count += was_clipped
                             epoch_clip_scale += clip_scale
+                            epoch_end_lr_step += 1
 
                         epoch_loss = epoch_loss + loss
                         epoch_loss_denominator += 1
@@ -1395,6 +1400,9 @@ def train(
             epoch_avg_grad_norm = float(epoch_grad_norm) / steps_per_epoch
             epoch_clip_fraction = float(epoch_clip_count) / steps_per_epoch
             epoch_avg_clip_scale = float(epoch_clip_scale) / steps_per_epoch
+            epoch_init_lr = float(lr_schedule(epoch_init_lr_step))
+            epoch_end_lr = float(lr_schedule(epoch_end_lr_step))
+            lr_schedule_step = epoch_end_lr_step
             train_time = time.perf_counter() - epoch_start_time
             total_train_time += train_time
             avg_train_time = total_train_time / (epoch + 1)
@@ -1646,6 +1654,8 @@ def train(
                     "epoch/avg_grad_norm": epoch_avg_grad_norm,
                     "epoch/clip_fraction": epoch_clip_fraction,
                     "epoch/avg_clip_scale": epoch_avg_clip_scale,
+                    "epoch/init_lr": epoch_init_lr,
+                    "epoch/end_lr": epoch_end_lr,
                 }
                 log_metrics(clearml_task, scalars, epoch + 1)
                 all_metrics = {
@@ -1668,6 +1678,8 @@ def train(
                     + f"Train Loss: {train_loss:.4g} | "
                     + metric_str
                     + " | "
+                    + "Epoch Init LR: {epoch_init_lr:.2e} | "
+                    + f"Epoch End LR: {epoch_end_lr:.2e} | "
                     + f"Avg Grad Norm: {epoch_avg_grad_norm:.4g} | "
                     + f"Clip Fraction: {epoch_clip_fraction:.4g} | "
                     + f"Avg Clip Scale: {epoch_avg_clip_scale:.4g} | "
