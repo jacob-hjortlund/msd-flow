@@ -1549,13 +1549,9 @@ def train(
                             f"New best model at epoch {epoch + 1}: {metric_str}"
                         )
                         os.makedirs(checkpoint_dir, exist_ok=True)
-                        best_raw_path = os.path.join(
-                            checkpoint_dir, f"model_epoch{epoch + 1}_best_raw.eqx"
-                        )
                         best_ema_path = os.path.join(
                             checkpoint_dir, f"model_epoch{epoch + 1}_best_ema.eqx"
                         )
-                        eqx.tree_serialise_leaves(best_raw_path, state.model)
                         if ema_model is not None:
                             eqx.tree_serialise_leaves(
                                 best_ema_path,
