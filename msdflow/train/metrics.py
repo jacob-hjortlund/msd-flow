@@ -16,7 +16,6 @@ from msdflow.train.parallel import DataParallelConfig
 from msdflow.train.parallel import make_data_parallel_config
 from msdflow.train.parallel import resolve_data_parallel_config
 
-
 logger = logging.getLogger(__name__)
 _FID_PARALLEL_AXIS_NAME = "fid_sample"
 
@@ -63,7 +62,7 @@ def _to_velocity(
     """
     if prediction_type == "image":
         t_ = t[:, None, None, None]
-        return (pred - x_t) / (1.0 - t_)
+        return (pred - x_t) / jnp.clip(1.0 - t_, min=0.05)
     return pred
 
 

@@ -141,14 +141,14 @@ def sample(
 
     _x1 = solution.ys[0]
     x1 = _x1
-    if model.prediction_type == "image":
-        key, image_key = jax.random.split(key)
+    # if model.prediction_type == "image":
+    #     key, image_key = jax.random.split(key)
 
-        if guidance_scale == 1.0:
-            x1 = model(t1, _x1, _cond, _mask, image_key)
-        else:
-            pred_cond = model(t1, _x1, _cond, mask_true, image_key)
-            pred_uncond = model(t1, _x1, _cond, mask_false, image_key)
-            x1 = pred_uncond + guidance_scale * (pred_cond - pred_uncond)
+    #     if guidance_scale == 1.0:
+    #         x1 = model(t1, _x1, _cond, _mask, image_key)
+    #     else:
+    #         pred_cond = model(t1, _x1, _cond, mask_true, image_key)
+    #         pred_uncond = model(t1, _x1, _cond, mask_false, image_key)
+    #         x1 = pred_uncond + guidance_scale * (pred_cond - pred_uncond)
 
     return x1
