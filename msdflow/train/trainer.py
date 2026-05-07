@@ -1619,7 +1619,7 @@ def train(
             if (
                 sample_fn is not None
                 and sample_every > 0
-                and (epoch + 1) % sample_every == 0
+                and (((epoch + 1) % sample_every == 0) or (epoch == 0))
             ):
 
                 sample_model = ema_model if ema_model is not None else state.model
