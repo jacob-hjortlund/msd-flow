@@ -754,7 +754,7 @@ class ResBlockBigGAN(eqx.Module):
             raise ValueError("Cannot set both up=True and down=True.")
 
         if not use_coord_conv:
-            conv_layer = eqx.nn.Conv2
+            conv_layer = eqx.nn.Conv2d
         else:
             conv_layer = CoordConv
 
@@ -766,16 +766,16 @@ class ResBlockBigGAN(eqx.Module):
         self.compute_dtype = compute_dtype
 
         self.norm1 = eqx.nn.GroupNorm(num_groups, in_channels)
-        self.conv1 = eqx.nn.conv_layer(in_channels, out_channels, 3, padding=1, key=k1)
+        self.conv1 = conv_layer(in_channels, out_channels, 3, padding=1, key=k1)
         self.time_proj = eqx.nn.Linear(time_emb_dim, out_channels, key=k2)
         self.norm2 = eqx.nn.GroupNorm(num_groups, out_channels)
         self.dropout = eqx.nn.Dropout(dropout)
-        self.conv2 = eqx.nn.conv_layer(out_channels, out_channels, 3, padding=1, key=k3)
+        self.conv2 = conv_layer(out_channels, out_channels, 3, padding=1, key=k3)
 
         self.skip_conv = (
             None
             if (in_channels == out_channels and not up and not down)
-            else eqx.nn.conv_layer(in_channels, out_channels, 1, key=k4)
+            else conv_layer(in_channels, out_channels, 1, key=k4)
         )
 
     def _resample(self, x: jax.Array) -> jax.Array:

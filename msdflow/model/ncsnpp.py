@@ -167,16 +167,16 @@ class NCSNpp(eqx.Module):
         L = len(channel_multipliers)
         time_emb_dim = base_channels * 4
 
+        if not use_coord_conv:
+            conv_layer = eqx.nn.Conv2d
+        else:
+            conv_layer = CoordConv
+
         # -- Stem --
         stem_key, key = jax.random.split(key)
-        if not use_coord_conv:
-            self.stem = eqx.nn.Conv2d(
-                in_channels, base_channels, 3, padding=1, key=stem_key
-            )
-        else:
-            self.stem = CoordConv(
-                in_channels, base_channels, 3, padding=1, key=stem_key
-            )
+        self.stem = eqx.nn.Conv2d(
+            in_channels, base_channels, 3, padding=1, key=stem_key
+        )
 
         # -- Time embedding --
         time_emb_key, key = jax.random.split(key)
@@ -393,13 +393,12 @@ class NCSNpp(eqx.Module):
         self.final_norm = eqx.nn.GroupNorm(
             num_groups, base_channels * channel_multipliers[0]
         )
-        self.final_conv = eqx.nn.Conv2d(
+        self.final_conv = conv_layer(
             base_channels * channel_multipliers[0],
             out_channels,
             3,
             padding=1,
             key=out_key,
-            use_coord_conv=use_coord_conv,
         )
 
     def __call__(
