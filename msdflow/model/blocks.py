@@ -135,7 +135,7 @@ class CoordConv(eqx.Module):
 
         in_channels += 2
         if use_radial:
-            in_channels += 1
+            in_channels += 2
 
         self.use_radial = use_radial
         self.conv = eqx.nn.Conv2d(
@@ -161,7 +161,7 @@ class CoordConv(eqx.Module):
         X, Y = jnp.meshgrid(_x, _y, indexing="xy")
 
         if self.use_radial:
-            R = jnp.sqrt(X**2 + Y**2) / jnp.sqrt(2)
+            R = 1.0 - jnp.sqrt(X**2 + Y**2) / jnp.sqrt(2)
             coords = jnp.stack([X, Y, R], axis=0)
         else:
             coords = jnp.stack([X, Y], axis=0)
