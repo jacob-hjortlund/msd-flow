@@ -111,6 +111,67 @@ class Upsample(eqx.Module):
         return self.conv(x)
 
 
+class CoordConv(eqx.Module):
+
+    conv: eqx.nn.Conv2d
+    use_radial: bool = eqx.field(static=True)
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int | Sequence[int],
+        stride: int | Sequence[int] = (1, 1),
+        padding: str | int | Sequence[int] | Sequence[tuple[int, int]] = (0, 0),
+        dilation: int | Sequence[int] = (1, 1),
+        groups: int = 1,
+        use_bias: bool = True,
+        padding_mode: str = "ZEROS",
+        dtype=None,
+        use_radial=False,
+        *,
+        key: jax.Array,
+    ):
+
+        in_channels += 2
+        if use_radial:
+            in_channels += 1
+
+        self.use_radial = use_radial
+        self.conv = eqx.nn.Conv2d(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            dilation=dilation,
+            groups=groups,
+            use_bias=use_bias,
+            padding_mode=padding_mode,
+            dtype=dtype,
+            key=key,
+        )
+
+    def __call__(self, x: jax.Array):
+
+        H, W = x.shape[-2:]
+        _x = jnp.linspace(-1, 1, W)
+        _y = jnp.linspace(1, -1, H)
+
+        X, Y = jnp.meshgrid(_x, _y, indexing="xy")
+
+        if self.use_radial:
+            R = jnp.sqrt(X**2 + Y**2) / jnp.sqrt(2)
+            coords = jnp.stack([X, Y, R], axis=0)
+        else:
+            coords = jnp.stack([X, Y], axis=0)
+
+        x = jnp.concatenate([x, coords], axis=0)
+        out = self.conv(x)
+
+        pass
+
+
 class ResBlock(eqx.Module):
     """Residual block with time-embedding conditioning and optional skip projection."""
 
@@ -649,11 +710,11 @@ class ResBlockBigGAN(eqx.Module):
     """
 
     norm1: eqx.nn.GroupNorm
-    conv1: eqx.nn.Conv2d
+    conv1: eqx.nn.Conv2d | CoordConv
     time_proj: eqx.nn.Linear
     norm2: eqx.nn.GroupNorm
-    conv2: eqx.nn.Conv2d
-    skip_conv: Optional[eqx.nn.Conv2d]
+    conv2: eqx.nn.Conv2d | CoordConv
+    skip_conv: Optional[eqx.nn.Conv2d | CoordConv]
     dropout: float = eqx.nn.Dropout
     activation: Callable = eqx.field(static=True)
     skip_rescale: bool = eqx.field(static=True)
@@ -674,6 +735,7 @@ class ResBlockBigGAN(eqx.Module):
         up: bool = False,
         down: bool = False,
         compute_dtype: jnp.dtype = jnp.float32,
+        use_coord_conv: bool = False,
     ):
         """Args:
         in_channels: Input channel count.
@@ -691,6 +753,11 @@ class ResBlockBigGAN(eqx.Module):
         if up and down:
             raise ValueError("Cannot set both up=True and down=True.")
 
+        if not use_coord_conv:
+            conv_layer = eqx.nn.Conv2
+        else:
+            conv_layer = CoordConv
+
         k1, k2, k3, k4 = jax.random.split(key, 4)
         self.activation = activation
         self.skip_rescale = skip_rescale
@@ -699,16 +766,16 @@ class ResBlockBigGAN(eqx.Module):
         self.compute_dtype = compute_dtype
 
         self.norm1 = eqx.nn.GroupNorm(num_groups, in_channels)
-        self.conv1 = eqx.nn.Conv2d(in_channels, out_channels, 3, padding=1, key=k1)
+        self.conv1 = eqx.nn.conv_layer(in_channels, out_channels, 3, padding=1, key=k1)
         self.time_proj = eqx.nn.Linear(time_emb_dim, out_channels, key=k2)
         self.norm2 = eqx.nn.GroupNorm(num_groups, out_channels)
         self.dropout = eqx.nn.Dropout(dropout)
-        self.conv2 = eqx.nn.Conv2d(out_channels, out_channels, 3, padding=1, key=k3)
+        self.conv2 = eqx.nn.conv_layer(out_channels, out_channels, 3, padding=1, key=k3)
 
         self.skip_conv = (
             None
             if (in_channels == out_channels and not up and not down)
-            else eqx.nn.Conv2d(in_channels, out_channels, 1, key=k4)
+            else eqx.nn.conv_layer(in_channels, out_channels, 1, key=k4)
         )
 
     def _resample(self, x: jax.Array) -> jax.Array:

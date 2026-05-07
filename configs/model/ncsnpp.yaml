@@ -21,3 +21,4 @@ compute_dtype: "${jnp_dtype: float32}"
 attention_dtype: "${jnp_dtype: float32}"
 attention_implementation: null
 attention_type: "dot_product"
+use_coord_conv: false

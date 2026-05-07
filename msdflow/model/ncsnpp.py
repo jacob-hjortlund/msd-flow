@@ -17,6 +17,7 @@ from msdflow.model.blocks import (
     GaussianFourierProjection,
     ResBlockBigGAN,
     _apply_conv2d,
+    CoordConv,
 )
 from msdflow.utils import register_all_resolvers
 
@@ -48,7 +49,7 @@ class NCSNpp(eqx.Module):
         compute_dtype: Dtype for conv/linear-heavy model compute outside attention.
     """
 
-    stem: eqx.nn.Conv2d
+    stem: eqx.nn.Conv2d | CoordConv
     time_emb: GaussianFourierProjection
     cond_dim: int = eqx.field(static=True)
     cond_embed: Optional[GaussianFourierProjection]
@@ -67,7 +68,7 @@ class NCSNpp(eqx.Module):
     upsample_blocks: List
 
     final_norm: eqx.nn.GroupNorm
-    final_conv: eqx.nn.Conv2d
+    final_conv: eqx.nn.Conv2d | CoordConv
 
     activation: Callable = eqx.field(static=True)
     channel_multipliers: List[int] = eqx.field(static=True)
@@ -99,6 +100,7 @@ class NCSNpp(eqx.Module):
         attention_dtype: jnp.dtype = jnp.float32,
         attention_implementation: Optional[str] = None,
         attention_type: str = "dot_product",
+        use_coord_conv: bool = False,
     ):
         """Initialise the NCSN++ architecture.
 
@@ -167,9 +169,14 @@ class NCSNpp(eqx.Module):
 
         # -- Stem --
         stem_key, key = jax.random.split(key)
-        self.stem = eqx.nn.Conv2d(
-            in_channels, base_channels, 3, padding=1, key=stem_key
-        )
+        if not use_coord_conv:
+            self.stem = eqx.nn.Conv2d(
+                in_channels, base_channels, 3, padding=1, key=stem_key
+            )
+        else:
+            self.stem = CoordConv(
+                in_channels, base_channels, 3, padding=1, key=stem_key
+            )
 
         # -- Time embedding --
         time_emb_key, key = jax.random.split(key)
@@ -218,6 +225,7 @@ class NCSNpp(eqx.Module):
                         skip_rescale=skip_rescale,
                         key=block_key,
                         compute_dtype=compute_dtype,
+                        use_coord_conv=use_coord_conv,
                     )
                 )
                 enc_is_attn.append(False)
@@ -256,6 +264,7 @@ class NCSNpp(eqx.Module):
                         key=block_key,
                         down=True,
                         compute_dtype=compute_dtype,
+                        use_coord_conv=use_coord_conv,
                     )
                 )
                 skip_channels.append(ch_out)
@@ -278,6 +287,7 @@ class NCSNpp(eqx.Module):
             skip_rescale,
             mid1_key,
             compute_dtype=compute_dtype,
+            use_coord_conv=use_coord_conv,
         )
         self.mid_attn = AttnBlockNCSN(
             channels=ch_bot,
@@ -299,6 +309,7 @@ class NCSNpp(eqx.Module):
             skip_rescale,
             mid2_key,
             compute_dtype=compute_dtype,
+            use_coord_conv=use_coord_conv,
         )
 
         # -- Decoder --
@@ -328,6 +339,7 @@ class NCSNpp(eqx.Module):
                         skip_rescale,
                         key=block_key,
                         compute_dtype=compute_dtype,
+                        use_coord_conv=use_coord_conv,
                     )
                 )
                 dec_is_attn.append(False)
@@ -363,6 +375,7 @@ class NCSNpp(eqx.Module):
                         block_key,
                         up=True,
                         compute_dtype=compute_dtype,
+                        use_coord_conv=use_coord_conv,
                     )
                 )
                 current_res = current_res * 2
@@ -386,6 +399,7 @@ class NCSNpp(eqx.Module):
             3,
             padding=1,
             key=out_key,
+            use_coord_conv=use_coord_conv,
         )
 
     def __call__(
