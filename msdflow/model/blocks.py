@@ -114,7 +114,6 @@ class Upsample(eqx.Module):
 class CoordConv(eqx.Module):
 
     conv: eqx.nn.Conv2d
-    use_radial: bool = eqx.field(static=True)
 
     def __init__(
         self,
@@ -133,8 +132,6 @@ class CoordConv(eqx.Module):
     ):
 
         in_channels += 1
-
-        self.use_radial = use_radial
         self.conv = eqx.nn.Conv2d(
             in_channels=in_channels,
             out_channels=out_channels,
