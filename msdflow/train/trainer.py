@@ -1520,75 +1520,78 @@ def train(
                 avg_val_time = total_val_time / val_runs
 
                 # --- Best-model checkpointing and early stopping ---
-                current_monitor = val_metrics.get(monitor)
-                if current_monitor is None:
-                    current_monitor = epoch_metric_results.get(monitor)
-                if current_monitor is None and (val_metrics or epoch_metric_results):
-                    raise ValueError(
-                        f"monitor metric '{monitor}' not found in val_metrics "
-                        f"{list(val_metrics.keys())} or epoch_metric_results "
-                        f"{list(epoch_metric_results.keys())}"
-                    )
-                if current_monitor is not None:
-                    current_monitor = float(current_monitor)
-                    is_improved = (
-                        current_monitor < best_metric_value
-                        if monitor_mode == "min"
-                        else current_monitor > best_metric_value
-                    )
-                    if is_improved:
-                        all_metrics = {monitor: current_monitor}
-                        all_metrics.update(
-                            {k: v for k, v in val_metrics.items() if k != monitor}
-                        )
-                        all_metrics.update(
-                            {
-                                k: v
-                                for k, v in epoch_metric_results.items()
-                                if k != monitor
-                            }
-                        )
-                        metric_str = " | ".join(
-                            f"{k} = {float(v):.4g}" for k, v in all_metrics.items()
-                        )
-                        logger.info(
-                            f"New best model at epoch {epoch + 1}: {metric_str}"
-                        )
-                        os.makedirs(checkpoint_dir, exist_ok=True)
-                        best_ema_path = os.path.join(
-                            checkpoint_dir, f"model_epoch{epoch + 1}_best_ema.eqx"
-                        )
-                        if ema_model is not None:
-                            eqx.tree_serialise_leaves(
-                                best_ema_path,
-                                _inference_model(ema_model),
-                            )
-                            log_checkpoint(clearml_task, best_ema_path, epoch + 1)
-                        best_metric_value = current_monitor
-                        best_epoch = epoch + 1
-                        patience_counter = 0
-                    else:
-                        patience_counter += 1
-
-                    if sigterm_flag.requested:
-                        _save_full_checkpoint(
-                            kind="sigterm",
-                            epoch_to_resume=epoch + 1,
-                            completed_microsteps=0,
-                            current_epoch_loss=0.0,
-                        )
-                        return _model_to_return()
-
-                    if (
-                        early_stopping_patience is not None
-                        and patience_counter >= early_stopping_patience
+                if monitor:
+                    current_monitor = val_metrics.get(monitor)
+                    if current_monitor is None:
+                        current_monitor = epoch_metric_results.get(monitor)
+                    if current_monitor is None and (
+                        val_metrics or epoch_metric_results
                     ):
-                        logger.info(
-                            f"Early stopping triggered at epoch {epoch + 1}: "
-                            f"'{monitor}' did not improve for "
-                            f"{early_stopping_patience} consecutive validation cycles."
+                        raise ValueError(
+                            f"monitor metric '{monitor}' not found in val_metrics "
+                            f"{list(val_metrics.keys())} or epoch_metric_results "
+                            f"{list(epoch_metric_results.keys())}"
                         )
-                        break
+                    if current_monitor is not None:
+                        current_monitor = float(current_monitor)
+                        is_improved = (
+                            current_monitor < best_metric_value
+                            if monitor_mode == "min"
+                            else current_monitor > best_metric_value
+                        )
+                        if is_improved:
+                            all_metrics = {monitor: current_monitor}
+                            all_metrics.update(
+                                {k: v for k, v in val_metrics.items() if k != monitor}
+                            )
+                            all_metrics.update(
+                                {
+                                    k: v
+                                    for k, v in epoch_metric_results.items()
+                                    if k != monitor
+                                }
+                            )
+                            metric_str = " | ".join(
+                                f"{k} = {float(v):.4g}" for k, v in all_metrics.items()
+                            )
+                            logger.info(
+                                f"New best model at epoch {epoch + 1}: {metric_str}"
+                            )
+                            os.makedirs(checkpoint_dir, exist_ok=True)
+                            best_ema_path = os.path.join(
+                                checkpoint_dir, f"model_epoch{epoch + 1}_best_ema.eqx"
+                            )
+                            if ema_model is not None:
+                                eqx.tree_serialise_leaves(
+                                    best_ema_path,
+                                    _inference_model(ema_model),
+                                )
+                                log_checkpoint(clearml_task, best_ema_path, epoch + 1)
+                            best_metric_value = current_monitor
+                            best_epoch = epoch + 1
+                            patience_counter = 0
+                        else:
+                            patience_counter += 1
+
+                        if sigterm_flag.requested:
+                            _save_full_checkpoint(
+                                kind="sigterm",
+                                epoch_to_resume=epoch + 1,
+                                completed_microsteps=0,
+                                current_epoch_loss=0.0,
+                            )
+                            return _model_to_return()
+
+                        if (
+                            early_stopping_patience is not None
+                            and patience_counter >= early_stopping_patience
+                        ):
+                            logger.info(
+                                f"Early stopping triggered at epoch {epoch + 1}: "
+                                f"'{monitor}' did not improve for "
+                                f"{early_stopping_patience} consecutive validation cycles."
+                            )
+                            break
 
             if (epoch + 1) % checkpoint_every == 0:
                 os.makedirs(checkpoint_dir, exist_ok=True)
