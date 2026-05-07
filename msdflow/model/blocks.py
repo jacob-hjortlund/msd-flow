@@ -153,7 +153,8 @@ class CoordConv(eqx.Module):
         _y = jnp.linspace(1, -1, H, dtype=x.dtype)
 
         X, Y = jnp.meshgrid(_x, _y, indexing="xy")
-        R = 1.0 - jnp.sqrt(X**2 + Y**2) / jnp.sqrt(2)
+        _R = 1.0 - jnp.sqrt(X**2 + Y**2) / jnp.sqrt(2)
+        R = (R - jnp.mean(_R)) / jnp.std(_R)
 
         x = jnp.concatenate([x, R[None, ...]], axis=0)
         out = _apply_conv2d(self.conv, x)
