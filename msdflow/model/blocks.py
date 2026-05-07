@@ -868,7 +868,7 @@ class ResBlockBigGAN(eqx.Module):
 
         skip = self._resample(x)
         if self.skip_conv is not None:
-            skip = self.skip_conv, (skip.astype(self.compute_dtype)).astype(orig_dtype)
+            skip = self.skip_conv(skip.astype(self.compute_dtype)).astype(orig_dtype)
 
         out = h + skip
         if self.skip_rescale:
