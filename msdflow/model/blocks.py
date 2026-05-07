@@ -128,7 +128,7 @@ class CoordConv(eqx.Module):
         use_bias: bool = True,
         padding_mode: str = "ZEROS",
         dtype=None,
-        use_radial=False,
+        use_radial=True,
         *,
         key: jax.Array,
     ):
