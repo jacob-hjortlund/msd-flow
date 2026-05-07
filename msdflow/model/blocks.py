@@ -128,14 +128,11 @@ class CoordConv(eqx.Module):
         use_bias: bool = True,
         padding_mode: str = "ZEROS",
         dtype=None,
-        use_radial=True,
         *,
         key: jax.Array,
     ):
 
-        in_channels += 2
-        if use_radial:
-            in_channels += 2
+        in_channels += 1
 
         self.use_radial = use_radial
         self.conv = eqx.nn.Conv2d(
@@ -159,14 +156,9 @@ class CoordConv(eqx.Module):
         _y = jnp.linspace(1, -1, H, dtype=x.dtype)
 
         X, Y = jnp.meshgrid(_x, _y, indexing="xy")
+        R = 1.0 - jnp.sqrt(X**2 + Y**2) / jnp.sqrt(2)
 
-        if self.use_radial:
-            R = 1.0 - jnp.sqrt(X**2 + Y**2) / jnp.sqrt(2)
-            coords = jnp.stack([X, Y, R], axis=0)
-        else:
-            coords = jnp.stack([X, Y], axis=0)
-
-        x = jnp.concatenate([x, coords], axis=0)
+        x = jnp.concatenate([x, R[None, ...]], axis=0)
         out = _apply_conv2d(self.conv, x)
 
         return out
