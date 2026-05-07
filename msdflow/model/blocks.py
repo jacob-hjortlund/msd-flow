@@ -265,7 +265,7 @@ class ResBlockBigGAN(eqx.Module):
     norm2: eqx.nn.GroupNorm
     conv2: eqx.nn.Conv2d
     skip_conv: Optional[eqx.nn.Conv2d]
-    dropout: float = eqx.nn.Dropout
+    dropout: eqx.nn.Dropout
     activation: Callable = eqx.field(static=True)
     skip_rescale: bool = eqx.field(static=True)
     up: bool = eqx.field(static=True)
