@@ -114,6 +114,7 @@ class Upsample(eqx.Module):
 class CoordConv(eqx.Module):
 
     conv: eqx.nn.Conv2d
+    power: float = eqx.field(static=True)
 
     def __init__(
         self,
@@ -127,11 +128,13 @@ class CoordConv(eqx.Module):
         use_bias: bool = True,
         padding_mode: str = "ZEROS",
         dtype=None,
+        power: float = 1.0,
         *,
         key: jax.Array,
     ):
 
         in_channels += 1
+        self.power = power
         self.conv = eqx.nn.Conv2d(
             in_channels=in_channels,
             out_channels=out_channels,
@@ -154,6 +157,7 @@ class CoordConv(eqx.Module):
 
         X, Y = jnp.meshgrid(_x, _y, indexing="xy")
         _R = 1.0 - jnp.sqrt(X**2 + Y**2) / jnp.sqrt(2)
+        _R = jnp.power(_R, self.power)
         R = (R - jnp.mean(_R)) / jnp.std(_R)
 
         x = jnp.concatenate([x, R[None, ...]], axis=0)
