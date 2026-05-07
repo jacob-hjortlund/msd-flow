@@ -211,7 +211,7 @@ class Conv2d(eqx.Module):
 
         out = _apply_conv2d(self.conv, x)
 
-        pass
+        return out
 
 
 class ResBlock(eqx.Module):
