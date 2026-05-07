@@ -23,6 +23,8 @@ metadata_columns: ${metadata_columns}
 metadata_transform: null
 dataset_class: msdflow.data.dataset.TNG50Dataset
 
+max_size: null
+
 train_dataset:
   _target_: ${data.dataloader.dataset_class}
   processed_dir: ${data.dataloader.data_dir}
@@ -34,6 +36,7 @@ train_dataset:
       - ${data.dataloader.augmentations}
   metadata_columns: ${data.dataloader.metadata_columns}
   metadata_transform: ${data.dataloader.metadata_transform}
+  max_size: ${data.dataloader.max_size}
 
 val_dataset:
   _target_: ${data.dataloader.dataset_class}
@@ -42,6 +45,7 @@ val_dataset:
   image_transform: ${data.dataloader.transforms.deterministic}
   metadata_columns: ${data.dataloader.metadata_columns}
   metadata_transform: ${data.dataloader.metadata_transform}
+  max_size: ${data.dataloader.max_size}
 
 test_dataset:
   _target_: ${data.dataloader.dataset_class}
@@ -50,6 +54,7 @@ test_dataset:
   image_transform: ${data.dataloader.transforms.deterministic}
   metadata_columns: ${data.dataloader.metadata_columns}
   metadata_transform: ${data.dataloader.metadata_transform}
+  max_size: ${data.dataloader.max_size}
 
 
 batch_size: 8
