@@ -155,8 +155,8 @@ class CoordConv(eqx.Module):
     def __call__(self, x: jax.Array):
 
         H, W = x.shape[-2:]
-        _x = jnp.linspace(-1, 1, W)
-        _y = jnp.linspace(1, -1, H)
+        _x = jnp.linspace(-1, 1, W, dtype=x.dtype)
+        _y = jnp.linspace(1, -1, H, dtype=x.dtype)
 
         X, Y = jnp.meshgrid(_x, _y, indexing="xy")
 
@@ -167,7 +167,49 @@ class CoordConv(eqx.Module):
             coords = jnp.stack([X, Y], axis=0)
 
         x = jnp.concatenate([x, coords], axis=0)
-        out = self.conv(x)
+        out = _apply_conv2d(self.conv, x)
+
+        return out
+
+
+class Conv2d(eqx.Module):
+
+    conv: eqx.nn.Conv2d
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int | Sequence[int],
+        stride: int | Sequence[int] = (1, 1),
+        padding: str | int | Sequence[int] | Sequence[tuple[int, int]] = (0, 0),
+        dilation: int | Sequence[int] = (1, 1),
+        groups: int = 1,
+        use_bias: bool = True,
+        padding_mode: str = "ZEROS",
+        dtype=None,
+        use_radial=True,
+        *,
+        key: jax.Array,
+    ):
+
+        self.conv = eqx.nn.Conv2d(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            dilation=dilation,
+            groups=groups,
+            use_bias=use_bias,
+            padding_mode=padding_mode,
+            dtype=dtype,
+            key=key,
+        )
+
+    def __call__(self, x: jax.Array):
+
+        out = _apply_conv2d(self.conv, x)
 
         pass
 
@@ -710,7 +752,7 @@ class ResBlockBigGAN(eqx.Module):
     """
 
     norm1: eqx.nn.GroupNorm
-    conv1: eqx.nn.Conv2d | CoordConv
+    conv1: Conv2d | CoordConv
     time_proj: eqx.nn.Linear
     norm2: eqx.nn.GroupNorm
     conv2: eqx.nn.Conv2d | CoordConv
@@ -754,7 +796,7 @@ class ResBlockBigGAN(eqx.Module):
             raise ValueError("Cannot set both up=True and down=True.")
 
         if not use_coord_conv:
-            conv_layer = eqx.nn.Conv2d
+            conv_layer = Conv2d
         else:
             conv_layer = CoordConv
 
@@ -811,7 +853,7 @@ class ResBlockBigGAN(eqx.Module):
         h = self.norm1(x)
         h = self.activation(h)
         h = self._resample(h)
-        h = _apply_conv2d(self.conv1, h.astype(self.compute_dtype)).astype(orig_dtype)
+        h = self.conv1(h.astype(self.compute_dtype)).astype(orig_dtype)
 
         time_h = _apply_linear(
             self.time_proj,
@@ -822,14 +864,11 @@ class ResBlockBigGAN(eqx.Module):
         h = self.norm2(h)
         h = self.activation(h)
         h = self.dropout(h, key=key)
-        h = _apply_conv2d(self.conv2, h.astype(self.compute_dtype)).astype(orig_dtype)
+        h = self.conv2(h.astype(self.compute_dtype)).astype(orig_dtype)
 
         skip = self._resample(x)
         if self.skip_conv is not None:
-            skip = _apply_conv2d(
-                self.skip_conv,
-                skip.astype(self.compute_dtype),
-            ).astype(orig_dtype)
+            skip = self.skip_conv, (skip.astype(self.compute_dtype)).astype(orig_dtype)
 
         out = h + skip
         if self.skip_rescale:

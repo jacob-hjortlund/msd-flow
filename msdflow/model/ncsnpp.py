@@ -16,8 +16,8 @@ from msdflow.model.blocks import (
     AttnBlockNCSN,
     GaussianFourierProjection,
     ResBlockBigGAN,
-    _apply_conv2d,
     CoordConv,
+    Conv2d,
 )
 from msdflow.utils import register_all_resolvers
 
@@ -49,7 +49,7 @@ class NCSNpp(eqx.Module):
         compute_dtype: Dtype for conv/linear-heavy model compute outside attention.
     """
 
-    stem: eqx.nn.Conv2d | CoordConv
+    stem: Conv2d | CoordConv
     time_emb: GaussianFourierProjection
     cond_dim: int = eqx.field(static=True)
     cond_embed: Optional[GaussianFourierProjection]
@@ -68,7 +68,7 @@ class NCSNpp(eqx.Module):
     upsample_blocks: List
 
     final_norm: eqx.nn.GroupNorm
-    final_conv: eqx.nn.Conv2d | CoordConv
+    final_conv: Conv2d | CoordConv
 
     activation: Callable = eqx.field(static=True)
     channel_multipliers: List[int] = eqx.field(static=True)
@@ -168,15 +168,13 @@ class NCSNpp(eqx.Module):
         time_emb_dim = base_channels * 4
 
         if not use_coord_conv:
-            conv_layer = eqx.nn.Conv2d
+            conv_layer = Conv2d
         else:
             conv_layer = CoordConv
 
         # -- Stem --
         stem_key, key = jax.random.split(key)
-        self.stem = eqx.nn.Conv2d(
-            in_channels, base_channels, 3, padding=1, key=stem_key
-        )
+        self.stem = conv_layer(in_channels, base_channels, 3, padding=1, key=stem_key)
 
         # -- Time embedding --
         time_emb_key, key = jax.random.split(key)
@@ -437,10 +435,7 @@ class NCSNpp(eqx.Module):
         else:
             combined_emb = time_emb
 
-        h = _apply_conv2d(
-            self.stem,
-            x_t.astype(self.compute_dtype),
-        ).astype(x_t.dtype)
+        h = self.stem(x_t.astype(self.compute_dtype)).astype(x_t.dtype)
 
         # -- Encoder: collect skip connections --
         skips = [h]
@@ -493,8 +488,5 @@ class NCSNpp(eqx.Module):
         h = self.final_norm(h)
         h = self.activation(h)
         output_dtype = h.dtype
-        h = _apply_conv2d(
-            self.final_conv,
-            h.astype(self.compute_dtype),
-        ).astype(output_dtype)
+        h = self.final_conv(h.astype(self.compute_dtype)).astype(output_dtype)
         return h
