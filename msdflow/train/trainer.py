@@ -1418,7 +1418,7 @@ def train(
                 )
                 return _model_to_return()
 
-            if (epoch + 1) % val_every == 0:
+            if ((epoch + 1) % val_every == 0) or (epoch == 0):
                 val_start_time = time.perf_counter()
 
                 key, key_val, key_train, key_epoch = jax.random.split(key, 4)
@@ -1650,7 +1650,7 @@ def train(
             total_epoch_time += epoch_time
             avg_epoch_time = total_epoch_time / (epoch + 1)
 
-            if (epoch + 1) % log_every == 0:
+            if ((epoch + 1) % log_every == 0) or (epoch == 0):
                 train_loss = epoch_loss / train_loss_denominator
                 scalars = {
                     "train/loss": train_loss,
