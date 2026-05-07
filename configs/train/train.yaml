@@ -121,3 +121,4 @@ trainer:
   buffer_size: 4
   global_norm: ${train.optimizer.global_norm}
   lr_schedule: ${train.optimizer.schedule}
+  eval_model: live

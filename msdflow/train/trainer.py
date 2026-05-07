@@ -893,6 +893,7 @@ def train(
     project_velocity: bool = False,
     time_loss_diagnostic: Any = None,
     global_norm: float | None = None,
+    eval_model: str = "live",
     **kwargs,
 ):
     """Main training loop with EMA and periodic validation.
@@ -1425,11 +1426,15 @@ def train(
                 if time_loss_enabled:
                     key_time_loss = jax.random.fold_in(key, epoch + 1)
 
-                eval_model = ema_model if ema_model is not None else state.model
-                eval_model = _inference_model(eval_model)
+                if eval_model == "live":
+                    batch_eval_model = _copy_array_tree(state.model)
+                elif eval_model == "ema":
+                    batch_eval_model = ema_model
+
+                batch_eval_model = _inference_model(batch_eval_model)
                 val_metrics, num_eval_batches = batch_metric_loop(
                     key=key_val,
-                    ema_model=eval_model,
+                    ema_model=batch_eval_model,
                     dataloader=val_dataloader,
                     step_fn=batch_metric_step,
                     prepare_jax=prepare_jax,
@@ -1439,7 +1444,7 @@ def train(
 
                 train_metrics, _ = batch_metric_loop(
                     key=key_train,
-                    ema_model=eval_model,
+                    ema_model=batch_eval_model,
                     dataloader=eval_train_dataloader,
                     step_fn=batch_metric_step,
                     prepare_jax=prepare_jax,
@@ -1449,10 +1454,11 @@ def train(
 
                 epoch_metric_results = {}
                 if epoch_metrics:
+                    inference_ema_model = _inference_model(ema_model)
                     for fn in epoch_metrics:
                         result = _call_epoch_metric(
                             fn,
-                            eval_model,
+                            inference_ema_model,
                             val_dataloader,
                             key_epoch,
                             data_parallel_config,
@@ -1475,7 +1481,7 @@ def train(
                         if split == "train":
                             time_loss_result = _time_binned_loss_cached_batch_loop(
                                 key=split_key,
-                                model=eval_model,
+                                model=batch_eval_model,
                                 cached_batches=train_time_loss_batches,
                                 step_fn=time_binned_loss_step,
                                 prepare_jax=prepare_jax,
@@ -1485,7 +1491,7 @@ def train(
                         else:
                             time_loss_result = time_binned_loss_loop(
                                 key=split_key,
-                                model=eval_model,
+                                model=batch_eval_model,
                                 dataloader=val_dataloader,
                                 step_fn=time_binned_loss_step,
                                 prepare_jax=prepare_jax,
