@@ -7,7 +7,7 @@ from msdflow.data.random import seed_transform_tree, seed_worker
 
 
 def build_dataloader(loader_cfg, *, seed: int) -> DataLoader:
-    dataset = instantiate(loader_cfg.dataset)
+    dataset = instantiate(loader_cfg.dataset)(seed=seed)
     num_workers = int(loader_cfg.num_workers)
 
     # Ensure deterministic stochastic transforms even when num_workers == 0.

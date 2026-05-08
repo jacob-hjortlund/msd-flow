@@ -27,6 +27,7 @@ max_size: null
 
 train_dataset:
   _target_: ${data.dataloader.dataset_class}
+  _partial_: true
   processed_dir: ${data.dataloader.data_dir}
   split: train
   image_transform:
@@ -40,6 +41,7 @@ train_dataset:
 
 val_dataset:
   _target_: ${data.dataloader.dataset_class}
+  _partial_: true
   processed_dir: ${data.dataloader.data_dir}
   split: val
   image_transform: ${data.dataloader.transforms.deterministic}
@@ -50,6 +52,7 @@ val_dataset:
 test_dataset:
   _target_: ${data.dataloader.dataset_class}
   processed_dir: ${data.dataloader.data_dir}
+  _partial_: true
   split: test
   image_transform: ${data.dataloader.transforms.deterministic}
   metadata_columns: ${data.dataloader.metadata_columns}
