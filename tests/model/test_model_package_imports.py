@@ -71,15 +71,27 @@ def test_convnext_package_exports_builder_and_encoder():
 def test_inceptionv3_package_exports_builder_and_model():
     """InceptionV3 public symbols are available from the package path."""
     from msdflow.model.inceptionv3 import (
+        Array,
+        Dtype,
         InceptionV3,
+        PRNGKey,
+        Shape,
         build_headless_inceptionv3,
         reshape,
     )
+    from msdflow.model.inceptionv3.blocks import Array as BlockArray
     from msdflow.model.inceptionv3.blocks import BasicConv2d, InceptionA
+    from msdflow.model.inceptionv3.blocks import Dtype as BlockDtype
+    from msdflow.model.inceptionv3.blocks import PRNGKey as BlockPRNGKey
+    from msdflow.model.inceptionv3.blocks import Shape as BlockShape
     from msdflow.model.inceptionv3.model import InceptionV3 as ModuleInceptionV3
     from msdflow.model.inceptionv3.model import reshape as ModuleReshape
 
+    assert Array is BlockArray
+    assert Dtype is BlockDtype
     assert InceptionV3 is ModuleInceptionV3
+    assert PRNGKey is BlockPRNGKey
+    assert Shape is BlockShape
     assert reshape is ModuleReshape
     assert build_headless_inceptionv3.__name__ == "build_headless_inceptionv3"
     assert BasicConv2d.__name__ == "BasicConv2d"
