@@ -1,4 +1,4 @@
-"""Tests for msdflow.model.blocks."""
+"""Tests for canonical model block implementations."""
 
 import jax
 import pytest

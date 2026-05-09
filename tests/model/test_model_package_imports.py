@@ -88,16 +88,34 @@ def test_inceptionv3_package_exports_builder_and_model():
 
 def test_root_blocks_module_reexports_moved_blocks():
     """The old msdflow.model.blocks import surface remains compatible."""
-    from msdflow.model.blocks import AttentionBlock, ConvNeXtBlock, ResBlock
-    from msdflow.model.blocks import ResBlockBigGAN, SinusoidalEmbedding
-    from msdflow.model.common_blocks import AttentionBlock as CommonAttentionBlock
-    from msdflow.model.convnext.blocks import ConvNeXtBlock as PackageConvNeXtBlock
-    from msdflow.model.ncsnpp.blocks import ResBlockBigGAN as PackageResBlockBigGAN
-    from msdflow.model.unet.blocks import ResBlock as PackageResBlock
-    from msdflow.model.unet.blocks import SinusoidalEmbedding as PackageEmbedding
+    from msdflow.model import blocks as root_blocks
+    from msdflow.model import common_blocks
+    from msdflow.model.convnext import blocks as convnext_blocks
+    from msdflow.model.ncsnpp import blocks as ncsnpp_blocks
+    from msdflow.model.unet import blocks as unet_blocks
 
-    assert AttentionBlock is CommonAttentionBlock
-    assert ConvNeXtBlock is PackageConvNeXtBlock
-    assert ResBlock is PackageResBlock
-    assert ResBlockBigGAN is PackageResBlockBigGAN
-    assert SinusoidalEmbedding is PackageEmbedding
+    expected_exports = {
+        "AttentionBlock": common_blocks.AttentionBlock,
+        "AttnBlockNCSN": ncsnpp_blocks.AttnBlockNCSN,
+        "Conv2d": ncsnpp_blocks.Conv2d,
+        "ConvNeXtBlock": convnext_blocks.ConvNeXtBlock,
+        "ConvNeXtDownsample": convnext_blocks.ConvNeXtDownsample,
+        "ConvNeXtHead": convnext_blocks.ConvNeXtHead,
+        "ConvNeXtStage": convnext_blocks.ConvNeXtStage,
+        "ConvNeXtStem": convnext_blocks.ConvNeXtStem,
+        "CoordConv": ncsnpp_blocks.CoordConv,
+        "Downsample": unet_blocks.Downsample,
+        "DropPath": convnext_blocks.DropPath,
+        "GaussianFourierProjection": ncsnpp_blocks.GaussianFourierProjection,
+        "Identity": convnext_blocks.Identity,
+        "LayerNorm2d": convnext_blocks.LayerNorm2d,
+        "RALAAttentionBlock": ncsnpp_blocks.RALAAttentionBlock,
+        "ResBlock": unet_blocks.ResBlock,
+        "ResBlockBigGAN": ncsnpp_blocks.ResBlockBigGAN,
+        "SinusoidalEmbedding": unet_blocks.SinusoidalEmbedding,
+        "Upsample": unet_blocks.Upsample,
+    }
+
+    assert sorted(root_blocks.__all__) == sorted(expected_exports)
+    for name, expected_obj in expected_exports.items():
+        assert getattr(root_blocks, name) is expected_obj
