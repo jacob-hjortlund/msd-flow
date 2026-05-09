@@ -156,8 +156,19 @@ class BottleneckPatchEmbed(eqx.Module):
             key: JAX PRNG key.
 
         Raises:
-            ValueError: If ``image_size`` is not divisible by ``patch_size``.
+            ValueError: If any dimension is nonpositive, or if ``image_size``
+                is not divisible by ``patch_size``.
         """
+
+        for name, value in (
+            ("in_channels", in_channels),
+            ("image_size", image_size),
+            ("patch_size", patch_size),
+            ("bottleneck_dim", bottleneck_dim),
+            ("hidden_size", hidden_size),
+        ):
+            if value <= 0:
+                raise ValueError(f"{name} must be positive, got {value}.")
 
         if (image_size % patch_size) != 0:
             raise ValueError("image_size must be divisible by patch_size.")

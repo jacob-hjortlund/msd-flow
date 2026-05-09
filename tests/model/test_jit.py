@@ -68,6 +68,32 @@ def test_bottleneck_patch_embed_validates_input_shape():
         embed(jnp.ones((1, 4, 8), dtype=jnp.float32))
 
 
+@pytest.mark.parametrize(
+    ("parameter", "value"),
+    [
+        ("in_channels", 0),
+        ("image_size", 0),
+        ("patch_size", 0),
+        ("bottleneck_dim", 0),
+        ("hidden_size", 0),
+    ],
+)
+def test_bottleneck_patch_embed_rejects_nonpositive_dimensions(parameter, value):
+    kwargs = {
+        "in_channels": 1,
+        "image_size": 8,
+        "patch_size": 4,
+        "bottleneck_dim": 6,
+        "hidden_size": 12,
+        "compute_dtype": jnp.float32,
+        "key": KEY,
+    }
+    kwargs[parameter] = value
+
+    with pytest.raises(ValueError, match=parameter):
+        BottleneckPatchEmbed(**kwargs)
+
+
 def test_two_dimensional_rope_cartesian_changes_query_features():
     rope = TwoDimensionalRoPE(
         grid_size=2,
