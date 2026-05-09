@@ -100,6 +100,18 @@ def test_two_dimensional_rope_polar_changes_query_features():
     assert not jnp.allclose(out, x)
 
 
+def test_two_dimensional_rope_has_no_trainable_array_leaves():
+    rope = TwoDimensionalRoPE(
+        grid_size=2,
+        head_dim=8,
+        mode="cartesian",
+        theta=10000.0,
+        dtype=jnp.float32,
+    )
+
+    assert not jax.tree.leaves(eqx.filter(rope, eqx.is_inexact_array))
+
+
 def test_two_dimensional_rope_rejects_none_mode():
     with pytest.raises(ValueError, match="rope_mode"):
         TwoDimensionalRoPE(

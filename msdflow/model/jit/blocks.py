@@ -213,8 +213,8 @@ class TwoDimensionalRoPE(eqx.Module):
 
     rope_a: eqx.nn.RotaryPositionalEmbedding
     rope_b: eqx.nn.RotaryPositionalEmbedding
-    coords_a: jax.Array
-    coords_b: jax.Array
+    coords_a: tuple[float, ...] = eqx.field(static=True)
+    coords_b: tuple[float, ...] = eqx.field(static=True)
     grid_size: int = eqx.field(static=True)
     head_dim: int = eqx.field(static=True)
     mode: str = eqx.field(static=True)
@@ -254,9 +254,11 @@ class TwoDimensionalRoPE(eqx.Module):
         self.coord_dim = head_dim // 2
         self.dtype = dtype
         if mode == "cartesian":
-            self.coords_a, self.coords_b = _patch_coordinates(grid_size)
+            coords_a, coords_b = _patch_coordinates(grid_size)
         else:
-            self.coords_a, self.coords_b = _polar_coordinates(grid_size)
+            coords_a, coords_b = _polar_coordinates(grid_size)
+        self.coords_a = tuple(float(coord) for coord in coords_a)
+        self.coords_b = tuple(float(coord) for coord in coords_b)
         self.rope_a = eqx.nn.RotaryPositionalEmbedding(
             self.coord_dim, theta=theta, dtype=dtype
         )
@@ -268,19 +270,20 @@ class TwoDimensionalRoPE(eqx.Module):
         self,
         rope: eqx.nn.RotaryPositionalEmbedding,
         x: jax.Array,
-        coords: jax.Array,
+        coords: tuple[float, ...],
     ) -> jax.Array:
         """Apply RoPE using explicit floating-point token coordinates.
 
         Args:
             rope: Equinox RoPE module providing frequency configuration.
             x: Token-head features with shape ``(tokens, heads, coord_dim)``.
-            coords: Per-token coordinates with shape ``(tokens,)``.
+            coords: Static per-token coordinates.
 
         Returns:
             Rotated features with the same shape and dtype as ``x``.
         """
 
+        coords_array = jnp.asarray(coords, dtype=jnp.float32)
         freqs = 1.0 / (
             rope.theta
             ** (
@@ -288,7 +291,7 @@ class TwoDimensionalRoPE(eqx.Module):
                 / rope.embedding_size
             )
         )
-        angles = coords[:, None] * freqs[None, :]
+        angles = coords_array[:, None] * freqs[None, :]
         cos = jnp.tile(jnp.cos(angles), (1, 2)).astype(rope.dtype).astype(x.dtype)
         sin = jnp.tile(jnp.sin(angles), (1, 2)).astype(rope.dtype).astype(x.dtype)
         cos = cos[:, None, :]
