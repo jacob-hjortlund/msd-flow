@@ -12,7 +12,7 @@ import jax
 import jax.numpy as jnp
 import equinox as eqx
 
-from msdflow.model.blocks import (
+from msdflow.model.ncsnpp.blocks import (
     AttnBlockNCSN,
     GaussianFourierProjection,
     ResBlockBigGAN,

@@ -23,3 +23,30 @@ def test_unet_block_exports_are_available_from_new_package():
     assert ResBlock.__name__ == "ResBlock"
     assert SinusoidalEmbedding.__name__ == "SinusoidalEmbedding"
     assert Upsample.__name__ == "Upsample"
+
+
+def test_ncsnpp_package_exports_match_top_level_export():
+    """NCSNpp is available from package and top-level public imports."""
+    from msdflow.model import NCSNpp as TopLevelNCSNpp
+    from msdflow.model.ncsnpp import NCSNpp as PackageNCSNpp
+    from msdflow.model.ncsnpp.model import NCSNpp as ModuleNCSNpp
+
+    assert TopLevelNCSNpp is PackageNCSNpp
+    assert PackageNCSNpp is ModuleNCSNpp
+
+
+def test_ncsnpp_block_exports_are_available_from_new_package():
+    """NCSN++ blocks are importable from the new package path."""
+    from msdflow.model.common_blocks import AttentionBlock
+    from msdflow.model.ncsnpp.blocks import AttnBlockNCSN, Conv2d, CoordConv
+    from msdflow.model.ncsnpp.blocks import GaussianFourierProjection
+    from msdflow.model.ncsnpp.blocks import RALAAttentionBlock, ResBlockBigGAN
+    from msdflow.model.ncsnpp.blocks import AttentionBlock as NCSNAttentionBlock
+
+    assert NCSNAttentionBlock is AttentionBlock
+    assert AttnBlockNCSN.__name__ == "AttnBlockNCSN"
+    assert Conv2d.__name__ == "Conv2d"
+    assert CoordConv.__name__ == "CoordConv"
+    assert GaussianFourierProjection.__name__ == "GaussianFourierProjection"
+    assert RALAAttentionBlock.__name__ == "RALAAttentionBlock"
+    assert ResBlockBigGAN.__name__ == "ResBlockBigGAN"
