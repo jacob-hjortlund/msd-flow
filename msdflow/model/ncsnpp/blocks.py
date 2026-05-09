@@ -20,6 +20,12 @@ __all__ = [
 
 
 class CoordConv(eqx.Module):
+    """Convolution that appends a normalized radial coordinate channel.
+
+    Attributes:
+        conv: Wrapped Equinox convolution applied after adding the radial channel.
+        power: Exponent applied to the radial coordinate before normalization.
+    """
 
     conv: eqx.nn.Conv2d
     power: float = eqx.field(static=True)
@@ -40,6 +46,22 @@ class CoordConv(eqx.Module):
         *,
         key: jax.Array,
     ):
+        """Initialise the coordinate-aware convolution.
+
+        Args:
+            in_channels: Number of input image channels before adding radius.
+            out_channels: Number of output channels.
+            kernel_size: Convolution kernel size.
+            stride: Convolution stride.
+            padding: Convolution padding.
+            dilation: Convolution dilation.
+            groups: Number of convolution groups.
+            use_bias: Whether to include a convolution bias.
+            padding_mode: Padding mode passed to ``eqx.nn.Conv2d``.
+            dtype: Optional parameter dtype for the convolution.
+            power: Exponent for the radial coordinate channel.
+            key: JAX PRNG key.
+        """
 
         in_channels += 1
         self.power = power
@@ -58,6 +80,14 @@ class CoordConv(eqx.Module):
         )
 
     def __call__(self, x: jax.Array):
+        """Apply the convolution after appending a radial coordinate channel.
+
+        Args:
+            x: Input array of shape ``(channels, height, width)``.
+
+        Returns:
+            Convolution output array.
+        """
 
         H, W = x.shape[-2:]
         _x = jnp.linspace(-1, 1, W, dtype=x.dtype)
@@ -75,6 +105,11 @@ class CoordConv(eqx.Module):
 
 
 class Conv2d(eqx.Module):
+    """Convolution wrapper that applies parameters in the input dtype.
+
+    Attributes:
+        conv: Wrapped Equinox convolution.
+    """
 
     conv: eqx.nn.Conv2d
 
@@ -94,6 +129,22 @@ class Conv2d(eqx.Module):
         *,
         key: jax.Array,
     ):
+        """Initialise the convolution wrapper.
+
+        Args:
+            in_channels: Number of input channels.
+            out_channels: Number of output channels.
+            kernel_size: Convolution kernel size.
+            stride: Convolution stride.
+            padding: Convolution padding.
+            dilation: Convolution dilation.
+            groups: Number of convolution groups.
+            use_bias: Whether to include a convolution bias.
+            padding_mode: Padding mode passed to ``eqx.nn.Conv2d``.
+            dtype: Optional parameter dtype for the convolution.
+            use_radial: Unused compatibility argument.
+            key: JAX PRNG key.
+        """
 
         self.conv = eqx.nn.Conv2d(
             in_channels=in_channels,
@@ -110,6 +161,14 @@ class Conv2d(eqx.Module):
         )
 
     def __call__(self, x: jax.Array):
+        """Apply the wrapped convolution.
+
+        Args:
+            x: Input array of shape ``(channels, height, width)``.
+
+        Returns:
+            Convolution output array.
+        """
 
         out = _apply_conv2d(self.conv, x)
 

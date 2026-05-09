@@ -38,12 +38,16 @@ def test_ncsnpp_package_exports_match_top_level_export():
 def test_ncsnpp_block_exports_are_available_from_new_package():
     """NCSN++ blocks are importable from the new package path."""
     from msdflow.model.common_blocks import AttentionBlock
+    from msdflow.model.ncsnpp import RALAAttentionBlock as PackageRALAAttentionBlock
+    from msdflow.model.ncsnpp import ResBlockBigGAN as PackageResBlockBigGAN
     from msdflow.model.ncsnpp.blocks import AttnBlockNCSN, Conv2d, CoordConv
     from msdflow.model.ncsnpp.blocks import GaussianFourierProjection
     from msdflow.model.ncsnpp.blocks import RALAAttentionBlock, ResBlockBigGAN
     from msdflow.model.ncsnpp.blocks import AttentionBlock as NCSNAttentionBlock
 
     assert NCSNAttentionBlock is AttentionBlock
+    assert PackageRALAAttentionBlock is RALAAttentionBlock
+    assert PackageResBlockBigGAN is ResBlockBigGAN
     assert AttnBlockNCSN.__name__ == "AttnBlockNCSN"
     assert Conv2d.__name__ == "Conv2d"
     assert CoordConv.__name__ == "CoordConv"
