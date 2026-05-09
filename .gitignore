@@ -16,3 +16,5 @@ build/
 !.dev.vars.example
 .env*
 !.env.example
+# Added by code-review-graph
+.code-review-graph/

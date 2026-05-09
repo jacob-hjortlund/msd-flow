@@ -26,23 +26,23 @@ def sample_time_uniform(
 def sample_time_logit_normal(
     key: jax.Array,
     batch_size: int,
-    mu: float = -0.8,
-    sigma: float = 0.8,
-    t_min: float = 1e-5,
-    t_max: float = 0.99999,
+    mu: float = 0.0,
+    sigma: float = 1.0,
+    t_min: float = 1e-6,
+    t_max: float = 0.999999,
 ) -> jnp.ndarray:
     """Sample times via a logit-normal distribution.
 
     Draws ``u ~ Normal(mu, sigma)`` then applies sigmoid to map to (0, 1).
-    The default ``mu=-0.8, sigma=0.8`` biases samples toward the middle of the
+    The default ``mu=0.0, sigma=1.0`` biases samples toward the middle of the
     interval, following Esser et al. 2024 (Stable Diffusion 3).
 
     Args:
         key:        JAX PRNG key.
         batch_size: Number of time samples to draw.
-        mu:         Mean of the underlying normal. Default -0.8.
-        sigma:      Std-dev of the underlying normal. Default 0.8.
-        t_min:      Lower bound of the output times. Default 1e-5.
+        mu:         Mean of the underlying normal. Default 0.0.
+        sigma:      Std-dev of the underlying normal. Default 1.0.
+        t_min:      Lower bound of the output times. Default 1e-6.
         t_max:      Upper bound of the output times. Default 0.99999.
 
     Returns:

@@ -88,33 +88,51 @@ For each batch:
 - Runs all **batch metrics** over the full val set and up to `num_train_eval_batches` train batches. Results logged as `val/<name>` and `train/<name>`.
 - Runs all **epoch metrics** (if any) on `num_val_eval_batches` collected val batches. Results logged as `epoch/<name>`.
 
-### Checkpointing (every `checkpoint_every` epochs)
+### Checkpointing and Resume
 
-Saves two `.eqx` files to `checkpoint_dir`:
+Resumable checkpoints are stored under a stable configuration hash inside
+`train.checkpoint_dir`:
 
-```
-checkpoints/
-  model_epoch10_raw.eqx    # Instantaneous model weights
-  model_epoch10_ema.eqx    # EMA model weights — use this for inference
-```
-
-### Best-Model Checkpointing (every `val_every` epochs)
-
-The training loop always tracks the best observed value of `monitor`. When a new best is found, two additional files are saved alongside the periodic checkpoints:
-
-```
-checkpoints/
-  model_epoch47_best_raw.eqx   # Best instantaneous weights
-  model_epoch47_best_ema.eqx   # Best EMA weights — use this for inference
+```text
+${train.checkpoint_dir}/${stable_hash}/
+  latest.json
+  checkpoint_epoch0007_step0042.eqx
+  checkpoint_epoch0007_step0042.json
+  model_epoch7_raw.eqx
+  model_epoch7_ema.eqx
 ```
 
-The epoch stamp makes it unambiguous which checkpoint is the current best. Old best-checkpoint files are not deleted when a new best is found.
+The periodic `checkpoint_epoch*.eqx` payloads are full-state resume checkpoints.
+They contain the model, optimizer state, EMA model, PRNG keys, current epoch,
+completed microsteps, partial epoch loss, best metric and early-stopping state,
+and timing counters. The matching `.json` file records metadata, and
+`latest.json` points to the newest resume checkpoint.
 
-A log line is emitted each time a new best is found, with the monitored metric listed first:
+With `train.resume.restart=false`, training automatically resumes from
+`latest.json` when a compatible checkpoint exists. Set
+`train.resume.restart=true` to ignore existing checkpoints and start fresh.
+
+The `model_epoch*_raw.eqx` and `model_epoch*_ema.eqx` files are model-only
+exports kept for inference compatibility. They are not resume sources.
+
+The training loop always tracks the best observed value of `monitor`. A log line
+is emitted each time a new best is found, with the monitored metric listed first:
 
 ```
 New best model at epoch 47: flow_matching_loss = 0.0312 | other_metric = 0.1234
 ```
+
+### SIGTERM on Perlmutter
+
+The NERSC Slurm script requests `#SBATCH --signal=TERM@600`, so Perlmutter sends
+`SIGTERM` ten minutes before allocation end. With
+`train.resume.save_on_sigterm=true`, the trainer writes a full-state checkpoint
+before the job exits.
+
+Mid-epoch resumes restore the partial model state and restart the dataloader at
+epoch `N`. Replayed epoch loss is normalized by the saved microstep count plus
+the newly completed microsteps, so progress before `SIGTERM` contributes to the
+epoch accounting after resume.
 
 ### Early Stopping (optional)
 

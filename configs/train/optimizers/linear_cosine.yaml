@@ -1,0 +1,22 @@
+init_lr_value: 1e-6
+peak_lr_value: 1e-4
+warmup_steps: 512
+decay_steps: 16384
+end_value: 1e-6
+global_norm: 1.0
+
+schedule:
+  _target_: optax.schedules.warmup_cosine_decay_schedule
+  init_value: ${train.optimizer.init_lr_value}
+  peak_value: ${train.optimizer.peak_lr_value}
+  warmup_steps: ${train.optimizer.warmup_steps}
+  decay_steps: ${train.optimizer.decay_steps}
+  end_value: ${train.optimizer.end_value}
+
+optimizer:
+  _target_: optax.chain
+  _args_:
+    - _target_: optax.clip_by_global_norm
+      max_norm: ${train.optimizer.global_norm}
+    - _target_: optax.adamw
+      learning_rate: ${train.optimizer.schedule}

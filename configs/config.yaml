@@ -9,6 +9,7 @@ defaults:
   - _self_
 
 seed: 42
-image_size: 512
+clip_pad_size: 512
+image_size: ${clip_pad_size}
 metadata_columns: null # e.g. ["hdr_REDSHIFT"]
 work_dir: ${hydra:runtime.cwd}

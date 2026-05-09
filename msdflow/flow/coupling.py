@@ -2,22 +2,31 @@
 
 Both functions share the interface (x0, x1) -> x0_paired, where x0_paired
 is the permuted (or identity) source array to be paired with x1 during training.
-All operations run on NumPy/CPU, outside JAX JIT.
+
+``independent_coupling`` is type-agnostic and works inside JAX JIT.
+``ot_coupling`` uses scipy and requires NumPy arrays (CPU only, outside JIT).
 """
 
+from typing import Union
+
+import jax.numpy as jnp
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
+ArrayLike = Union[np.ndarray, jnp.ndarray]
 
-def independent_coupling(x0: np.ndarray, x1: np.ndarray) -> np.ndarray:
+
+def independent_coupling(x0: ArrayLike, x1: ArrayLike) -> ArrayLike:
     """Return x0 unchanged — the independent (no-pairing) coupling.
 
     x0 and x1 are treated as independently drawn samples with no attempt to
     match them. This is the baseline coupling for vanilla flow matching.
 
+    Accepts both NumPy and JAX arrays and is compatible with JAX JIT.
+
     Args:
-        x0: shape (B, C, H, W) — noise samples.
-        x1: shape (B, C, H, W) — data samples (unused).
+        x0: shape (B, C, H, W) — noise samples (NumPy or JAX array).
+        x1: shape (B, C, H, W) — data samples (unused; NumPy or JAX array).
 
     Returns:
         x0 unchanged, shape (B, C, H, W).

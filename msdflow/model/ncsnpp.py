@@ -16,6 +16,8 @@ from msdflow.model.blocks import (
     AttnBlockNCSN,
     GaussianFourierProjection,
     ResBlockBigGAN,
+    CoordConv,
+    Conv2d,
 )
 from msdflow.utils import register_all_resolvers
 
@@ -44,9 +46,10 @@ class NCSNpp(eqx.Module):
         final_conv: Output 3x3 convolution.
         activation: Activation function.
         prediction_type: Output semantics — ``"velocity"`` or ``"image"``.
+        compute_dtype: Dtype for conv/linear-heavy model compute outside attention.
     """
 
-    stem: eqx.nn.Conv2d
+    stem: Conv2d | CoordConv
     time_emb: GaussianFourierProjection
     cond_dim: int = eqx.field(static=True)
     cond_embed: Optional[GaussianFourierProjection]
@@ -65,7 +68,7 @@ class NCSNpp(eqx.Module):
     upsample_blocks: List
 
     final_norm: eqx.nn.GroupNorm
-    final_conv: eqx.nn.Conv2d
+    final_conv: Conv2d | CoordConv
 
     activation: Callable = eqx.field(static=True)
     channel_multipliers: List[int] = eqx.field(static=True)
@@ -73,6 +76,7 @@ class NCSNpp(eqx.Module):
     attn_resolutions: List[int] = eqx.field(static=True)
     image_size: int = eqx.field(static=True)
     prediction_type: str = eqx.field(static=True)
+    compute_dtype: jnp.dtype = eqx.field(static=True)
 
     def __init__(
         self,
@@ -92,6 +96,11 @@ class NCSNpp(eqx.Module):
         key: jax.Array,
         cond_dim: int = 0,
         prediction_type: str = "velocity",
+        compute_dtype: jnp.dtype = jnp.float32,
+        attention_dtype: jnp.dtype = jnp.float32,
+        attention_implementation: Optional[str] = None,
+        attention_type: str = "dot_product",
+        use_coord_conv: bool = False,
     ):
         """Initialise the NCSN++ architecture.
 
@@ -118,6 +127,20 @@ class NCSNpp(eqx.Module):
                 ``v_t`` directly. ``"image"`` means it predicts the target
                 image ``x_t_pred``; the caller converts to velocity via
                 ``(x_t_pred - x_t) / (1 - t)``.
+            compute_dtype: Dtype for conv/linear-heavy model compute outside
+                attention. Stored parameters, optimizer state, normalization,
+                residual sums, and normal fp32-training outputs remain fp32.
+                Defaults to ``jnp.float32`` (no behavior change).
+            attention_dtype: Dtype for Q/K/V projections and the attention
+                call inside every ``AttnBlockNCSN``. Output of each attention
+                block is upcast back to the input's dtype after the attention
+                call. Defaults to ``jnp.float32`` (no behavior change).
+            attention_implementation: Backend for ``jax.nn.dot_product_attention``.
+                ``None`` (default) auto-detects ``'cudnn'`` on GPU and ``'xla'``
+                on CPU. Pass ``'xla'`` or ``'cudnn'`` to override.
+            attention_type: Attention algorithm selector for every
+                ``AttnBlockNCSN``. ``"dot_product"`` preserves existing
+                behavior; ``"rala"`` uses Rank-Augmented Linear Attention.
         """
 
         self.activation = activation
@@ -126,6 +149,7 @@ class NCSNpp(eqx.Module):
         self.attn_resolutions = list(attn_resolutions)
         self.image_size = image_size
         self.cond_dim = cond_dim
+        self.compute_dtype = compute_dtype
 
         if cond_dim > 1:
             raise ValueError(
@@ -143,11 +167,14 @@ class NCSNpp(eqx.Module):
         L = len(channel_multipliers)
         time_emb_dim = base_channels * 4
 
+        if not use_coord_conv:
+            conv_layer = Conv2d
+        else:
+            conv_layer = CoordConv
+
         # -- Stem --
         stem_key, key = jax.random.split(key)
-        self.stem = eqx.nn.Conv2d(
-            in_channels, base_channels, 3, padding=1, key=stem_key
-        )
+        self.stem = conv_layer(in_channels, base_channels, 3, padding=1, key=stem_key)
 
         # -- Time embedding --
         time_emb_key, key = jax.random.split(key)
@@ -195,6 +222,8 @@ class NCSNpp(eqx.Module):
                         dropout=dropout,
                         skip_rescale=skip_rescale,
                         key=block_key,
+                        compute_dtype=compute_dtype,
+                        use_coord_conv=use_coord_conv,
                     )
                 )
                 enc_is_attn.append(False)
@@ -208,6 +237,9 @@ class NCSNpp(eqx.Module):
                             num_groups=num_groups,
                             skip_rescale=skip_rescale,
                             key=attn_key,
+                            attention_dtype=attention_dtype,
+                            implementation=attention_implementation,
+                            attention_type=attention_type,
                         )
                     )
                     enc_is_attn.append(True)
@@ -229,6 +261,8 @@ class NCSNpp(eqx.Module):
                         skip_rescale=skip_rescale,
                         key=block_key,
                         down=True,
+                        compute_dtype=compute_dtype,
+                        use_coord_conv=use_coord_conv,
                     )
                 )
                 skip_channels.append(ch_out)
@@ -250,13 +284,18 @@ class NCSNpp(eqx.Module):
             dropout,
             skip_rescale,
             mid1_key,
+            compute_dtype=compute_dtype,
+            use_coord_conv=use_coord_conv,
         )
         self.mid_attn = AttnBlockNCSN(
-            ch_bot,
-            num_heads,
-            num_groups,
-            skip_rescale,
-            attn_key,
+            channels=ch_bot,
+            num_heads=num_heads,
+            num_groups=num_groups,
+            skip_rescale=skip_rescale,
+            key=attn_key,
+            attention_dtype=attention_dtype,
+            implementation=attention_implementation,
+            attention_type=attention_type,
         )
         self.mid_block2 = ResBlockBigGAN(
             ch_bot,
@@ -267,6 +306,8 @@ class NCSNpp(eqx.Module):
             dropout,
             skip_rescale,
             mid2_key,
+            compute_dtype=compute_dtype,
+            use_coord_conv=use_coord_conv,
         )
 
         # -- Decoder --
@@ -295,6 +336,8 @@ class NCSNpp(eqx.Module):
                         dropout,
                         skip_rescale,
                         key=block_key,
+                        compute_dtype=compute_dtype,
+                        use_coord_conv=use_coord_conv,
                     )
                 )
                 dec_is_attn.append(False)
@@ -304,11 +347,14 @@ class NCSNpp(eqx.Module):
                     attn_key, key = jax.random.split(key)
                     dec_blocks.append(
                         AttnBlockNCSN(
-                            ch_out,
-                            num_heads,
-                            num_groups,
-                            skip_rescale,
+                            channels=ch_out,
+                            num_heads=num_heads,
+                            num_groups=num_groups,
+                            skip_rescale=skip_rescale,
                             key=attn_key,
+                            attention_dtype=attention_dtype,
+                            implementation=attention_implementation,
+                            attention_type=attention_type,
                         )
                     )
                     dec_is_attn.append(True)
@@ -326,6 +372,8 @@ class NCSNpp(eqx.Module):
                         skip_rescale,
                         block_key,
                         up=True,
+                        compute_dtype=compute_dtype,
+                        use_coord_conv=use_coord_conv,
                     )
                 )
                 current_res = current_res * 2
@@ -343,7 +391,7 @@ class NCSNpp(eqx.Module):
         self.final_norm = eqx.nn.GroupNorm(
             num_groups, base_channels * channel_multipliers[0]
         )
-        self.final_conv = eqx.nn.Conv2d(
+        self.final_conv = conv_layer(
             base_channels * channel_multipliers[0],
             out_channels,
             3,
@@ -387,7 +435,7 @@ class NCSNpp(eqx.Module):
         else:
             combined_emb = time_emb
 
-        h = self.stem(x_t)
+        h = self.stem(x_t.astype(self.compute_dtype)).astype(x_t.dtype)
 
         # -- Encoder: collect skip connections --
         skips = [h]
@@ -439,5 +487,6 @@ class NCSNpp(eqx.Module):
         # -- Output head --
         h = self.final_norm(h)
         h = self.activation(h)
-        h = self.final_conv(h)
+        output_dtype = h.dtype
+        h = self.final_conv(h.astype(self.compute_dtype)).astype(output_dtype)
         return h

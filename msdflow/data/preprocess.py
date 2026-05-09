@@ -5,12 +5,577 @@ Each transform is a callable class with ``__init__`` for parameters and
 ``torchvision.transforms.Compose``.
 """
 
+import functools
 import os
 import json
+import types
+import torchvision
+
 import numpy as np
 import pandas as pd
+import multiprocessing as mp
+
 from tqdm import tqdm
 from fastdigest import TDigest
+from sklearn.cluster import KMeans
+from msdflow.data.random import WorkerSeededTransform
+
+
+_STANDARDIZE_TRANSFORM_METADATA_KEY = "_standardize_transform_metadata"
+_NON_CACHEABLE_TRANSFORM_METADATA = object()
+_UNSUPPORTED_METADATA_VALUE = object()
+
+
+def _identity(x):
+    """Identity transform (picklable replacement for ``lambda x: x``)."""
+    return x
+
+
+def _filter_positive(img: np.ndarray) -> np.ndarray:
+    """Return only positive pixel values (flattened)."""
+    return img[img > 0]
+
+
+def _flatten(img: np.ndarray) -> np.ndarray:
+    """Return all pixel values flattened."""
+    return img.flatten()
+
+
+def _process_single_file(data_dir, filename, transforms):
+
+    path = os.path.join(data_dir, filename)
+    img = np.load(path)
+    img = transforms(img)
+
+    return img
+
+
+def _worker_image_percentile(args: tuple) -> float:
+    """Compute one percentile from a transformed image.
+
+    Args:
+        args: Tuple of ``(data_dir, filename, transforms, percentile,
+            positive_only)``.
+
+    Returns:
+        Percentile of pixel values in the transformed image as a builtin
+        ``float`` (picklable across multiprocessing workers). When
+        ``positive_only`` is ``True``, only strictly positive pixels are
+        considered.
+    """
+    data_dir, filename, transforms, percentile, positive_only = args
+    img = _process_single_file(data_dir, filename, transforms)
+    if positive_only:
+        img = img[img > 0]
+    return float(np.percentile(img, percentile))
+
+
+def _worker_single_file(args: tuple) -> TDigest:
+    """Build a TDigest from a single .npy file.
+
+    Args:
+        args: Tuple of ``(data_dir, filename, transforms, pixel_filter)``.
+
+    Returns:
+        Fitted ``TDigest`` for this file.
+    """
+    data_dir, filename, transforms, pixel_filter = args
+    img = _process_single_file(data_dir, filename, transforms)
+    digest = TDigest()
+    digest.batch_update(pixel_filter(img))
+    return digest
+
+
+def build_tdigest(
+    data_dir: str,
+    filenames: list[str],
+    transforms,
+    pixel_filter,
+    n_workers: int = 0,
+) -> TDigest:
+    """Build a TDigest over pixel values from a list of ``.npy`` files.
+
+    Args:
+        data_dir: Directory containing the ``.npy`` files.
+        filenames: List of filenames (relative to ``data_dir``).
+        transforms: Preprocessing pipeline applied to each image.
+        pixel_filter: Callable that selects/reshapes pixels from a
+            transformed image into a 1-D array for the TDigest.
+            Use ``_filter_positive`` for non-zero pixels or
+            ``_flatten`` for all pixels.
+        n_workers: Number of multiprocessing workers. ``0`` means serial.
+
+    Returns:
+        Fitted ``TDigest`` instance.
+    """
+    args = [(data_dir, fn, transforms, pixel_filter) for fn in filenames]
+
+    if n_workers <= 0:
+        result = TDigest()
+        for digest in tqdm(
+            map(_worker_single_file, args),
+            total=len(filenames),
+            desc="Building TDigest",
+            unit="file",
+        ):
+            result = result.merge(digest)
+        return result
+
+    ctx = mp.get_context("spawn")
+
+    with ctx.Pool(n_workers) as pool:
+        result = TDigest()
+        for digest in tqdm(
+            pool.imap_unordered(_worker_single_file, args),
+            total=len(filenames),
+            desc="Building TDigest",
+            unit="file",
+        ):
+            result = result.merge(digest)
+    return result
+
+
+def build_image_percentiles(
+    data_dir: str,
+    filenames: list[str],
+    transforms,
+    percentile: float,
+    positive_only: bool = False,
+    n_workers: int = 0,
+) -> np.ndarray:
+    """Compute one percentile per image across a list of ``.npy`` files.
+
+    Args:
+        data_dir: Directory containing the ``.npy`` files.
+        filenames: List of filenames (relative to ``data_dir``).
+        transforms: Preprocessing pipeline applied to each image before
+            computing the percentile.
+        percentile: Percentile in ``[0, 100]`` computed for each image.
+        positive_only: If ``True``, only strictly positive pixels of each
+            image contribute to its percentile.
+        n_workers: Number of multiprocessing workers. ``0`` means serial.
+
+    Returns:
+        1-D ``np.ndarray`` of length ``len(filenames)`` containing the
+        per-image percentile values. Order is unspecified when
+        ``n_workers > 0`` (uses ``imap_unordered``).
+    """
+    args = [(data_dir, fn, transforms, percentile, positive_only) for fn in filenames]
+
+    if n_workers <= 0:
+        results = []
+        for value in tqdm(
+            map(_worker_image_percentile, args),
+            total=len(filenames),
+            desc="Computing per-image percentiles",
+            unit="file",
+        ):
+            results.append(value)
+        return np.asarray(results)
+
+    ctx = mp.get_context("spawn")
+    with ctx.Pool(n_workers) as pool:
+        results = []
+        for value in tqdm(
+            pool.imap_unordered(_worker_image_percentile, args),
+            total=len(filenames),
+            desc="Computing per-image percentiles",
+            unit="file",
+        ):
+            results.append(value)
+    return np.asarray(results)
+
+
+def parse_transform_names(
+    transform,
+):
+    """Recursively extract transform tokens used in TDigest cache filenames.
+
+    Args:
+        transform: Transform object or torchvision ``Compose`` pipeline.
+
+    Returns:
+        List of transform name tokens.
+    """
+    names = []
+
+    if isinstance(transform, torchvision.transforms.Compose):
+        for t in transform.transforms:
+            names.extend(parse_transform_names(t))
+        return names
+    elif transform is _identity:
+        names.append("function")
+    elif getattr(transform, "__class__", None).__name__ == "function":
+        names.append(f"function_{transform.__name__.lstrip('_')}")
+    elif transform is not None:
+        names.append(transform.__class__.__name__)
+    return names
+
+
+def _json_safe_metadata_value(value):
+    """Convert a simple transform attribute value to JSON-safe metadata.
+
+    Args:
+        value: Attribute value to convert.
+
+    Returns:
+        JSON-safe value, or an internal sentinel when the value is not a simple
+        metadata value.
+    """
+    if isinstance(value, np.ndarray):
+        return _json_safe_metadata_value(value.tolist())
+
+    if isinstance(value, np.generic):
+        value = value.item()
+
+    if value is None or isinstance(value, (str, bool)):
+        return value
+    if isinstance(value, int):
+        return int(value)
+    if isinstance(value, float):
+        if not np.isfinite(value):
+            return _UNSUPPORTED_METADATA_VALUE
+        return float(value)
+    if isinstance(value, (list, tuple)):
+        converted = []
+        for item in value:
+            item_metadata = _json_safe_metadata_value(item)
+            if item_metadata is _UNSUPPORTED_METADATA_VALUE:
+                return _UNSUPPORTED_METADATA_VALUE
+            converted.append(item_metadata)
+        return converted
+    if isinstance(value, dict):
+        converted = {}
+        if any(not isinstance(key, str) for key in value):
+            return _UNSUPPORTED_METADATA_VALUE
+        for key in sorted(value):
+            item_metadata = _json_safe_metadata_value(value[key])
+            if item_metadata is _UNSUPPORTED_METADATA_VALUE:
+                return _UNSUPPORTED_METADATA_VALUE
+            converted[key] = item_metadata
+        return converted
+    return _UNSUPPORTED_METADATA_VALUE
+
+
+def _public_slot_names(transform) -> list[str]:
+    """Return public slot names defined across a transform class hierarchy.
+
+    Args:
+        transform: Transform instance whose class MRO should be inspected.
+
+    Returns:
+        Sorted public slot names, excluding private and special slots.
+    """
+    slot_names = set()
+    for cls in type(transform).__mro__:
+        slots = getattr(cls, "__slots__", ())
+        if isinstance(slots, str):
+            slots = (slots,)
+        for name in slots:
+            if (
+                isinstance(name, str)
+                and not name.startswith("_")
+                and name not in {"__dict__", "__weakref__"}
+            ):
+                slot_names.add(name)
+    return sorted(slot_names)
+
+
+def _public_transform_attributes(transform) -> dict | object:
+    """Build JSON-safe metadata for public transform instance attributes.
+
+    Args:
+        transform: Transform instance whose public attributes should be
+            inspected.
+
+    Returns:
+        Mapping of public attribute names to JSON-safe metadata values, or an
+        internal sentinel when any public attribute is not representable.
+    """
+    attrs = {}
+    for name, value in sorted(getattr(transform, "__dict__", {}).items()):
+        if name.startswith("_"):
+            continue
+        metadata_value = _json_safe_metadata_value(value)
+        if metadata_value is _UNSUPPORTED_METADATA_VALUE:
+            return _UNSUPPORTED_METADATA_VALUE
+        attrs[name] = metadata_value
+
+    for name in _public_slot_names(transform):
+        if name in attrs:
+            continue
+        try:
+            value = getattr(transform, name)
+        except AttributeError:
+            continue
+        metadata_value = _json_safe_metadata_value(value)
+        if metadata_value is _UNSUPPORTED_METADATA_VALUE:
+            return _UNSUPPORTED_METADATA_VALUE
+        attrs[name] = metadata_value
+    return attrs
+
+
+def _function_metadata(transform) -> dict | object:
+    """Build metadata for a Python function and its JSON-safe state.
+
+    Args:
+        transform: Python function to describe.
+
+    Returns:
+        JSON-safe function metadata, or an internal sentinel if function state
+        is not safely representable.
+    """
+    metadata = {
+        "type": "function",
+        "module": transform.__module__,
+        "name": transform.__qualname__,
+    }
+
+    defaults = getattr(transform, "__defaults__", None)
+    if defaults is not None:
+        defaults_metadata = _json_safe_metadata_value(defaults)
+        if defaults_metadata is _UNSUPPORTED_METADATA_VALUE:
+            return _NON_CACHEABLE_TRANSFORM_METADATA
+        metadata["defaults"] = defaults_metadata
+
+    kwdefaults = getattr(transform, "__kwdefaults__", None)
+    if kwdefaults is not None:
+        kwdefaults_metadata = _json_safe_metadata_value(kwdefaults)
+        if kwdefaults_metadata is _UNSUPPORTED_METADATA_VALUE:
+            return _NON_CACHEABLE_TRANSFORM_METADATA
+        metadata["kwdefaults"] = kwdefaults_metadata
+
+    closure = getattr(transform, "__closure__", None)
+    if closure:
+        closure_metadata = []
+        for cell in closure:
+            try:
+                cell_value = cell.cell_contents
+            except ValueError:
+                return _NON_CACHEABLE_TRANSFORM_METADATA
+            cell_metadata = _json_safe_metadata_value(cell_value)
+            if cell_metadata is _UNSUPPORTED_METADATA_VALUE:
+                return _NON_CACHEABLE_TRANSFORM_METADATA
+            closure_metadata.append(cell_metadata)
+        metadata["closure"] = closure_metadata
+
+    return metadata
+
+
+def _partial_metadata(transform: functools.partial) -> dict | object:
+    """Build metadata for a ``functools.partial`` transform.
+
+    Args:
+        transform: Partial callable to describe.
+
+    Returns:
+        JSON-safe partial metadata, or an internal sentinel if wrapped function
+        or partial state is not safely representable.
+    """
+    func_metadata = _transform_metadata(transform.func)
+    if func_metadata is _NON_CACHEABLE_TRANSFORM_METADATA:
+        return _NON_CACHEABLE_TRANSFORM_METADATA
+
+    args_metadata = _json_safe_metadata_value(transform.args)
+    if args_metadata is _UNSUPPORTED_METADATA_VALUE:
+        return _NON_CACHEABLE_TRANSFORM_METADATA
+
+    keywords_metadata = _json_safe_metadata_value(transform.keywords or {})
+    if keywords_metadata is _UNSUPPORTED_METADATA_VALUE:
+        return _NON_CACHEABLE_TRANSFORM_METADATA
+
+    attrs = _public_transform_attributes(transform)
+    if attrs is _UNSUPPORTED_METADATA_VALUE:
+        return _NON_CACHEABLE_TRANSFORM_METADATA
+
+    return {
+        "type": "partial",
+        "module": transform.__class__.__module__,
+        "class": transform.__class__.__qualname__,
+        "func": func_metadata,
+        "args": args_metadata,
+        "keywords": keywords_metadata,
+        "attrs": attrs,
+    }
+
+
+def _builtin_function_metadata(transform) -> dict:
+    """Build metadata for an unbound builtin function.
+
+    Args:
+        transform: Builtin function to describe.
+
+    Returns:
+        JSON-safe builtin function metadata.
+    """
+    return {
+        "type": "builtin_function_or_method",
+        "module": getattr(transform, "__module__", None),
+        "name": transform.__name__,
+        "qualname": getattr(transform, "__qualname__", transform.__name__),
+    }
+
+
+def _is_cacheable_stateless_transform(transform) -> bool:
+    """Return whether a no-attrs transform has a safe stateless identity.
+
+    Args:
+        transform: Transform object to inspect.
+
+    Returns:
+        ``True`` when the transform is a first-party stateless transform whose
+        module and class identity safely represent its behavior.
+    """
+    transform_class = transform.__class__
+    return (
+        callable(transform)
+        and transform_class.__module__ == __name__
+        and transform_class.__init__ is object.__init__
+    )
+
+
+def _transform_metadata(transform) -> dict | object:
+    """Build JSON-stable metadata describing a transform pipeline.
+
+    Args:
+        transform: Transform object, bare function, or torchvision
+            ``Compose`` pipeline.
+
+    Returns:
+        JSON-safe metadata describing transform identity and simple public
+        configuration, or an internal sentinel if any public configuration is
+        not safely representable.
+    """
+    if isinstance(transform, torchvision.transforms.Compose):
+        transform_metadata = [_transform_metadata(t) for t in transform.transforms]
+        if any(
+            metadata is _NON_CACHEABLE_TRANSFORM_METADATA
+            for metadata in transform_metadata
+        ):
+            return _NON_CACHEABLE_TRANSFORM_METADATA
+        return {
+            "type": "compose",
+            "module": transform.__class__.__module__,
+            "class": transform.__class__.__qualname__,
+            "transforms": transform_metadata,
+        }
+
+    if isinstance(transform, functools.partial):
+        return _partial_metadata(transform)
+
+    if isinstance(transform, np.ufunc):
+        return {
+            "type": "ufunc",
+            "module": getattr(transform, "__module__", np.__name__) or np.__name__,
+            "name": transform.__name__,
+        }
+
+    if getattr(transform, "__class__", None).__name__ == "function":
+        return _function_metadata(transform)
+
+    if isinstance(transform, types.MethodType):
+        return _NON_CACHEABLE_TRANSFORM_METADATA
+
+    if isinstance(transform, types.BuiltinFunctionType):
+        bound_self = getattr(transform, "__self__", None)
+        if bound_self is not None and not isinstance(bound_self, types.ModuleType):
+            return _NON_CACHEABLE_TRANSFORM_METADATA
+        return _builtin_function_metadata(transform)
+
+    if isinstance(transform, type):
+        attrs = _public_transform_attributes(transform)
+        if attrs is _UNSUPPORTED_METADATA_VALUE:
+            return _NON_CACHEABLE_TRANSFORM_METADATA
+        return {
+            "type": "class",
+            "module": transform.__module__,
+            "class": transform.__qualname__,
+            "attrs": attrs,
+        }
+
+    if transform is None:
+        return {"type": "none"}
+
+    transform_class = transform.__class__
+    attrs = _public_transform_attributes(transform)
+    if attrs is _UNSUPPORTED_METADATA_VALUE:
+        return _NON_CACHEABLE_TRANSFORM_METADATA
+    if callable(transform) and not attrs and not _is_cacheable_stateless_transform(
+        transform
+    ):
+        return _NON_CACHEABLE_TRANSFORM_METADATA
+    return {
+        "type": "object",
+        "module": transform_class.__module__,
+        "class": transform_class.__qualname__,
+        "attrs": attrs,
+    }
+
+
+def _tdigest_payload_without_private_metadata(digest_dict: dict) -> dict:
+    """Return a TDigest payload with StandardizeTransform metadata removed.
+
+    Args:
+        digest_dict: Loaded TDigest cache dictionary.
+
+    Returns:
+        Copy of ``digest_dict`` without private standardization metadata.
+    """
+    payload = dict(digest_dict)
+    payload.pop(_STANDARDIZE_TRANSFORM_METADATA_KEY, None)
+    return payload
+
+
+def _tdigest_cache_suffix(
+    img_size: int,
+    split: str | None,
+    sample_fraction: float | None = None,
+    sample_seed: int = 42,
+    transforms=None,
+) -> str:
+    """Build the suffix for a tdigest cache filename.
+
+    Args:
+        img_size: H/W of images used.
+        split: Split name (e.g. ``"train"``).
+        sample_fraction: Fraction of files sampled, or ``None`` for all.
+        sample_seed: RNG seed used for sampling.
+
+    Returns:
+        Suffix string, e.g. ``"_train"`` or ``"_train_s0.1_seed42"``.
+    """
+    suffix = f"_{img_size}"
+    suffix += f"_{split}" if split is not None else ""
+    if sample_fraction is not None:
+        suffix += f"_s{sample_fraction}_seed{sample_seed}"
+    if transforms is not None:
+        transform_names = parse_transform_names(transforms)
+        if transform_names:
+            suffix += "_" + "_".join(transform_names)
+    return suffix
+
+
+def _sample_filenames(
+    filenames: list[str],
+    sample_fraction: float | None,
+    sample_seed: int,
+) -> list[str]:
+    """Optionally subsample a file list for TDigest estimation.
+
+    Args:
+        filenames: Full list of filenames.
+        sample_fraction: Fraction to keep, or ``None`` for all.
+        sample_seed: RNG seed for reproducibility.
+
+    Returns:
+        (Possibly subsampled) list of filenames in original order.
+    """
+    if sample_fraction is None or sample_fraction == 0:
+        return filenames
+    rng = np.random.default_rng(sample_seed)
+    n_sample = max(1, int(len(filenames) * sample_fraction))
+    indices = rng.choice(len(filenames), size=n_sample, replace=False)
+    return [filenames[i] for i in sorted(indices)]
 
 
 class SurfaceBrightnessToNanomaggies:
@@ -44,8 +609,10 @@ class ClipAndPad:
         n: Target side length in pixels.
     """
 
-    def __init__(self, n: int = 512):
+    def __init__(self, n: int = 512, mode: str = "reflect", mode_kwargs: dict = None):
         self.n = n
+        self.mode = mode
+        self.mode_kwargs = mode_kwargs if mode_kwargs is not None else {}
 
     def __call__(self, img: np.ndarray) -> np.ndarray:
         """Apply pad and crop.
@@ -67,11 +634,51 @@ class ClipAndPad:
                 (top, pad_h - top),
                 (left, pad_w - left),
             ]
-            img = np.pad(img, pad_widths, mode="constant", constant_values=0)
+            img = np.pad(img, pad_widths, mode=self.mode, **self.mode_kwargs)
 
         cy, cx = img.shape[-2] // 2, img.shape[-1] // 2
         half = n // 2
         return img[..., cy - half : cy + half, cx - half : cx + half]
+
+
+class Downsample:
+    """Flux-conserving downsampling for square images,
+    assuming input size / target size is an integer.
+
+    Args:
+        target_size: Target side length in pixels.
+    """
+
+    def __init__(self, target_size: int = 256):
+        self.target_size = target_size
+
+    def __call__(self, img: np.ndarray) -> np.ndarray:
+        """Apply downsampling.
+
+        Args:
+            img: ``(C, N, N)`` array.
+
+        Returns:
+            Array of shape ``(C, M, M)``.
+        """
+        c, h, w = img.shape
+        if h == self.target_size:
+            return img
+
+        if h != w:
+            raise ValueError(f"Expected square image, got shape {img.shape}")
+
+        if h % self.target_size != 0:
+            raise ValueError(
+                f"Input size {h} is not divisible by target_size {self.target_size}"
+            )
+
+        factor = h // self.target_size
+        out = img.reshape(c, self.target_size, factor, self.target_size, factor).sum(
+            axis=(2, 4)
+        )
+
+        return out
 
 
 class PDFNorm:
@@ -99,6 +706,46 @@ class PDFNorm:
         return img / total
 
 
+class CLRTransform:
+    """Apply centered log-ratio preprocessing per image channel.
+
+    Input is assumed to be normalized linear flux with shape ``(C, H, W)``.
+    Exact zero pixels are handled by epsilon mass smoothing before the log is
+    taken. Each channel is centered independently by subtracting its spatial
+    mean over ``H`` and ``W``.
+
+    Args:
+        eps_mass: Mass assigned to a uniform spatial background before taking
+            logs. Must be in ``[0, 1]``. Defaults to ``1e-6``.
+    """
+
+    def __init__(self, eps_mass: float = 1e-6):
+        if not np.isfinite(eps_mass) or eps_mass < 0.0 or eps_mass > 1.0:
+            raise ValueError(f"eps_mass must be in [0, 1], got {eps_mass}")
+        self.eps_mass = float(eps_mass)
+
+    def __call__(self, img: np.ndarray) -> np.ndarray:
+        """Apply centered log-ratio preprocessing.
+
+        Args:
+            img: Input normalized linear flux image with shape ``(C, H, W)``.
+
+        Returns:
+            CLR-transformed image with the same shape as ``img``.
+
+        Raises:
+            ValueError: If ``img`` does not have shape ``(C, H, W)``.
+        """
+        if img.ndim != 3:
+            raise ValueError(f"Expected image with shape (C, H, W), got {img.shape}")
+
+        h, w = img.shape[-2:]
+        q = 1.0 / float(h * w)
+        smoothed = (1.0 - self.eps_mass) * img + self.eps_mass * q
+        log_img = np.log(smoothed)
+        return log_img - np.mean(log_img, axis=(-2, -1), keepdims=True)
+
+
 class ArcsinhStretch:
     """Apply arcsinh stretch to compress dynamic range.
 
@@ -120,6 +767,15 @@ class ArcsinhStretch:
             Required when ``percentile`` is set.
         split: Split name used to filter ``metadata.csv`` when building the
             TDigest. Defaults to ``"train"``. Pass ``None`` to use all rows.
+        sample_fraction: Fraction of the filtered file list to use when
+            building the TDigest. ``None`` uses all files. Defaults to
+            ``None``.
+        sample_seed: RNG seed for reproducible sampling. Only used when
+            ``sample_fraction`` is set. Defaults to ``42``.
+        n_workers: Number of multiprocessing workers for TDigest
+            computation. ``0`` means serial. Defaults to ``0``.
+        cache_dir: Directory for writing/reading tdigest cache files.
+            Falls back to ``data_dir`` when ``None``. Defaults to ``None``.
     """
 
     def __init__(
@@ -129,6 +785,10 @@ class ArcsinhStretch:
         percentile=None,
         data_dir: str = None,
         split: str | None = "train",
+        sample_fraction: float | None = None,
+        sample_seed: int = 42,
+        n_workers: int = 0,
+        cache_dir: str | None = None,
     ):
         use_percentile = (percentile is not None) and (data_dir is not None)
         use_scale = scale is not None
@@ -143,19 +803,32 @@ class ArcsinhStretch:
             )
 
         if transforms is None:
-            transforms = lambda x: x
+            transforms = _identity
         self.transforms = transforms
         self.percentile = percentile
         self.data_dir = data_dir
         self.split = split
+        self.sample_fraction = sample_fraction
+        self.sample_seed = sample_seed
+        self.n_workers = n_workers
+        self.cache_dir = cache_dir if cache_dir is not None else data_dir
 
         if use_scale:
             self.scale = scale
 
         if use_percentile:
 
-            suffix = f"_{split}" if split is not None else ""
-            tdigest_path = os.path.join(data_dir, f"arcsinh_tdigest{suffix}.json")
+            csv_path = os.path.join(data_dir, "metadata.csv")
+            metadata = pd.read_csv(csv_path)
+            filename = metadata["filename"].iloc[0]
+            img_size = _process_single_file(
+                data_dir=data_dir, filename=filename, transforms=transforms
+            ).shape[-1]
+
+            suffix = _tdigest_cache_suffix(
+                img_size, split, sample_fraction, sample_seed, transforms
+            )
+            tdigest_path = os.path.join(self.cache_dir, f"arcsinh_tdigest{suffix}.json")
 
             if os.path.isfile(tdigest_path):
                 with open(tdigest_path, "r") as fp:
@@ -184,17 +857,15 @@ class ArcsinhStretch:
         if self.split is not None:
             metadata = metadata[metadata["split"] == self.split]
         filenames = metadata["filename"].tolist()
+        filenames = _sample_filenames(filenames, self.sample_fraction, self.sample_seed)
 
-        digest = TDigest()
-
-        for fn in tqdm(filenames):
-            path = os.path.join(self.data_dir, fn)
-            img = np.load(path)
-            img = self.transforms(img)
-            non_zero = img[img > 0]
-            digest.batch_update(non_zero)
-
-        return digest
+        return build_tdigest(
+            data_dir=self.data_dir,
+            filenames=filenames,
+            transforms=self.transforms,
+            pixel_filter=_filter_positive,
+            n_workers=self.n_workers,
+        )
 
     def __call__(self, img: np.ndarray) -> np.ndarray:
         """Apply arcsinh stretch.
@@ -206,6 +877,132 @@ class ArcsinhStretch:
             Stretched array, same shape as input.
         """
         return np.arcsinh(img / self.scale)
+
+
+class GlobalPercentileClip:
+    """Linearly map a dataset from a global [min, max] to [norm_min, norm_max].
+
+    This preserves relative intensity across the dataset while mapping
+    outputs to a stable range (e.g., [-1, 1]) for generative training.
+    The scale factors are global constants, so the operation is invertible.
+
+    Global bounds can be supplied directly or estimated from the dataset via
+    a TDigest. When ``split`` is set, only files whose ``split`` column
+    matches are used to build the TDigest, so statistics come from training
+    data only.
+
+    Args:
+        global_min: Lower bound of the input range. If ``None``, derived
+            from ``digest.min()`` over the dataset.
+        global_max: Upper bound of the input range. If ``None``, derived
+            from ``digest.max()`` over the dataset.
+        norm_min: Lower bound of the output range. Defaults to ``-1.0``.
+        norm_max: Upper bound of the output range. Defaults to ``1.0``.
+        transforms: Pipeline applied to each image before accumulating into
+            the TDigest. Defaults to identity.
+        percentile: Controls TDigest cache filename. Required when either
+            bound is ``None``.
+        data_dir: Directory containing ``metadata.csv`` and ``.npy`` files.
+            Required when either bound is ``None``.
+        split: Split name used to filter ``metadata.csv`` when building the
+            TDigest. Defaults to ``"train"``. Pass ``None`` to use all rows.
+        sample_fraction: Fraction of the filtered file list to use when
+            building the TDigest. ``None`` uses all files. Defaults to
+            ``None``.
+        sample_seed: RNG seed for reproducible sampling. Only used when
+            ``sample_fraction`` is set. Defaults to ``42``.
+        n_workers: Number of multiprocessing workers for TDigest
+            computation. ``0`` means serial. Defaults to ``0``.
+        cache_dir: Directory for writing/reading tdigest cache files.
+            Falls back to ``data_dir`` when ``None``. Defaults to ``None``.
+    """
+
+    def __init__(
+        self,
+        transforms=None,
+        percentile=None,
+        data_dir: str = None,
+        split: str | None = "train",
+        sample_fraction: float | None = None,
+        sample_seed: int = 42,
+        n_workers: int = 0,
+        cache_dir: str | None = None,
+    ):
+
+        if transforms is None:
+            transforms = _identity
+        self.transforms = transforms
+        self.data_dir = data_dir
+        self.split = split
+        self.sample_fraction = sample_fraction
+        self.sample_seed = sample_seed
+        self.n_workers = n_workers
+        self.cache_dir = cache_dir if cache_dir is not None else data_dir
+
+        csv_path = os.path.join(data_dir, "metadata.csv")
+        metadata = pd.read_csv(csv_path)
+        filename = metadata["filename"].iloc[0]
+        img_size = _process_single_file(
+            data_dir=data_dir, filename=filename, transforms=transforms
+        ).shape[-1]
+
+        suffix = _tdigest_cache_suffix(
+            img_size, split, sample_fraction, sample_seed, transforms
+        )
+        tdigest_path = os.path.join(
+            self.cache_dir,
+            f"global_clip_tdigest_{int(percentile)}{suffix}.json",
+        )
+
+        if os.path.isfile(tdigest_path):
+            with open(tdigest_path, "r") as fp:
+                digest_dict = json.load(fp)
+            digest = TDigest.from_dict(digest_dict)
+        else:
+            digest = self._build_tdigest()
+            digest_dict = digest.to_dict()
+            with open(tdigest_path, "w") as fp:
+                json.dump(digest_dict, fp, indent=2)
+
+        clip = digest.percentile(p=percentile)
+        self.clip = clip
+
+    def _build_tdigest(self) -> TDigest:
+        """Build a TDigest over all pixel values in the dataset.
+
+        Reads filenames from ``metadata.csv`` (filtered to ``self.split`` if
+        set), applies ``self.transforms`` to each image, and accumulates all
+        pixel values into the digest to estimate global min/max.
+
+        Returns:
+            Fitted ``TDigest`` instance.
+        """
+        csv_path = os.path.join(self.data_dir, "metadata.csv")
+        metadata = pd.read_csv(csv_path)
+        if self.split is not None:
+            metadata = metadata[metadata["split"] == self.split]
+        filenames = metadata["filename"].tolist()
+        filenames = _sample_filenames(filenames, self.sample_fraction, self.sample_seed)
+
+        return build_tdigest(
+            data_dir=self.data_dir,
+            filenames=filenames,
+            transforms=self.transforms,
+            pixel_filter=_flatten,
+            n_workers=self.n_workers,
+        )
+
+    def __call__(self, img: np.ndarray) -> np.ndarray:
+        """Apply global linear normalization.
+
+        Args:
+            img: ``(C, H, W)`` array.
+
+        Returns:
+            Array mapped to ``[norm_min, norm_max]``, same shape as input.
+        """
+
+        return np.clip(img, a_min=0, a_max=self.clip)
 
 
 class GlobalNorm:
@@ -235,6 +1032,15 @@ class GlobalNorm:
             Required when either bound is ``None``.
         split: Split name used to filter ``metadata.csv`` when building the
             TDigest. Defaults to ``"train"``. Pass ``None`` to use all rows.
+        sample_fraction: Fraction of the filtered file list to use when
+            building the TDigest. ``None`` uses all files. Defaults to
+            ``None``.
+        sample_seed: RNG seed for reproducible sampling. Only used when
+            ``sample_fraction`` is set. Defaults to ``42``.
+        n_workers: Number of multiprocessing workers for TDigest
+            computation. ``0`` means serial. Defaults to ``0``.
+        cache_dir: Directory for writing/reading tdigest cache files.
+            Falls back to ``data_dir`` when ``None``. Defaults to ``None``.
     """
 
     def __init__(
@@ -247,13 +1053,21 @@ class GlobalNorm:
         percentile=None,
         data_dir: str = None,
         split: str | None = "train",
+        sample_fraction: float | None = None,
+        sample_seed: int = 42,
+        n_workers: int = 0,
+        cache_dir: str | None = None,
     ):
 
         if transforms is None:
-            transforms = lambda x: x
+            transforms = _identity
         self.transforms = transforms
         self.data_dir = data_dir
         self.split = split
+        self.sample_fraction = sample_fraction
+        self.sample_seed = sample_seed
+        self.n_workers = n_workers
+        self.cache_dir = cache_dir if cache_dir is not None else data_dir
 
         self.norm_min = norm_min
         self.norm_max = norm_max
@@ -262,9 +1076,19 @@ class GlobalNorm:
 
         if global_value_not_set:
 
-            suffix = f"_{split}" if split is not None else ""
+            csv_path = os.path.join(data_dir, "metadata.csv")
+            metadata = pd.read_csv(csv_path)
+            filename = metadata["filename"].iloc[0]
+            img_size = _process_single_file(
+                data_dir=data_dir, filename=filename, transforms=transforms
+            ).shape[-1]
+
+            suffix = _tdigest_cache_suffix(
+                img_size, split, sample_fraction, sample_seed, transforms
+            )
             tdigest_path = os.path.join(
-                data_dir, f"global_norm_tdigest_{int(percentile)}{suffix}.json"
+                self.cache_dir,
+                f"global_norm_tdigest_{int(percentile)}{suffix}.json",
             )
 
             if os.path.isfile(tdigest_path):
@@ -301,16 +1125,15 @@ class GlobalNorm:
         if self.split is not None:
             metadata = metadata[metadata["split"] == self.split]
         filenames = metadata["filename"].tolist()
+        filenames = _sample_filenames(filenames, self.sample_fraction, self.sample_seed)
 
-        digest = TDigest()
-
-        for fn in tqdm(filenames):
-            path = os.path.join(self.data_dir, fn)
-            img = np.load(path)
-            img = self.transforms(img)
-            digest.batch_update(img.flatten())
-
-        return digest
+        return build_tdigest(
+            data_dir=self.data_dir,
+            filenames=filenames,
+            transforms=self.transforms,
+            pixel_filter=_flatten,
+            n_workers=self.n_workers,
+        )
 
     def __call__(self, img: np.ndarray) -> np.ndarray:
         """Apply global linear normalization.
@@ -326,6 +1149,193 @@ class GlobalNorm:
 
         # Scale to [norm_min, norm_max]
         return img_norm * (self.norm_max - self.norm_min) + self.norm_min
+
+
+class StandardizeTransform:
+    """Normalize images with explicit or dataset-derived mean and standard deviation.
+
+    Applies ``(img - mu) / sigma``. The statistics can be supplied directly or
+    derived from a TDigest built over transformed dataset pixels. Dataset-derived
+    mode mirrors `ArcsinhStretch` and `GlobalNorm`: it reads `metadata.csv`,
+    filters by split, supports optional file sampling and multiprocessing, and
+    caches the TDigest on disk.
+
+    Args:
+        mu: Mean used for centering. Direct mode requires both ``mu`` and
+            ``sigma``. Dataset-derived mode requires this to be ``None``.
+        sigma: Standard deviation used for scaling. Direct mode requires both
+            ``mu`` and ``sigma``. Must resolve to a finite positive value.
+        transforms: Pipeline applied to each image before accumulating into the
+            TDigest. Defaults to identity.
+        data_dir: Directory containing ``metadata.csv`` and ``.npy`` files.
+            Required for dataset-derived mode.
+        split: Split name used to filter ``metadata.csv`` when building the
+            TDigest. Defaults to ``"train"``. Pass ``None`` to use all rows.
+        sample_fraction: Fraction of the filtered file list to use when
+            building the TDigest. ``None`` uses all files. Defaults to
+            ``None``.
+        sample_seed: RNG seed for reproducible sampling. Only used when
+            ``sample_fraction`` is set. Defaults to ``42``.
+        n_workers: Number of multiprocessing workers for TDigest computation.
+            ``0`` means serial. Defaults to ``0``.
+        cache_dir: Directory for writing/reading TDigest cache files. Falls back
+            to ``data_dir`` when ``None``. Defaults to ``None``.
+    """
+
+    def __init__(
+        self,
+        mu: float | None = None,
+        sigma: float | None = None,
+        transforms=None,
+        data_dir: str | None = None,
+        split: str | None = "train",
+        sample_fraction: float | None = None,
+        sample_seed: int = 42,
+        n_workers: int = 0,
+        cache_dir: str | None = None,
+    ):
+        """Initialize standardization parameters.
+
+        Args:
+            mu: Mean used for centering.
+            sigma: Standard deviation used for scaling.
+            transforms: Pipeline applied before fitting TDigest statistics.
+            data_dir: Dataset directory for derived statistics.
+            split: Metadata split used for derived statistics.
+            sample_fraction: Optional fraction of files used for fitting.
+            sample_seed: RNG seed used for sampling.
+            n_workers: Number of multiprocessing workers.
+            cache_dir: Directory for TDigest cache files.
+
+        Raises:
+            ValueError: If construction mode is incomplete or mixed, or if the
+                resolved ``sigma`` is not finite and positive.
+        """
+        has_any_stat = (mu is not None) or (sigma is not None)
+        has_both_stats = (mu is not None) and (sigma is not None)
+        use_dataset = data_dir is not None
+
+        if (use_dataset and has_any_stat) or (not use_dataset and not has_both_stats):
+            raise ValueError(
+                "Must use either provided mu/sigma or dataset-derived statistics. "
+                + "You have provided:\n"
+                + f"   - mu: {mu}\n"
+                + f"   - sigma: {sigma}\n"
+                + f"   - data_dir: {data_dir}"
+            )
+
+        if transforms is None:
+            transforms = _identity
+        self.transforms = transforms
+        self.data_dir = data_dir
+        self.split = split
+        self.sample_fraction = sample_fraction
+        self.sample_seed = sample_seed
+        self.n_workers = n_workers
+        self.cache_dir = cache_dir if cache_dir is not None else data_dir
+
+        if has_both_stats:
+            self.mu = float(mu)
+            self.sigma = self._validate_sigma(sigma)
+            return
+
+        csv_path = os.path.join(data_dir, "metadata.csv")
+        metadata = pd.read_csv(csv_path)
+        filename = metadata["filename"].iloc[0]
+        img_size = _process_single_file(
+            data_dir=data_dir,
+            filename=filename,
+            transforms=transforms,
+        ).shape[-1]
+
+        suffix = _tdigest_cache_suffix(
+            img_size,
+            split,
+            sample_fraction,
+            sample_seed,
+            transforms,
+        )
+        os.makedirs(self.cache_dir, exist_ok=True)
+        tdigest_path = os.path.join(self.cache_dir, f"standardize_tdigest{suffix}.json")
+        expected_metadata = _transform_metadata(self.transforms)
+        cacheable_metadata = expected_metadata is not _NON_CACHEABLE_TRANSFORM_METADATA
+        digest = None
+
+        if cacheable_metadata and os.path.isfile(tdigest_path):
+            with open(tdigest_path, "r") as fp:
+                digest_dict = json.load(fp)
+            if (
+                digest_dict.get(_STANDARDIZE_TRANSFORM_METADATA_KEY)
+                == expected_metadata
+            ):
+                digest = TDigest.from_dict(
+                    _tdigest_payload_without_private_metadata(digest_dict)
+                )
+
+        if digest is None:
+            digest = self._build_tdigest()
+            if cacheable_metadata:
+                digest_dict = digest.to_dict()
+                digest_dict[_STANDARDIZE_TRANSFORM_METADATA_KEY] = expected_metadata
+                with open(tdigest_path, "w") as fp:
+                    json.dump(digest_dict, fp, indent=2)
+
+        self.mu = float(digest.mean())
+        self.sigma = self._validate_sigma(digest.std())
+
+    @staticmethod
+    def _validate_sigma(sigma: float) -> float:
+        """Return ``sigma`` as a float after validating it.
+
+        Args:
+            sigma: Candidate standard deviation.
+
+        Returns:
+            Validated standard deviation as a Python ``float``.
+
+        Raises:
+            ValueError: If ``sigma`` is not finite and positive.
+        """
+        sigma = float(sigma)
+        if not np.isfinite(sigma) or sigma <= 0.0:
+            raise ValueError(f"sigma must be finite and positive, got {sigma}")
+        return sigma
+
+    def _build_tdigest(self) -> TDigest:
+        """Build a TDigest over all transformed pixel values in the dataset.
+
+        Reads filenames from ``metadata.csv`` (filtered to ``self.split`` if
+        set), applies ``self.transforms`` to each image, and accumulates all
+        pixels into the digest to estimate global mean and standard deviation.
+
+        Returns:
+            Fitted ``TDigest`` instance.
+        """
+        csv_path = os.path.join(self.data_dir, "metadata.csv")
+        metadata = pd.read_csv(csv_path)
+        if self.split is not None:
+            metadata = metadata[metadata["split"] == self.split]
+        filenames = metadata["filename"].tolist()
+        filenames = _sample_filenames(filenames, self.sample_fraction, self.sample_seed)
+
+        return build_tdigest(
+            data_dir=self.data_dir,
+            filenames=filenames,
+            transforms=self.transforms,
+            pixel_filter=_flatten,
+            n_workers=self.n_workers,
+        )
+
+    def __call__(self, img: np.ndarray) -> np.ndarray:
+        """Apply mu-sigma standardization.
+
+        Args:
+            img: ``(C, H, W)`` array.
+
+        Returns:
+            Standardized array with the same shape as ``img``.
+        """
+        return (img - self.mu) / self.sigma
 
 
 class PercentileClip:
@@ -391,80 +1401,193 @@ class LinearNormalize:
         return img * (self.norm_max - self.norm_min) + self.norm_min
 
 
-class RandomHorizontalFlip:
-    """Randomly flip image horizontally.
+class ClusterClip:
+    """Clip image values to ``[self.min, self.max]`` with a learned ceiling.
+
+    The upper bound (``self.max``) is supplied directly via ``clip`` or
+    derived from the dataset by:
+
+      1. Computing ``percentile`` for each image after ``transforms``.
+      2. Fitting ``sklearn.cluster.KMeans(n_clusters=2)`` on the resulting
+         per-image percentile values.
+      3. Setting ``self.max = sum(kmeans.cluster_centers_) / 2`` (midpoint
+         of the two cluster centres).
+
+    The lower bound ``self.min`` is always taken from the ``min`` argument
+    (default ``0.0``). Derived clip values are cached on disk.
 
     Args:
-        p: Probability of flipping.
-        seed: Random seed. Defaults to ``None`` for non-deterministic behavior.
+        clip: Pre-computed upper clip value. Mutually exclusive with
+            ``percentile`` + ``data_dir``.
+        min: Lower clip value. Defaults to ``0.0``.
+        transforms: Pipeline applied to each image before computing its
+            percentile. Defaults to identity.
+        percentile: Percentile in ``[0, 100]`` computed per image, then
+            clustered. Requires ``data_dir``.
+        positive_only: If ``True``, only strictly positive pixels of each
+            image contribute to its percentile. Defaults to ``False``.
+        data_dir: Directory containing ``metadata.csv`` and ``.npy`` files.
+            Required when ``percentile`` is set.
+        split: Split filter for ``metadata.csv``. Defaults to ``"train"``.
+            Pass ``None`` to use all rows.
+        sample_fraction: Fraction of files used when fitting. ``None`` uses
+            all files. Defaults to ``None``.
+        sample_seed: RNG seed for sampling and ``KMeans(random_state=...)``.
+            Defaults to ``42``.
+        n_workers: Number of multiprocessing workers. ``0`` means serial.
+            Defaults to ``0``.
+        cache_dir: Directory for the cache JSON. Falls back to ``data_dir``.
     """
 
-    def __init__(self, p: float = 0.5, seed: int = None):
-        self.p = p
-        self.seed = seed
-        self.rng = np.random.default_rng(seed)
+    def __init__(
+        self,
+        clip: float | None = None,
+        min: float = 0.0,
+        transforms=None,
+        percentile: float | None = None,
+        positive_only: bool = False,
+        data_dir: str | None = None,
+        split: str | None = "train",
+        sample_fraction: float | None = None,
+        sample_seed: int = 42,
+        n_workers: int = 0,
+        cache_dir: str | None = None,
+    ):
+        use_percentile = (percentile is not None) and (data_dir is not None)
+        use_clip = clip is not None
+
+        if (not use_percentile and not use_clip) or (use_percentile and use_clip):
+            raise ValueError(
+                "Must use either a provided clip or a provided percentile and dataset. "
+                + "You have provided:\n"
+                + f"   - clip: {clip}\n"
+                + f"   - percentile: {percentile}\n"
+                + f"   - data_dir: {data_dir}"
+            )
+
+        if transforms is None:
+            transforms = _identity
+        self.transforms = transforms
+        self.percentile = percentile
+        self.positive_only = positive_only
+        self.data_dir = data_dir
+        self.split = split
+        self.sample_fraction = sample_fraction
+        self.sample_seed = sample_seed
+        self.n_workers = n_workers
+        self.cache_dir = cache_dir if cache_dir is not None else data_dir
+
+        self.min = min
+
+        if use_clip:
+            self.max = clip
+
+        if use_percentile:
+            csv_path = os.path.join(data_dir, "metadata.csv")
+            metadata = pd.read_csv(csv_path)
+            filename = metadata["filename"].iloc[0]
+            img_size = _process_single_file(
+                data_dir=data_dir, filename=filename, transforms=transforms
+            ).shape[-1]
+
+            suffix = _tdigest_cache_suffix(
+                img_size, split, sample_fraction, sample_seed, transforms
+            )
+            pos_tag = "_pos" if positive_only else ""
+            cache_path = os.path.join(
+                self.cache_dir,
+                f"cluster_clip_p{percentile}{pos_tag}{suffix}.json",
+            )
+
+            if os.path.isfile(cache_path):
+                with open(cache_path, "r") as fp:
+                    payload = json.load(fp)
+                self.max = float(payload["clip"])
+            else:
+                self.max = self._fit_max()
+                payload = {
+                    "clip": self.max,
+                    "percentile": percentile,
+                    "positive_only": positive_only,
+                }
+                with open(cache_path, "w") as fp:
+                    json.dump(payload, fp, indent=2)
+
+    def _fit_max(self) -> float:
+        """Fit KMeans on per-image percentiles and return the midpoint.
+
+        Returns:
+            Midpoint of the two ``KMeans(n_clusters=2)`` cluster centres,
+            used as ``self.max``.
+        """
+        csv_path = os.path.join(self.data_dir, "metadata.csv")
+        metadata = pd.read_csv(csv_path)
+        if self.split is not None:
+            metadata = metadata[metadata["split"] == self.split]
+        filenames = metadata["filename"].tolist()
+        filenames = _sample_filenames(filenames, self.sample_fraction, self.sample_seed)
+
+        percentiles = build_image_percentiles(
+            data_dir=self.data_dir,
+            filenames=filenames,
+            transforms=self.transforms,
+            percentile=self.percentile,
+            positive_only=self.positive_only,
+            n_workers=self.n_workers,
+        )
+
+        eps = 1e-8
+        z = np.log10(percentiles + eps)
+        kmeans = KMeans(n_clusters=2, random_state=self.sample_seed)
+        kmeans.fit(z.reshape(-1, 1))
+        log_boundary = float(np.sum(kmeans.cluster_centers_) / 2)
+        boundary = 10**log_boundary - eps
+        return boundary
 
     def __call__(self, img: np.ndarray) -> np.ndarray:
-        """Apply random horizontal flip along the last axis.
+        """Apply the clip.
 
         Args:
             img: ``(C, H, W)`` array.
 
         Returns:
-            Possibly flipped array, same shape as input.
+            Array clipped to ``[self.min, self.max]``, same shape as input.
         """
-        if self.rng.random() < self.p:
-            return np.ascontiguousarray(np.flip(img, axis=-1))
+        return np.clip(img, a_min=self.min, a_max=self.max)
+
+
+class RandomHorizontalFlip(WorkerSeededTransform):
+    """Randomly flip image horizontally."""
+
+    def __init__(self, p: float = 0.5, seed: int | None = None):
+        super().__init__(seed=seed)
+        self.p = p
+
+    def __call__(self, img: np.ndarray) -> np.ndarray:
+        if self._get_rng().random() < self.p:
+            return np.flip(img, axis=-1)
         return img
 
 
-class RandomVerticalFlip:
-    """Randomly flip image vertically.
+class RandomVerticalFlip(WorkerSeededTransform):
+    """Randomly flip image vertically."""
 
-    Args:
-        p: Probability of flipping.
-        seed: Random seed. Defaults to ``None`` for non-deterministic behavior.
-    """
-
-    def __init__(self, p: float = 0.5, seed: int = None):
+    def __init__(self, p: float = 0.5, seed: int | None = None):
+        super().__init__(seed=seed)
         self.p = p
-        self.seed = seed
-        self.rng = np.random.default_rng(seed)
 
     def __call__(self, img: np.ndarray) -> np.ndarray:
-        """Apply random vertical flip along the second-to-last axis.
-
-        Args:
-            img: ``(C, H, W)`` array.
-
-        Returns:
-            Possibly flipped array, same shape as input.
-        """
-        if self.rng.random() < self.p:
-            return np.ascontiguousarray(np.flip(img, axis=-2))
+        if self._get_rng().random() < self.p:
+            return np.flip(img, axis=-2)
         return img
 
 
-class RandomRotation90:
-    """Randomly apply 0, 1, 2, or 3 quarter-turns (90-degree rotations).
+class RandomRotation90(WorkerSeededTransform):
+    """Randomly apply 0, 1, 2, or 3 quarter-turns."""
 
-    All four outcomes are equally likely.
-    Args:
-        seed: Random seed. Defaults to ``None`` for non-deterministic behavior.
-    """
-
-    def __init__(self, seed: int = None):
-        self.seed = seed
-        self.rng = np.random.default_rng(seed)
+    def __init__(self, seed: int | None = None):
+        super().__init__(seed=seed)
 
     def __call__(self, img: np.ndarray) -> np.ndarray:
-        """Apply random 90-degree rotation on spatial axes.
-
-        Args:
-            img: ``(C, H, W)`` array.
-
-        Returns:
-            Rotated array, same shape as input.
-        """
-        k = self.rng.integers(4)
-        return np.ascontiguousarray(np.rot90(img, k=k, axes=(-2, -1)))
+        k = self._get_rng().integers(4)
+        return np.rot90(img, k=k, axes=(-2, -1))

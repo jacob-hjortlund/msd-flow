@@ -7,8 +7,10 @@ using Diffrax solvers.
 import jax
 import diffrax
 
+import equinox as eqx
 import jax.numpy as jnp
 
+from msdflow.flow.clr import project_channel_mean_zero, sample_x0
 from msdflow.train.metrics import _to_velocity
 
 # TODO: Move to inference
@@ -23,9 +25,10 @@ def sample(
     t0: float,
     t1: float,
     stepsize_controller,
-    stepsize_controller_cfg: dict,
     cond: jax.Array | None = None,
     guidance_scale: float = 1.0,
+    x0_mode: str = "gaussian",
+    project_velocity: bool = False,
 ) -> jax.Array:
     """Draw one sample by integrating the learned ODE from t0 to t1.
 
@@ -40,8 +43,6 @@ def sample(
         t0:                   Start time (0.0 = noise).
         t1:                   End time (1.0 = data).
         stepsize_controller:  Diffrax step-size controller class.
-        stepsize_controller_cfg: Keyword arguments forwarded to the step-size
-            controller constructor.
         cond:                 Conditioning vector of shape ``(D,)``. Pass
             ``None`` for unconditional sampling (the model's null embedding
             is used).
@@ -49,9 +50,19 @@ def sample(
             a single conditional forward pass; values ``> 1.0`` blend the
             conditional and unconditional predictions via
             ``v_uncond + guidance_scale * (v_cond - v_uncond)``.
+        x0_mode:              Initial-noise mode handled by
+            ``msdflow.flow.clr.sample_x0``. ``"gaussian"`` preserves standard
+            Gaussian sampling; ``"clr"`` projects Gaussian noise to zero
+            spatial mean independently per channel.
+        project_velocity:     Whether to project drift velocities to zero
+            spatial mean per channel after conversion to velocity. Treat as a
+            Python/static bool under JIT-like use.
 
     Returns:
         Sample array of shape `shape`.
+
+    Raises:
+        ValueError: If ``x0_mode`` is unsupported.
     """
 
     if cond is None and guidance_scale != 1.0:
@@ -59,11 +70,6 @@ def sample(
             "guidance_scale != 1.0 requires an explicit cond; "
             "for unconditional sampling, leave cond=None (the default)."
         )
-
-    solver = solver()
-    stepsize_controller = (
-        stepsize_controller()
-    )  # TODO: Fix when controller has args / kwargs
 
     mask_true = jnp.array(True)
     mask_false = jnp.array(False)
@@ -96,15 +102,30 @@ def sample(
 
         if guidance_scale == 1.0:
             pred = model(t, y, _cond, _mask, model_key)
-            return _to_velocity(pred[None], y_batch, t_batch, model.prediction_type)[0]
+            velocity = _to_velocity(
+                pred[None],
+                y_batch,
+                t_batch,
+                model.prediction_type,
+            )[0]
+            if project_velocity:
+                velocity = project_channel_mean_zero(velocity)
+            return velocity
 
         pred_cond = model(t, y, _cond, mask_true, model_key)
         pred_uncond = model(t, y, _cond, mask_false, model_key)
-        v_cond = _to_velocity(pred_cond[None], y_batch, t_batch, model.prediction_type)[0]
-        v_uncond = _to_velocity(pred_uncond[None], y_batch, t_batch, model.prediction_type)[0]
-        return v_uncond + guidance_scale * (v_cond - v_uncond)
+        v_cond = _to_velocity(pred_cond[None], y_batch, t_batch, model.prediction_type)[
+            0
+        ]
+        v_uncond = _to_velocity(
+            pred_uncond[None], y_batch, t_batch, model.prediction_type
+        )[0]
+        velocity = v_uncond + guidance_scale * (v_cond - v_uncond)
+        if project_velocity:
+            velocity = project_channel_mean_zero(velocity)
+        return velocity
 
-    x0 = jax.random.normal(key, shape)
+    x0 = sample_x0(key, shape, x0_mode=x0_mode)
     term = diffrax.ODETerm(drift)
     saveat = diffrax.SaveAt(ts=jnp.array([t1]))
     solution = diffrax.diffeqsolve(
@@ -117,5 +138,17 @@ def sample(
         stepsize_controller=stepsize_controller,
         saveat=saveat,
     )
-    # SaveAt(ts=[t1]) stores one time point; solution.ys shape is (1, C, H, W)
-    return solution.ys[0]
+
+    _x1 = solution.ys[0]
+    x1 = _x1
+    # if model.prediction_type == "image":
+    #     key, image_key = jax.random.split(key)
+
+    #     if guidance_scale == 1.0:
+    #         x1 = model(t1, _x1, _cond, _mask, image_key)
+    #     else:
+    #         pred_cond = model(t1, _x1, _cond, mask_true, image_key)
+    #         pred_uncond = model(t1, _x1, _cond, mask_false, image_key)
+    #         x1 = pred_uncond + guidance_scale * (pred_cond - pred_uncond)
+
+    return x1

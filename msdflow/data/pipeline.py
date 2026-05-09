@@ -39,6 +39,7 @@ def resolve_dataset(
     ratios: dict,
     download_cfg,
     skip_download: bool = False,
+    use_dataset: bool = True,
 ) -> str:
     """Resolve the local path to a processed dataset.
 
@@ -62,6 +63,8 @@ def resolve_dataset(
             Must *not* contain ``processed_dir`` — it is injected at call time.
         skip_download: If ``True``, raise ``FileNotFoundError`` in Case C instead
             of downloading.
+        use_dataset: If ``False``, always use local dataset resolution even
+            when a ClearML Task is active. Defaults to ``True``.
 
     Returns:
         Absolute local path to the resolved ``processed_dir``.
@@ -71,7 +74,7 @@ def resolve_dataset(
     full_hash = compute_full_hash(download_hash, seed, ratios)
     processed_dir = os.path.join(data_dir, download_hash)
 
-    if task is None:
+    if task is None or not use_dataset:
         return _resolve_local(
             processed_dir, full_hash, seed, ratios, download_cfg, skip_download
         )

@@ -132,24 +132,51 @@ def extract_tng_urls(
 
     url_list = []
     combos = list(itertools.product(version_ids, snap_ids))
+    max_retries = 5
+    timeout_base = 3
 
     with logging_redirect_tqdm():
         for vId, snap in tqdm(combos):
             endpoint_url = f"http://www.tng-project.org/api/TNG50-1/files/skirt_images_hsc_idealized_v{vId}_{snap}/"
 
-            try:
-                response = requests.get(endpoint_url, headers=headers)
-                response.raise_for_status()
-                urls = response.json()["files"]
-                selected_urls = urls[:N] if N > 0 else urls
-                url_list.extend(selected_urls)
+            for attempt in range(max_retries):
+                try:
+                    response = requests.get(endpoint_url, headers=headers)
 
-            except requests.exceptions.HTTPError as err:
-                log.warning(
-                    f"Skipping version {vId}, snapID {snap} - API returned {err.response.status_code}"
+                    if response.status_code in [502, 503, 504]:
+                        sleep_time = timeout_base**attempt
+                        log.warning(
+                            f"Server busy ({response.status_code}) for version {vId}, snapID {snap}. "
+                            f"Retrying in {sleep_time}s (attempt {attempt + 1}/{max_retries})..."
+                        )
+                        time.sleep(sleep_time)
+                        continue
+
+                    response.raise_for_status()
+                    urls = response.json()["files"]
+                    selected_urls = urls[:N] if N > 0 else urls
+                    url_list.extend(selected_urls)
+                    break
+
+                except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as err:
+                    sleep_time = timeout_base**attempt
+                    log.warning(
+                        f"Connection error for version {vId}, snapID {snap}: {err}. "
+                        f"Retrying in {sleep_time}s (attempt {attempt + 1}/{max_retries})..."
+                    )
+                    time.sleep(sleep_time)
+                except requests.exceptions.HTTPError as err:
+                    log.warning(
+                        f"Skipping version {vId}, snapID {snap} - API returned {err.response.status_code}"
+                    )
+                    break
+                except requests.exceptions.RequestException as err:
+                    log.error(f"Network error on version {vId}, snapID {snap}: {err}")
+                    break
+            else:
+                log.error(
+                    f"Failed to fetch URLs for version {vId}, snapID {snap} after {max_retries} attempts."
                 )
-            except requests.exceptions.RequestException as err:
-                log.error(f"Network error on version {vId}, snapID {snap}: {err}")
 
     return url_list
 

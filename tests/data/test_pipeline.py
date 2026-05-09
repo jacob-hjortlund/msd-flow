@@ -201,6 +201,32 @@ class TestResolveDatasetLocal:
                 skip_download=True,
             )
 
+    def test_use_dataset_false_routes_to_local_with_active_task(self, tmp_path):
+        """use_dataset=False with an active ClearML task → local path, not ClearML."""
+        mock_task = MagicMock()
+        processed_dir = tmp_path / _dl_hash()
+        processed_dir.mkdir()
+        _make_metadata(processed_dir)
+        (processed_dir / ".splits_hash").write_text(_full_hash())
+
+        with patch("msdflow.data.pipeline.get_dataset_id") as mock_get_id, \
+             patch("msdflow.data.pipeline.get_base_dataset_id") as mock_get_base:
+            from msdflow.data.pipeline import resolve_dataset
+            result = resolve_dataset(
+                task=mock_task,
+                dataset_name="TNG50",
+                data_dir=str(tmp_path),
+                seed=42,
+                ratios=_RATIOS,
+                download_cfg=_cfg(),
+                use_dataset=False,
+            )
+
+        # Must use local path, not ClearML dataset functions
+        mock_get_id.assert_not_called()
+        mock_get_base.assert_not_called()
+        assert result == str(processed_dir)
+
     def test_processed_dir_is_derived_from_download_hash(self, tmp_path):
         """The returned path is data_dir/<download_hash>."""
         processed_dir = tmp_path / _dl_hash()

@@ -1,0 +1,9 @@
+learning_rate: 1.0e-4
+global_norm: null
+
+schedule:
+  _target_: optax.schedules.constant_schedule
+  value: ${train.optimizer.learning_rate}
+optimizer:
+    _target_: optax.adamw
+    learning_rate: ${train.optimizer.schedule}

@@ -37,6 +37,8 @@ class TNG50Dataset(Dataset):
         metadata_columns: list[str] | None = None,
         image_transform=None,
         metadata_transform=None,
+        max_size: int | None = None,
+        seed: int | None = None,
     ):
         self.processed_dir = processed_dir
         self.split = split
@@ -49,7 +51,15 @@ class TNG50Dataset(Dataset):
             self.metadata = self.metadata[self.metadata["split"] == split].reset_index(
                 drop=True
             )
-        self.filenames = self.metadata["filename"].tolist()
+        _filenames = self.metadata["filename"].to_numpy()
+        if max_size is not None:
+            if seed is None:
+                indeces = np.random.choice(np.arange(len(_filenames)), max_size)
+            else:
+                rng = np.random.default_rng(seed)
+                indeces = rng.choice(np.arange(len(_filenames)), max_size)
+            _filenames = _filenames[indeces]
+        self.filenames = list(_filenames)
 
     def __len__(self) -> int:
         """Return the number of samples in the dataset."""

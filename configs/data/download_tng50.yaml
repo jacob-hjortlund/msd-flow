@@ -7,4 +7,4 @@ num_files_per_view: 0
 max_workers: 10
 raw_dir: "${data.dataset.data_dir}/raw"
 bands: ["SUBARU_HSC.I"]
-batch_size: 100
+batch_size: 1000

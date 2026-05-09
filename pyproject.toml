@@ -29,6 +29,9 @@ dependencies = [
     "matplotlib",
     "seaborn",
     "timm",
+    "flax",
+    "cmasher",
+    "scikit-learn"
 ]
 
 [project.optional-dependencies]

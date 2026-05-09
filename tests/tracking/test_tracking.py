@@ -1,6 +1,7 @@
 """Tests for msdflow.tracking."""
 
 import os
+import warnings
 import numpy as np
 import pytest
 from unittest.mock import MagicMock, patch, call
@@ -43,6 +44,34 @@ def test_setup_task_calls_task_init_when_enabled():
         result = setup_task(_cfg(enabled=True))
     MockTask.init.assert_called_once_with(project_name="msd-flow", task_name="train")
     assert result is mock_task
+
+
+def test_setup_task_continues_resume_task_id():
+    """setup_task should continue the checkpoint task id when provided."""
+    mock_task = MagicMock()
+    mock_task.id = "resume-task"
+    with patch("msdflow.tracking.Task") as MockTask:
+        MockTask.init.return_value = mock_task
+        from msdflow.tracking import setup_task
+
+        result = setup_task(_cfg(enabled=True), resume_task_id="resume-task")
+
+    MockTask.init.assert_called_once_with(
+        project_name="msd-flow",
+        task_name="train",
+        reuse_last_task_id="resume-task",
+        continue_last_task=True,
+    )
+    assert result is mock_task
+
+
+def test_setup_task_disabled_ignores_resume_task_id():
+    """Disabled ClearML should still return None when resume task id exists."""
+    from msdflow.tracking import setup_task
+
+    result = setup_task(_cfg(enabled=False), resume_task_id="resume-task")
+
+    assert result is None
 
 
 def test_setup_task_falls_back_to_offline_on_connection_error(tmp_path, monkeypatch):
@@ -125,24 +154,242 @@ def test_log_samples_noop_when_task_is_none():
     from msdflow.tracking import log_samples
 
     images = np.zeros((4, 1, 8, 8), dtype=np.float32)
-    log_samples(None, images, epoch=1)
+    log_samples(None, images, epoch=1, title="samples")
 
 
-def test_log_samples_calls_report_image_per_sample():
+def test_log_samples_calls_report_matplotlib_figure():
+    """log_samples renders one matplotlib figure per call via report_matplotlib_figure."""
     from msdflow.tracking import log_samples
 
     mock_task = MagicMock()
     images = np.zeros((3, 1, 8, 8), dtype=np.float32)
-    log_samples(mock_task, images, epoch=3)
+    log_samples(mock_task, images, epoch=3, title="samples")
     logger = mock_task.get_logger.return_value
-    assert logger.report_image.call_count == 3
-    calls = logger.report_image.call_args_list
-    for i in range(3):
-        kw = calls[i][1]  # kwargs of i-th call
-        assert kw["title"] == "samples"
-        assert kw["series"] == "epoch_3"
-        assert kw["iteration"] == 3
-        assert np.array_equal(kw["image"], np.transpose(images[i], (1, 2, 0)))
+    assert logger.report_matplotlib_figure.call_count == 1
+    kwargs = logger.report_matplotlib_figure.call_args.kwargs
+    assert kwargs["title"] == "samples"
+    assert kwargs["series"] == "grid"
+    assert kwargs["iteration"] == 3
+    assert kwargs["figure"] is not None
+    # report_image must NOT be called - the implementation now uses figures only.
+    assert logger.report_image.call_count == 0
+
+
+def _time_binned_result():
+    """Return a small time-binned result and matching history for tracking tests."""
+    from msdflow.train.metrics import TimeBinnedLossHistory, TimeBinnedLossResult
+
+    result = TimeBinnedLossResult.empty(num_bins=3)
+    result.add_batch(
+        loss_sums=np.array([1.0, 0.0, 6.0]),
+        counts=np.array([1, 0, 3]),
+    )
+    history = TimeBinnedLossHistory(bin_edges=result.bin_edges)
+    history.append(epoch=2, result=result)
+    return result, history
+
+
+def test_log_time_binned_loss_noop_when_task_is_none():
+    """Time-binned loss logging should no-op when ClearML tracking is disabled."""
+    from msdflow.tracking import log_time_binned_loss
+
+    result, history = _time_binned_result()
+
+    log_time_binned_loss(
+        task=None,
+        split="val",
+        epoch=2,
+        result=result,
+        history=history,
+    )
+
+
+def test_log_time_binned_loss_reports_histogram_and_heatmap():
+    """Time-binned loss logging should report one histogram and one heatmap."""
+    from msdflow.tracking import log_time_binned_loss
+
+    mock_task = MagicMock()
+    result, history = _time_binned_result()
+
+    log_time_binned_loss(
+        task=mock_task,
+        split="val",
+        epoch=2,
+        result=result,
+        history=history,
+    )
+
+    logger = mock_task.get_logger.return_value
+    assert logger.report_matplotlib_figure.call_count == 2
+    calls = logger.report_matplotlib_figure.call_args_list
+    assert calls[0].kwargs["title"] == "val/flow_matching_loss_by_t"
+    assert calls[0].kwargs["series"] == "histogram"
+    assert calls[0].kwargs["iteration"] == 2
+    assert calls[1].kwargs["title"] == "val/flow_matching_loss_by_t"
+    assert calls[1].kwargs["series"] == "heatmap"
+    assert calls[1].kwargs["iteration"] == 2
+
+
+def test_plot_time_binned_loss_histogram_avoids_masked_mean_loss_warning():
+    """Histogram plotting should not pass masked mean-loss bars to Matplotlib."""
+    import matplotlib.pyplot as plt
+
+    from msdflow.tracking import plot_time_binned_loss_histogram
+
+    result, _ = _time_binned_result()
+
+    fig = None
+    try:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            fig = plot_time_binned_loss_histogram(result, split="val", epoch=2)
+
+        warning_messages = [str(warning.message) for warning in caught]
+        assert not any(
+            "converting a masked element to nan" in message
+            for message in warning_messages
+        )
+    finally:
+        if fig is not None:
+            plt.close(fig)
+
+
+def test_log_time_binned_loss_can_skip_heatmap():
+    """Passing no history should only report the per-epoch histogram."""
+    from msdflow.tracking import log_time_binned_loss
+
+    mock_task = MagicMock()
+    result, _ = _time_binned_result()
+
+    log_time_binned_loss(
+        task=mock_task,
+        split="val",
+        epoch=2,
+        result=result,
+        history=None,
+    )
+
+    logger = mock_task.get_logger.return_value
+    assert logger.report_matplotlib_figure.call_count == 1
+    assert logger.report_matplotlib_figure.call_args.kwargs["series"] == "histogram"
+
+
+def test_log_time_binned_loss_skips_empty_history_heatmap():
+    """Empty history should not attempt invalid heatmap rendering."""
+    from msdflow.train.metrics import TimeBinnedLossHistory
+    from msdflow.tracking import log_time_binned_loss
+
+    mock_task = MagicMock()
+    result, _ = _time_binned_result()
+    history = TimeBinnedLossHistory(bin_edges=result.bin_edges)
+
+    log_time_binned_loss(
+        task=mock_task,
+        split="val",
+        epoch=2,
+        result=result,
+        history=history,
+    )
+
+    logger = mock_task.get_logger.return_value
+    assert logger.report_matplotlib_figure.call_count == 1
+    assert logger.report_matplotlib_figure.call_args.kwargs["series"] == "histogram"
+
+
+def test_log_time_binned_loss_closes_figures_after_successful_reporting():
+    """Successful time-binned loss logging should not leave figures open."""
+    import matplotlib.pyplot as plt
+
+    from msdflow.tracking import log_time_binned_loss
+
+    plt.close("all")
+    mock_task = MagicMock()
+    result, history = _time_binned_result()
+
+    try:
+        log_time_binned_loss(
+            task=mock_task,
+            split="val",
+            epoch=2,
+            result=result,
+            history=history,
+        )
+
+        assert plt.get_fignums() == []
+    finally:
+        plt.close("all")
+
+
+def test_log_time_binned_loss_closes_figures_when_reporting_raises():
+    """Time-binned loss logging should close figures when ClearML reporting fails."""
+    import matplotlib.pyplot as plt
+
+    from msdflow.tracking import log_time_binned_loss
+
+    plt.close("all")
+    mock_task = MagicMock()
+    logger = mock_task.get_logger.return_value
+    logger.report_matplotlib_figure.side_effect = [None, RuntimeError("report failed")]
+    result, history = _time_binned_result()
+
+    try:
+        with pytest.raises(RuntimeError, match="report failed"):
+            log_time_binned_loss(
+                task=mock_task,
+                split="val",
+                epoch=2,
+                result=result,
+                history=history,
+            )
+
+        assert plt.get_fignums() == []
+    finally:
+        plt.close("all")
+
+
+def test_plot_time_binned_loss_heatmap_rejects_empty_history_without_open_figures():
+    """Empty history heatmap plotting should fail before creating a figure."""
+    import matplotlib.pyplot as plt
+
+    from msdflow.train.metrics import TimeBinnedLossHistory
+    from msdflow.tracking import plot_time_binned_loss_heatmap
+
+    result, _ = _time_binned_result()
+    history = TimeBinnedLossHistory(bin_edges=result.bin_edges)
+
+    plt.close("all")
+    try:
+        with pytest.raises(ValueError, match="empty time-binned loss history"):
+            plot_time_binned_loss_heatmap(history, split="val")
+
+        assert plt.get_fignums() == []
+    finally:
+        plt.close("all")
+
+
+def test_plot_time_binned_loss_heatmap_labels_nonconsecutive_epochs():
+    """Heatmap y-axis should label rows with actual non-consecutive epochs."""
+    import matplotlib.pyplot as plt
+
+    from msdflow.train.metrics import TimeBinnedLossHistory
+    from msdflow.tracking import plot_time_binned_loss_heatmap
+
+    result, _ = _time_binned_result()
+    history = TimeBinnedLossHistory(bin_edges=result.bin_edges)
+    for epoch in [5, 10, 15]:
+        history.append(epoch=epoch, result=result)
+
+    fig = plot_time_binned_loss_heatmap(history, split="val")
+    try:
+        ax = fig.axes[0]
+        tick_positions = ax.get_yticks()
+        tick_labels = [label.get_text() for label in ax.get_yticklabels()]
+
+        assert set(["5", "10", "15"]).issubset(tick_labels)
+        assert min(tick_positions) >= -0.5
+        assert max(tick_positions) <= 2.5
+    finally:
+        plt.close(fig)
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +418,7 @@ def test_get_dataset_id_queries_with_splits_tag():
         dataset_name="TNG50",
         dataset_project="msd-flow",
         dataset_tags=["splits:abc123"],
+        alias="raw_data",
     )
 
 
@@ -209,7 +457,7 @@ def test_get_base_dataset_id_returns_latest_by_created():
         result = get_base_dataset_id(mock_task, "TNG50", "dl_hash")
     assert result == "new-id"
     MockDataset.list_datasets.assert_called_once_with(
-        dataset_name="TNG50",
+        partial_name="TNG50",
         dataset_project="msd-flow",
         tags=["download:dl_hash"],
     )

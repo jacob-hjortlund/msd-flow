@@ -6,6 +6,7 @@ import pytest
 import equinox as eqx
 import jax.numpy as jnp
 
+from msdflow.model.blocks import RALAAttentionBlock, ResBlockBigGAN
 from msdflow.model.ncsnpp import NCSNpp
 
 KEY = jax.random.PRNGKey(42)
@@ -43,6 +44,35 @@ SMALL_CFG_COND = dict(
     image_size=8,
     cond_dim=1,
 )
+
+
+def _array_leaf_dtypes(pytree):
+    """Return dtypes for array leaves in a pytree."""
+    return {
+        leaf.dtype
+        for leaf in jax.tree.leaves(eqx.filter(pytree, eqx.is_array))
+    }
+
+
+def _ncsnpp_resblocks(model):
+    """Return every ``ResBlockBigGAN`` owned by an NCSNpp model."""
+    encoder_resblocks = [
+        block
+        for block, is_attn in zip(model.encoder_blocks, model.encoder_is_attn)
+        if not is_attn
+    ]
+    decoder_resblocks = [
+        block
+        for block, is_attn in zip(model.decoder_blocks, model.decoder_is_attn)
+        if not is_attn
+    ]
+    return (
+        encoder_resblocks
+        + list(model.downsample_blocks)
+        + [model.mid_block1, model.mid_block2]
+        + decoder_resblocks
+        + list(model.upsample_blocks)
+    )
 
 
 def test_ncsnpp_output_shape_matches_input():
@@ -224,3 +254,117 @@ def test_ncsnpp_prediction_type_invalid():
     """NCSNpp raises ValueError for unknown prediction_type."""
     with pytest.raises(ValueError, match="prediction_type"):
         NCSNpp(**SMALL_CFG, key=KEY, prediction_type="score")
+
+
+def test_ncsnpp_attention_dtype_bfloat16_smoke():
+    """NCSNpp with attention_dtype=bfloat16 builds and runs; output dtype matches input."""
+    cfg = dict(SMALL_CFG)
+    cfg["attention_dtype"] = jnp.bfloat16
+    model = NCSNpp(**cfg, key=KEY)
+    k, _ = jax.random.split(KEY)
+    x = jax.random.normal(k, (1, 8, 8)).astype(jnp.float32)
+    out = model(jnp.array(0.5), x, jnp.empty(0), jnp.array(False), jax.random.PRNGKey(0))
+    assert out.shape == (1, 8, 8)
+    assert out.dtype == jnp.float32
+    assert jnp.all(jnp.isfinite(out))
+
+
+def test_ncsnpp_compute_dtype_bfloat16_smoke():
+    """bf16 model compute returns finite fp32 output for fp32 input."""
+    cfg = dict(SMALL_CFG)
+    cfg["compute_dtype"] = jnp.bfloat16
+    model = NCSNpp(**cfg, key=KEY)
+    x_key, call_key = jax.random.split(KEY)
+    x = jax.random.normal(x_key, (1, 8, 8)).astype(jnp.float32)
+
+    out = model(
+        jnp.array(0.5),
+        x,
+        jnp.empty(0),
+        jnp.array(False),
+        call_key,
+    )
+
+    assert out.shape == (1, 8, 8)
+    assert out.dtype == jnp.float32
+    assert jnp.all(jnp.isfinite(out))
+
+
+def test_ncsnpp_compute_dtype_reaches_all_resblocks():
+    """NCSNpp forwards compute_dtype to every residual block."""
+    cfg = dict(SMALL_CFG)
+    cfg["compute_dtype"] = jnp.bfloat16
+    model = NCSNpp(**cfg, key=KEY)
+    resblocks = _ncsnpp_resblocks(model)
+
+    assert model.compute_dtype == jnp.bfloat16
+    assert resblocks
+    assert all(isinstance(block, ResBlockBigGAN) for block in resblocks)
+    assert all(block.compute_dtype == jnp.bfloat16 for block in resblocks)
+
+
+def test_ncsnpp_compute_dtype_keeps_stored_arrays_float32():
+    """bf16 compute does not convert NCSNpp stored trainable arrays."""
+    cfg = dict(SMALL_CFG)
+    cfg["compute_dtype"] = jnp.bfloat16
+    model = NCSNpp(**cfg, key=KEY)
+
+    assert _array_leaf_dtypes(model) == {jnp.dtype(jnp.float32)}
+
+
+def test_ncsnpp_compute_dtype_does_not_override_attention_dtype():
+    """compute_dtype remains independent from attention_dtype."""
+    cfg = dict(SMALL_CFG)
+    cfg["compute_dtype"] = jnp.bfloat16
+    cfg["attention_dtype"] = jnp.float32
+    model = NCSNpp(**cfg, key=KEY)
+
+    assert model.compute_dtype == jnp.bfloat16
+    assert model.mid_attn.attn.attention_dtype == jnp.float32
+
+
+def test_ncsnpp_attention_type_rala_smoke():
+    """NCSNpp with attention_type=rala builds and returns finite float32 output."""
+    cfg = dict(SMALL_CFG)
+    cfg["attention_type"] = "rala"
+    cfg["num_heads"] = 2
+    model = NCSNpp(**cfg, key=KEY)
+    x = jnp.ones((1, 8, 8), dtype=jnp.float32)
+    out = model(jnp.array(0.5), x, jnp.empty(0), jnp.array(False), jax.random.PRNGKey(0))
+    assert out.shape == (1, 8, 8)
+    assert out.dtype == jnp.float32
+    assert jnp.all(jnp.isfinite(out))
+
+
+def test_ncsnpp_attention_type_passthrough_rala():
+    """attention_type=rala reaches every AttnBlockNCSN construction site."""
+    cfg = dict(SMALL_CFG)
+    cfg["attention_type"] = "rala"
+    cfg["num_heads"] = 2
+    model = NCSNpp(**cfg, key=KEY)
+    encoder_attn_blocks = [
+        block
+        for block, is_attn in zip(model.encoder_blocks, model.encoder_is_attn)
+        if is_attn
+    ]
+    mid_attn_blocks = [model.mid_attn]
+    decoder_attn_blocks = [
+        block
+        for block, is_attn in zip(model.decoder_blocks, model.decoder_is_attn)
+        if is_attn
+    ]
+    assert encoder_attn_blocks
+    assert mid_attn_blocks
+    assert decoder_attn_blocks
+
+    attn_blocks = encoder_attn_blocks + mid_attn_blocks + decoder_attn_blocks
+    assert all(isinstance(block.attn, RALAAttentionBlock) for block in attn_blocks)
+
+
+def test_ncsnpp_attention_implementation_passthrough():
+    """attention_implementation reaches every AttnBlockNCSN inside NCSNpp."""
+    cfg = dict(SMALL_CFG)
+    cfg["attention_implementation"] = "xla"
+    model = NCSNpp(**cfg, key=KEY)
+    # Bottleneck attention is the only guaranteed attention site for SMALL_CFG.
+    assert model.mid_attn.attn.implementation == "xla"
