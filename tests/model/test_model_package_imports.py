@@ -84,3 +84,20 @@ def test_inceptionv3_package_exports_builder_and_model():
     assert build_headless_inceptionv3.__name__ == "build_headless_inceptionv3"
     assert BasicConv2d.__name__ == "BasicConv2d"
     assert InceptionA.__name__ == "InceptionA"
+
+
+def test_root_blocks_module_reexports_moved_blocks():
+    """The old msdflow.model.blocks import surface remains compatible."""
+    from msdflow.model.blocks import AttentionBlock, ConvNeXtBlock, ResBlock
+    from msdflow.model.blocks import ResBlockBigGAN, SinusoidalEmbedding
+    from msdflow.model.common_blocks import AttentionBlock as CommonAttentionBlock
+    from msdflow.model.convnext.blocks import ConvNeXtBlock as PackageConvNeXtBlock
+    from msdflow.model.ncsnpp.blocks import ResBlockBigGAN as PackageResBlockBigGAN
+    from msdflow.model.unet.blocks import ResBlock as PackageResBlock
+    from msdflow.model.unet.blocks import SinusoidalEmbedding as PackageEmbedding
+
+    assert AttentionBlock is CommonAttentionBlock
+    assert ConvNeXtBlock is PackageConvNeXtBlock
+    assert ResBlock is PackageResBlock
+    assert ResBlockBigGAN is PackageResBlockBigGAN
+    assert SinusoidalEmbedding is PackageEmbedding
