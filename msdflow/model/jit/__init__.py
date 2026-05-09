@@ -2,6 +2,10 @@
 
 from msdflow.model.jit.blocks import (
     BottleneckPatchEmbed,
+    FinalLayer,
+    JiTAttention,
+    JiTBlock,
+    SwiGLUFFN,
     TwoDimensionalRoPE,
     fixed_2d_sincos_pos_embed,
     normalized_patch_radius,
@@ -9,6 +13,10 @@ from msdflow.model.jit.blocks import (
 
 __all__ = [
     "BottleneckPatchEmbed",
+    "FinalLayer",
+    "JiTAttention",
+    "JiTBlock",
+    "SwiGLUFFN",
     "TwoDimensionalRoPE",
     "fixed_2d_sincos_pos_embed",
     "normalized_patch_radius",

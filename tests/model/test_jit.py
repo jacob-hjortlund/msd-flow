@@ -5,6 +5,10 @@ import pytest
 
 from msdflow.model.jit.blocks import (
     BottleneckPatchEmbed,
+    FinalLayer,
+    JiTAttention,
+    JiTBlock,
+    SwiGLUFFN,
     TwoDimensionalRoPE,
     fixed_2d_sincos_pos_embed,
     normalized_patch_radius,
@@ -158,3 +162,87 @@ def test_two_dimensional_rope_requires_head_dim_multiple_of_four():
             theta=10000.0,
             dtype=jnp.float32,
         )
+
+
+def test_swiglu_ffn_preserves_token_shape():
+    """SwiGLU FFN should map hidden tokens back to hidden size."""
+    ffn = SwiGLUFFN(
+        hidden_size=16,
+        mlp_ratio=4.0,
+        dropout=0.0,
+        activation=jax.nn.silu,
+        compute_dtype=jnp.float32,
+        key=KEY,
+    )
+    x = jnp.ones((4, 16), dtype=jnp.float32)
+    out = ffn(x, KEY)
+    assert out.shape == x.shape
+    assert out.dtype == jnp.float32
+
+
+def test_jit_attention_preserves_token_shape_and_exposes_backend():
+    """JiT attention should preserve token shape and store backend choice."""
+    rope = TwoDimensionalRoPE(
+        grid_size=2,
+        head_dim=8,
+        mode="cartesian",
+        theta=10000.0,
+        dtype=jnp.float32,
+    )
+    attn = JiTAttention(
+        hidden_size=16,
+        num_heads=2,
+        dropout=0.0,
+        attention_dtype=jnp.float32,
+        implementation="xla",
+        key=KEY,
+    )
+    x = jnp.ones((4, 16), dtype=jnp.float32)
+    out = attn(x, rope, KEY)
+    assert out.shape == x.shape
+    assert out.dtype == jnp.float32
+    assert attn.implementation == "xla"
+
+
+def test_jit_block_preserves_token_shape():
+    """One AdaLN-gated JiT block should preserve token shape."""
+    rope = TwoDimensionalRoPE(
+        grid_size=2,
+        head_dim=8,
+        mode="cartesian",
+        theta=10000.0,
+        dtype=jnp.float32,
+    )
+    block = JiTBlock(
+        hidden_size=16,
+        num_heads=2,
+        mlp_ratio=4.0,
+        dropout=0.0,
+        activation=jax.nn.silu,
+        compute_dtype=jnp.float32,
+        attention_dtype=jnp.float32,
+        attention_implementation="xla",
+        key=KEY,
+    )
+    x = jnp.ones((4, 16), dtype=jnp.float32)
+    cond = jnp.ones((16,), dtype=jnp.float32)
+    out = block(x, cond, rope, KEY)
+    assert out.shape == x.shape
+    assert out.dtype == jnp.float32
+
+
+def test_final_layer_projects_tokens_to_patch_pixels():
+    """FinalLayer should produce one flattened patch per token."""
+    layer = FinalLayer(
+        hidden_size=16,
+        patch_size=2,
+        out_channels=1,
+        activation=jax.nn.silu,
+        compute_dtype=jnp.float32,
+        key=KEY,
+    )
+    x = jnp.ones((4, 16), dtype=jnp.float32)
+    cond = jnp.ones((16,), dtype=jnp.float32)
+    out = layer(x, cond)
+    assert out.shape == (4, 4)
+    assert out.dtype == jnp.float32

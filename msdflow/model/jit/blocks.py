@@ -1,10 +1,14 @@
 """JiT geometry, patch embedding, and positional helper blocks."""
 
+from typing import Callable
+from typing import Optional
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 
 from msdflow.model.common_blocks import _apply_conv2d
+from msdflow.model.common_blocks import _apply_linear
 
 
 def _validate_grid_size(grid_size: int) -> None:
@@ -338,3 +342,337 @@ class TwoDimensionalRoPE(eqx.Module):
         x_a = self._apply_explicit_positions(self.rope_a, x_a, self.coords_a)
         x_b = self._apply_explicit_positions(self.rope_b, x_b, self.coords_b)
         return jnp.concatenate([x_a, x_b], axis=-1).astype(x.dtype)
+
+
+def _apply_token_norm(norm: eqx.nn.RMSNorm, x: jax.Array) -> jax.Array:
+    """Apply an Equinox RMSNorm to every token or head vector.
+
+    Args:
+        norm: RMSNorm module.
+        x: Array whose final dimension matches the norm shape.
+
+    Returns:
+        Normalized array with the same shape as ``x``.
+    """
+
+    return jax.vmap(norm)(x)
+
+
+def _modulate(x: jax.Array, shift: jax.Array, scale: jax.Array) -> jax.Array:
+    """Apply AdaLN shift and scale modulation to token features."""
+
+    return x * (1.0 + scale[None, :]) + shift[None, :]
+
+
+class SwiGLUFFN(eqx.Module):
+    """SwiGLU feed-forward network for JiT token features."""
+
+    w12: eqx.nn.Linear
+    w3: eqx.nn.Linear
+    dropout: eqx.nn.Dropout
+    activation: Callable = eqx.field(static=True)
+    compute_dtype: jnp.dtype = eqx.field(static=True)
+
+    def __init__(
+        self,
+        hidden_size: int,
+        mlp_ratio: float,
+        dropout: float,
+        activation: Callable,
+        compute_dtype: jnp.dtype,
+        key: jax.Array,
+    ):
+        """Initialize the SwiGLU projections.
+
+        Args:
+            hidden_size: Token feature dimension.
+            mlp_ratio: Expansion ratio for the hidden MLP dimension.
+            dropout: Dropout probability applied after the gated activation.
+            activation: Activation function for the gate branch.
+            compute_dtype: Activation dtype used for linear projections.
+            key: JAX PRNG key.
+        """
+
+        k12, k3 = jax.random.split(key)
+        mlp_hidden = int(hidden_size * mlp_ratio)
+        swiglu_hidden = int(mlp_hidden * 2 / 3)
+        self.w12 = eqx.nn.Linear(hidden_size, 2 * swiglu_hidden, key=k12)
+        self.w3 = eqx.nn.Linear(swiglu_hidden, hidden_size, key=k3)
+        self.dropout = eqx.nn.Dropout(dropout)
+        self.activation = activation
+        self.compute_dtype = compute_dtype
+
+    def __call__(self, x: jax.Array, key: jax.Array) -> jax.Array:
+        """Apply the SwiGLU feed-forward network to token features.
+
+        Args:
+            x: Token features with shape ``(tokens, hidden_size)``.
+            key: JAX PRNG key used by dropout.
+
+        Returns:
+            Token features with the same shape and dtype as ``x``.
+        """
+
+        orig_dtype = x.dtype
+        h = _apply_linear(self.w12, x.astype(self.compute_dtype))
+        x1, x2 = jnp.split(h, 2, axis=-1)
+        h = self.activation(x1) * x2
+        h = self.dropout(h, key=key)
+        h = _apply_linear(self.w3, h)
+        return h.astype(orig_dtype)
+
+
+class JiTAttention(eqx.Module):
+    """Multi-head self-attention for JiT image patch tokens."""
+
+    q_proj: eqx.nn.Linear
+    k_proj: eqx.nn.Linear
+    v_proj: eqx.nn.Linear
+    out_proj: eqx.nn.Linear
+    q_norm: eqx.nn.RMSNorm
+    k_norm: eqx.nn.RMSNorm
+    dropout: eqx.nn.Dropout
+    num_heads: int = eqx.field(static=True)
+    head_dim: int = eqx.field(static=True)
+    attention_dtype: jnp.dtype = eqx.field(static=True)
+    implementation: str = eqx.field(static=True)
+
+    def __init__(
+        self,
+        hidden_size: int,
+        num_heads: int,
+        dropout: float,
+        attention_dtype: jnp.dtype,
+        implementation: Optional[str],
+        key: jax.Array,
+    ):
+        """Initialize JiT attention projections and per-head normalization.
+
+        Args:
+            hidden_size: Token feature dimension.
+            num_heads: Number of attention heads.
+            dropout: Dropout probability applied to attention outputs.
+            attention_dtype: Activation dtype used for attention projections.
+            implementation: Attention backend for ``dot_product_attention``.
+                If ``None``, this selects ``"cudnn"`` on GPU and ``"xla"``
+                otherwise.
+            key: JAX PRNG key.
+
+        Raises:
+            ValueError: If the head configuration is invalid.
+        """
+
+        if hidden_size % num_heads != 0:
+            raise ValueError("hidden_size must be divisible by num_heads.")
+        head_dim = hidden_size // num_heads
+        if (head_dim % 4) != 0:
+            raise ValueError("head_dim must be a multiple of 4.")
+        if implementation is None:
+            implementation = "cudnn" if jax.devices()[0].platform == "gpu" else "xla"
+
+        kq, kk, kv, ko = jax.random.split(key, 4)
+        self.q_proj = eqx.nn.Linear(hidden_size, hidden_size, key=kq)
+        self.k_proj = eqx.nn.Linear(hidden_size, hidden_size, key=kk)
+        self.v_proj = eqx.nn.Linear(hidden_size, hidden_size, key=kv)
+        self.out_proj = eqx.nn.Linear(hidden_size, hidden_size, key=ko)
+        self.q_norm = eqx.nn.RMSNorm(head_dim, eps=1e-6, use_bias=False)
+        self.k_norm = eqx.nn.RMSNorm(head_dim, eps=1e-6, use_bias=False)
+        self.dropout = eqx.nn.Dropout(dropout)
+        self.num_heads = num_heads
+        self.head_dim = head_dim
+        self.attention_dtype = attention_dtype
+        self.implementation = implementation
+
+    def __call__(
+        self,
+        x: jax.Array,
+        rope: TwoDimensionalRoPE,
+        key: jax.Array,
+    ) -> jax.Array:
+        """Apply RoPE-augmented multi-head attention to patch tokens.
+
+        Args:
+            x: Token features with shape ``(tokens, hidden_size)``.
+            rope: Two-dimensional rotary positional embedding.
+            key: JAX PRNG key used by dropout.
+
+        Returns:
+            Token features with the same shape and dtype as ``x``.
+        """
+
+        tokens = x.shape[0]
+        orig_dtype = x.dtype
+        h = x.astype(self.attention_dtype)
+        q = _apply_linear(self.q_proj, h)
+        k = _apply_linear(self.k_proj, h)
+        v = _apply_linear(self.v_proj, h)
+        q = q.reshape(tokens, self.num_heads, self.head_dim)
+        k = k.reshape(tokens, self.num_heads, self.head_dim)
+        v = v.reshape(tokens, self.num_heads, self.head_dim)
+
+        q = jax.vmap(jax.vmap(self.q_norm))(q).astype(self.attention_dtype)
+        k = jax.vmap(jax.vmap(self.k_norm))(k).astype(self.attention_dtype)
+        q = rope(q)
+        k = rope(k)
+        h = jax.nn.dot_product_attention(
+            q, k, v, implementation=self.implementation
+        )
+        h = self.dropout(h, key=key)
+        h = h.reshape(tokens, self.num_heads * self.head_dim).astype(orig_dtype)
+        return _apply_linear(self.out_proj, h)
+
+
+class JiTBlock(eqx.Module):
+    """AdaLN-gated transformer block for JiT patch tokens."""
+
+    norm1: eqx.nn.RMSNorm
+    attn: JiTAttention
+    norm2: eqx.nn.RMSNorm
+    mlp: SwiGLUFFN
+    adaLN_modulation: eqx.nn.Linear
+    activation: Callable = eqx.field(static=True)
+    compute_dtype: jnp.dtype = eqx.field(static=True)
+
+    def __init__(
+        self,
+        hidden_size: int,
+        num_heads: int,
+        mlp_ratio: float,
+        dropout: float,
+        activation: Callable,
+        compute_dtype: jnp.dtype,
+        attention_dtype: jnp.dtype,
+        attention_implementation: Optional[str],
+        key: jax.Array,
+    ):
+        """Initialize a JiT transformer block.
+
+        Args:
+            hidden_size: Token feature dimension.
+            num_heads: Number of attention heads.
+            mlp_ratio: Expansion ratio for the SwiGLU FFN.
+            dropout: Dropout probability for attention and FFN outputs.
+            activation: Activation function used by AdaLN and the FFN gate.
+            compute_dtype: Activation dtype used by FFN and AdaLN projections.
+            attention_dtype: Activation dtype used by attention projections.
+            attention_implementation: Attention backend override.
+            key: JAX PRNG key.
+        """
+
+        kattn, kmlp, kada = jax.random.split(key, 3)
+        self.norm1 = eqx.nn.RMSNorm(hidden_size, eps=1e-6, use_bias=False)
+        self.attn = JiTAttention(
+            hidden_size=hidden_size,
+            num_heads=num_heads,
+            dropout=dropout,
+            attention_dtype=attention_dtype,
+            implementation=attention_implementation,
+            key=kattn,
+        )
+        self.norm2 = eqx.nn.RMSNorm(hidden_size, eps=1e-6, use_bias=False)
+        self.mlp = SwiGLUFFN(
+            hidden_size=hidden_size,
+            mlp_ratio=mlp_ratio,
+            dropout=dropout,
+            activation=activation,
+            compute_dtype=compute_dtype,
+            key=kmlp,
+        )
+        self.adaLN_modulation = eqx.nn.Linear(hidden_size, 6 * hidden_size, key=kada)
+        self.activation = activation
+        self.compute_dtype = compute_dtype
+
+    def __call__(
+        self,
+        x: jax.Array,
+        cond_emb: jax.Array,
+        rope: TwoDimensionalRoPE,
+        key: jax.Array,
+    ) -> jax.Array:
+        """Apply the transformer block to patch tokens.
+
+        Args:
+            x: Token features with shape ``(tokens, hidden_size)``.
+            cond_emb: Conditioning embedding with shape ``(hidden_size,)``.
+            rope: Two-dimensional rotary positional embedding.
+            key: JAX PRNG key split between attention and FFN dropout.
+
+        Returns:
+            Token features with the same shape and dtype as ``x``.
+        """
+
+        attn_key, mlp_key = jax.random.split(key)
+        mod = _apply_linear(
+            self.adaLN_modulation,
+            self.activation(cond_emb).astype(self.compute_dtype),
+        ).astype(x.dtype)
+        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = jnp.split(
+            mod, 6
+        )
+
+        h = _apply_token_norm(self.norm1, x)
+        h = _modulate(h, shift_msa, scale_msa)
+        x = x + gate_msa[None, :] * self.attn(h, rope, attn_key)
+        h = _apply_token_norm(self.norm2, x)
+        h = _modulate(h, shift_mlp, scale_mlp)
+        return x + gate_mlp[None, :] * self.mlp(h, mlp_key)
+
+
+class FinalLayer(eqx.Module):
+    """AdaLN-modulated projection from JiT tokens to flattened patch pixels."""
+
+    norm_final: eqx.nn.RMSNorm
+    linear: eqx.nn.Linear
+    adaLN_modulation: eqx.nn.Linear
+    activation: Callable = eqx.field(static=True)
+    compute_dtype: jnp.dtype = eqx.field(static=True)
+
+    def __init__(
+        self,
+        hidden_size: int,
+        patch_size: int,
+        out_channels: int,
+        activation: Callable,
+        compute_dtype: jnp.dtype,
+        key: jax.Array,
+    ):
+        """Initialize the final token projection layer.
+
+        Args:
+            hidden_size: Token feature dimension.
+            patch_size: Spatial patch size in pixels.
+            out_channels: Number of generated image channels.
+            activation: Activation function used before AdaLN projection.
+            compute_dtype: Activation dtype used for linear projections.
+            key: JAX PRNG key.
+        """
+
+        klin, kada = jax.random.split(key)
+        out_features = patch_size * patch_size * out_channels
+        self.norm_final = eqx.nn.RMSNorm(hidden_size, eps=1e-6, use_bias=False)
+        self.linear = eqx.nn.Linear(hidden_size, out_features, key=klin)
+        self.adaLN_modulation = eqx.nn.Linear(hidden_size, 2 * hidden_size, key=kada)
+        self.activation = activation
+        self.compute_dtype = compute_dtype
+
+    def __call__(self, x: jax.Array, cond_emb: jax.Array) -> jax.Array:
+        """Project patch tokens to flattened patch pixels.
+
+        Args:
+            x: Token features with shape ``(tokens, hidden_size)``.
+            cond_emb: Conditioning embedding with shape ``(hidden_size,)``.
+
+        Returns:
+            Flattened patch pixels with one row per input token.
+        """
+
+        orig_dtype = x.dtype
+        mod = _apply_linear(
+            self.adaLN_modulation,
+            self.activation(cond_emb).astype(self.compute_dtype),
+        ).astype(orig_dtype)
+        shift, scale = jnp.split(mod, 2)
+        h = _apply_token_norm(self.norm_final, x)
+        h = _modulate(h, shift, scale)
+        h = _apply_linear(self.linear, h.astype(self.compute_dtype))
+        return h.astype(orig_dtype)
