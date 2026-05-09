@@ -98,6 +98,21 @@ def test_inceptionv3_package_exports_builder_and_model():
     assert InceptionA.__name__ == "InceptionA"
 
 
+def test_legacy_hydra_model_target_paths_resolve():
+    """Hydra can resolve legacy model target strings after package moves."""
+    from hydra.utils import get_class, get_method
+
+    from msdflow.model.convnext import build_zoobot_nano
+    from msdflow.model.inceptionv3 import InceptionV3
+    from msdflow.model.ncsnpp import NCSNpp
+    from msdflow.model.unet import UNet
+
+    assert get_class("msdflow.model.unet.UNet") is UNet
+    assert get_class("msdflow.model.ncsnpp.NCSNpp") is NCSNpp
+    assert get_class("msdflow.model.inceptionv3.InceptionV3") is InceptionV3
+    assert get_method("msdflow.model.convnext.build_zoobot_nano") is build_zoobot_nano
+
+
 def test_root_blocks_module_reexports_moved_blocks():
     """The old msdflow.model.blocks import surface remains compatible."""
     from msdflow.model import blocks as root_blocks
