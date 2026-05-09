@@ -1,6 +1,7 @@
 """Shared model blocks used across model families."""
 
 import warnings
+from typing import Callable
 from typing import Optional
 
 import equinox as eqx
@@ -41,6 +42,74 @@ def _apply_conv2d(conv: eqx.nn.Conv2d, x: jax.Array) -> jax.Array:
     bias = None if conv.bias is None else conv.bias.astype(x.dtype)
     cast_conv = eqx.tree_at(lambda c: (c.weight, c.bias), conv, (weight, bias))
     return cast_conv(x)
+
+
+class SinusoidalEmbedding(eqx.Module):
+    """Sinusoidal positional embedding with a two-layer MLP."""
+
+    lin1: eqx.nn.Linear
+    lin2: eqx.nn.Linear
+    dim: int = eqx.field(static=True)
+    frequency_dim: int = eqx.field(static=True)
+    activation: Callable = eqx.field(static=True)
+
+    def __init__(
+        self,
+        dim: int,
+        activation: Callable,
+        key: jax.Array,
+        frequency_dim: Optional[int] = None,
+    ):
+        """Initialise the embedding layers.
+
+        Args:
+            dim: Output embedding dimension. Must be even.
+            activation: Activation function.
+            key: JAX PRNG key.
+            frequency_dim: Sinusoidal basis dimension before projection. Defaults
+                to ``dim`` and must be even.
+
+        Raises:
+            ValueError: If ``dim`` or ``frequency_dim`` is not even.
+        """
+
+        if (dim % 2) != 0:
+            raise ValueError("embedding dimension must be even.")
+
+        if frequency_dim is None:
+            frequency_dim = dim
+        if (frequency_dim % 2) != 0:
+            raise ValueError("frequency dimension must be even.")
+
+        k1, k2 = jax.random.split(key)
+        self.dim = dim
+        self.frequency_dim = frequency_dim
+        self.activation = activation
+        self.lin1 = eqx.nn.Linear(frequency_dim, dim, key=k1)
+        self.lin2 = eqx.nn.Linear(dim, dim, key=k2)
+
+    def __call__(self, t: jax.Array) -> jax.Array:
+        """Embed a scalar time value.
+
+        Args:
+            t: Time to embed.
+
+        Returns:
+            Sinusoidal time embedding of shape ``(dim,)``.
+        """
+
+        half = self.frequency_dim // 2
+        freqs = jnp.exp(
+            -jnp.log(10000.0)
+            * 2
+            * jnp.arange(half, dtype=jnp.float32)
+            / self.frequency_dim
+        )
+        emb = jnp.concatenate([jnp.sin(t * freqs), jnp.cos(t * freqs)])
+        emb = self.lin1(emb)
+        emb = self.activation(emb)
+        emb = self.lin2(emb)
+        return emb
 
 
 class AttentionBlock(eqx.Module):

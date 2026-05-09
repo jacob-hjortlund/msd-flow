@@ -6,6 +6,7 @@ The block implementations live in model-family packages:
 """
 
 from msdflow.model.common_blocks import AttentionBlock
+from msdflow.model.common_blocks import SinusoidalEmbedding
 from msdflow.model.convnext.blocks import (
     ConvNeXtBlock,
     ConvNeXtDownsample,
@@ -27,7 +28,6 @@ from msdflow.model.ncsnpp.blocks import (
 from msdflow.model.unet.blocks import (
     Downsample,
     ResBlock,
-    SinusoidalEmbedding,
     Upsample,
 )
 

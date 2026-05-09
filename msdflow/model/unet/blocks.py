@@ -4,9 +4,9 @@ from typing import Callable, Optional
 
 import equinox as eqx
 import jax
-import jax.numpy as jnp
 
 from msdflow.model.common_blocks import AttentionBlock
+from msdflow.model.common_blocks import SinusoidalEmbedding
 
 __all__ = [
     "AttentionBlock",
@@ -15,53 +15,6 @@ __all__ = [
     "SinusoidalEmbedding",
     "Upsample",
 ]
-
-
-class SinusoidalEmbedding(eqx.Module):
-    lin1: eqx.nn.Linear
-    lin2: eqx.nn.Linear
-    dim: int = eqx.field(static=True)
-    activation: Callable = eqx.field(static=True)
-    """Sinusoidal positional embedding with a two-layer MLP."""
-
-    def __init__(self, dim: int, activation: Callable, key: jax.Array):
-        """Initialise the embedding layers.
-
-        Args:
-            dim (int): Embedding dimension. Must be even.
-            activation (Callable): Activation function.
-            key (jax.Array): RNG key.
-
-        Raises:
-            ValueError: If dim is not even.
-        """
-
-        if (dim % 2) != 0:
-            raise ValueError("embedding dimension must be even.")
-
-        k1, k2 = jax.random.split(key)
-        self.dim = dim
-        self.activation = activation
-        self.lin1 = eqx.nn.Linear(dim, dim, key=k1)
-        self.lin2 = eqx.nn.Linear(dim, dim, key=k2)
-
-    def __call__(self, t: jax.Array) -> jax.Array:
-        """
-        Embed a time t.
-
-        Args:
-            t (jax.Array): Time to embed
-
-        Returns:
-            jax.Array: Sinusoidal time embedding
-        """
-
-        freqs = jnp.exp(-jnp.log(10000.0) * 2 * jnp.arange(self.dim // 2) / self.dim)
-        emb = jnp.concatenate([jnp.sin(t * freqs), jnp.cos(t * freqs)])
-        emb = self.lin1(emb)
-        emb = self.activation(emb)
-        emb = self.lin2(emb)
-        return emb
 
 
 class Downsample(eqx.Module):
