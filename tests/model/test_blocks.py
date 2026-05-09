@@ -1,4 +1,4 @@
-"""Tests for msdflow.model.blocks."""
+"""Tests for canonical model block implementations."""
 
 import jax
 import pytest
@@ -6,11 +6,13 @@ import pytest
 import equinox as eqx
 import jax.numpy as jnp
 
-from msdflow.model.blocks import ResBlock
-from msdflow.model.blocks import AttentionBlock
-from msdflow.model.blocks import RALAAttentionBlock
-from msdflow.model.blocks import SinusoidalEmbedding
-from msdflow.model.blocks import Downsample, Upsample
+from msdflow.model.common_blocks import AttentionBlock
+from msdflow.model.ncsnpp.blocks import AttnBlockNCSN
+from msdflow.model.ncsnpp.blocks import GaussianFourierProjection
+from msdflow.model.ncsnpp.blocks import RALAAttentionBlock
+from msdflow.model.ncsnpp.blocks import ResBlockBigGAN
+from msdflow.model.unet.blocks import Downsample, ResBlock, SinusoidalEmbedding
+from msdflow.model.unet.blocks import Upsample
 
 
 KEY = jax.random.PRNGKey(0)
@@ -250,9 +252,6 @@ def test_rala_attention_block_bfloat16_preserves_input_dtype():
     assert jnp.all(jnp.isfinite(out))
 
 
-from msdflow.model.blocks import GaussianFourierProjection
-
-
 def test_gaussian_fourier_projection_output_shape():
     """Verify output shape matches embed_dim."""
     embed_dim = 32
@@ -287,9 +286,6 @@ def test_gaussian_fourier_projection_W_frozen():
 
     grads = eqx.filter_grad(loss_fn)(gfp, jnp.array(0.5))
     assert jnp.all(grads.W == 0.0), "W should have zero gradients"
-
-
-from msdflow.model.blocks import ResBlockBigGAN
 
 
 def test_resblock_biggan_same_channels():
@@ -536,9 +532,6 @@ def test_resblock_biggan_compute_dtype_reaches_conv_and_time_projection_primitiv
         or jnp.dtype(jnp.bfloat16) in out_dtypes
         for in_dtypes, out_dtypes in fp32_conv_dtypes + fp32_dot_dtypes
     )
-
-
-from msdflow.model.blocks import AttnBlockNCSN
 
 
 def test_attn_block_ncsn_preserves_shape():

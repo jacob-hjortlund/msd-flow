@@ -6,14 +6,18 @@ the specific implementation used in the HuggingFace timm package.
 
 import jax
 import timm
-import torch
 
 import numpy as np
 import equinox as eqx
 import jax.numpy as jnp
 
-from typing import Callable, Optional, Tuple, Sequence
-from msdflow.model.blocks import ConvNeXtStem, ConvNeXtStage, ConvNeXtHead, Identity
+from typing import Optional, Tuple
+from msdflow.model.convnext.blocks import (
+    ConvNeXtHead,
+    ConvNeXtStage,
+    ConvNeXtStem,
+    Identity,
+)
 
 
 def copy_timm_convnext_encoder_to_eqx(pt_model, eq_model, *, verbose: bool = True):
