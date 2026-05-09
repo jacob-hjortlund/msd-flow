@@ -13,3 +13,6 @@ def test_inceptionv3_reshape_converts_channel_first_grayscale_to_rgb():
 
     assert out.shape == (299, 299, 3)
     assert out.dtype == x.dtype
+    assert bool(jnp.allclose(out, 1.0))
+    assert bool(jnp.allclose(out[..., 0], out[..., 1]))
+    assert bool(jnp.allclose(out[..., 1], out[..., 2]))
