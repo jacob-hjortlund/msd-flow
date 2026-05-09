@@ -1,276 +1,52 @@
-"""InceptionV3 model.
+"""InceptionV3 block definitions."""
 
-Implements the InceptionV3 model and loads weights from ImageNet pretraining.
-Implementation taken and slightly modified from https://github.com/kvfrans/jax-fid-parallel
-"""
-
-import os
-import jax
-import pickle
-import tempfile
-import requests
+from functools import partial
+from typing import Any, Callable, Iterable, Optional, Tuple, Union
 
 import flax.linen as nn
+import jax
 import jax.numpy as jnp
-
-from jax import lax
-from tqdm import tqdm
-from functools import partial
-from jax.nn import initializers
 from flax.linen.module import merge_param
-from typing import Callable, Iterable, Optional, Tuple, Union, Any
+from jax import lax
+from jax.nn import initializers
+
+from msdflow.model.inceptionv3.weights import get
 
 PRNGKey = Any
 Array = Any
 Shape = Tuple[int]
 Dtype = Any
 
-
-def reshape(x):
-    x = jnp.moveaxis(x, 0, -1)
-    x = jnp.broadcast_to(x, (*x.shape[:2], 3))
-    x = jax.image.resize(
-        x,
-        shape=(299, 299, 3),
-        method="bilinear",
-        antialias=True,
-    )
-    return x
-
-
-def build_headless_inceptionv3():
-    model = InceptionV3(pretrained=True)
-    rng = jax.random.PRNGKey(0)
-    params = model.init(rng, jnp.ones((1, 299, 299, 3)))
-    model_call_fn = partial(model.apply, params, train=False)
-
-    def apply_fn(x):
-
-        x = reshape(x)
-        out = model_call_fn(x)
-        return out
-
-    return apply_fn
-
-
-#######################################
-######## Inception V3 Model.
-######## https://github.com/matthias-wright/jax-fid/blob/main/jax_fid/inception.py
-#######################################
-
-
-def download(url, ckpt_dir="data"):
-    name = url[url.rfind("/") + 1 : url.rfind("?")]
-    if ckpt_dir is None:
-        ckpt_dir = tempfile.gettempdir()
-    ckpt_file = os.path.join(ckpt_dir, name)
-    if not os.path.exists(ckpt_file):
-        print(f'Downloading: "{url[:url.rfind("?")]}" to {ckpt_file}')
-        if not os.path.exists(ckpt_dir):
-            os.makedirs(ckpt_dir)
-
-        response = requests.get(url, stream=True)
-        total_size_in_bytes = int(response.headers.get("content-length", 0))
-        progress_bar = tqdm(total=total_size_in_bytes, unit="iB", unit_scale=True)
-
-        # first create temp file, in case the download fails
-        ckpt_file_temp = os.path.join(ckpt_dir, name + ".temp")
-        with open(ckpt_file_temp, "wb") as file:
-            for data in response.iter_content(chunk_size=1024):
-                progress_bar.update(len(data))
-                file.write(data)
-        progress_bar.close()
-
-        if total_size_in_bytes != 0 and progress_bar.n != total_size_in_bytes:
-            print("An error occured while downloading, please try again.")
-            if os.path.exists(ckpt_file_temp):
-                os.remove(ckpt_file_temp)
-        else:
-            # if download was successful, rename the temp file
-            os.rename(ckpt_file_temp, ckpt_file)
-    return ckpt_file
-
-
-def get(dictionary, key):
-    if dictionary is None or key not in dictionary:
-        return None
-    return dictionary[key]
-
-
-class InceptionV3(nn.Module):
-    """
-    InceptionV3 network.
-    Reference: https://arxiv.org/abs/1512.00567
-    Ported mostly from: https://github.com/pytorch/vision/blob/master/torchvision/models/inception.py
-
-    Attributes:
-        include_head (bool): If True, include classifier head.
-        num_classes (int): Number of classes.
-        pretrained (bool): If True, use pretrained weights.
-        transform_input (bool): If True, preprocesses the input according to the method with which it
-                                was trained on ImageNet.
-        aux_logits (bool): If True, add an auxiliary branch that can improve training.
-        dtype (str): Data type.
-    """
-
-    include_head: bool = False
-    num_classes: int = 1000
-    pretrained: bool = False
-    transform_input: bool = False
-    aux_logits: bool = False
-    ckpt_path: str = (
-        "https://www.dropbox.com/s/xt6zvlvt22dcwck/inception_v3_weights_fid.pickle?dl=1"
-    )
-    dtype: str = "float32"
-
-    def setup(self):
-        if self.pretrained:
-            ckpt_file = download(self.ckpt_path)
-            self.params_dict = pickle.load(open(ckpt_file, "rb"))
-            self.num_classes_ = 1000
-        else:
-            self.params_dict = None
-            self.num_classes_ = self.num_classes
-
-    @nn.compact
-    def __call__(self, x, train=True, rng=jax.random.PRNGKey(0)):
-        """
-        Args:
-            x (tensor): Input image, shape [B, H, W, C].
-            train (bool): If True, training mode.
-            rng (jax.random.PRNGKey): Random seed.
-        """
-        single_image = x.ndim == 3
-        if single_image:
-            x = x[None, ...]
-
-        x = self._transform_input(x)
-        x = BasicConv2d(
-            out_channels=32,
-            kernel_size=(3, 3),
-            strides=(2, 2),
-            params_dict=get(self.params_dict, "Conv2d_1a_3x3"),
-            dtype=self.dtype,
-        )(x, train)
-        x = BasicConv2d(
-            out_channels=32,
-            kernel_size=(3, 3),
-            params_dict=get(self.params_dict, "Conv2d_2a_3x3"),
-            dtype=self.dtype,
-        )(x, train)
-        x = BasicConv2d(
-            out_channels=64,
-            kernel_size=(3, 3),
-            padding=((1, 1), (1, 1)),
-            params_dict=get(self.params_dict, "Conv2d_2b_3x3"),
-            dtype=self.dtype,
-        )(x, train)
-        x = nn.max_pool(x, window_shape=(3, 3), strides=(2, 2))
-        x = BasicConv2d(
-            out_channels=80,
-            kernel_size=(1, 1),
-            params_dict=get(self.params_dict, "Conv2d_3b_1x1"),
-            dtype=self.dtype,
-        )(x, train)
-        x = BasicConv2d(
-            out_channels=192,
-            kernel_size=(3, 3),
-            params_dict=get(self.params_dict, "Conv2d_4a_3x3"),
-            dtype=self.dtype,
-        )(x, train)
-        x = nn.max_pool(x, window_shape=(3, 3), strides=(2, 2))
-        x = InceptionA(
-            pool_features=32,
-            params_dict=get(self.params_dict, "Mixed_5b"),
-            dtype=self.dtype,
-        )(x, train)
-        x = InceptionA(
-            pool_features=64,
-            params_dict=get(self.params_dict, "Mixed_5c"),
-            dtype=self.dtype,
-        )(x, train)
-        x = InceptionA(
-            pool_features=64,
-            params_dict=get(self.params_dict, "Mixed_5d"),
-            dtype=self.dtype,
-        )(x, train)
-        x = InceptionB(params_dict=get(self.params_dict, "Mixed_6a"), dtype=self.dtype)(
-            x, train
-        )
-        x = InceptionC(
-            channels_7x7=128,
-            params_dict=get(self.params_dict, "Mixed_6b"),
-            dtype=self.dtype,
-        )(x, train)
-        x = InceptionC(
-            channels_7x7=160,
-            params_dict=get(self.params_dict, "Mixed_6c"),
-            dtype=self.dtype,
-        )(x, train)
-        x = InceptionC(
-            channels_7x7=160,
-            params_dict=get(self.params_dict, "Mixed_6d"),
-            dtype=self.dtype,
-        )(x, train)
-        x = InceptionC(
-            channels_7x7=192,
-            params_dict=get(self.params_dict, "Mixed_6e"),
-            dtype=self.dtype,
-        )(x, train)
-        aux = None
-        if self.aux_logits and train:
-            aux = InceptionAux(
-                num_classes=self.num_classes_,
-                params_dict=get(self.params_dict, "AuxLogits"),
-                dtype=self.dtype,
-            )(x, train)
-        x = InceptionD(params_dict=get(self.params_dict, "Mixed_7a"), dtype=self.dtype)(
-            x, train
-        )
-        x = InceptionE(
-            avg_pool, params_dict=get(self.params_dict, "Mixed_7b"), dtype=self.dtype
-        )(x, train)
-        # Following the implementation by @mseitzer, we use max pooling instead
-        # of average pooling here.
-        # See: https://github.com/mseitzer/pytorch-fid/blob/master/src/pytorch_fid/inception.py#L320
-        x = InceptionE(
-            nn.max_pool, params_dict=get(self.params_dict, "Mixed_7c"), dtype=self.dtype
-        )(x, train)
-        x = jnp.mean(x, axis=(1, 2), keepdims=False)
-        if not self.include_head:
-            return x[0] if single_image else x
-        x = nn.Dropout(rate=0.5)(x, deterministic=not train, rng=rng)
-        x = Dense(
-            features=self.num_classes_,
-            params_dict=get(self.params_dict, "fc"),
-            dtype=self.dtype,
-        )(x)
-        if self.aux_logits:
-            if single_image:
-                return x[0], aux[0]
-            return x, aux
-
-        return x[0] if single_image else x
-
-    def _transform_input(self, x):
-        if self.transform_input:
-            x_ch0 = (
-                jnp.expand_dims(x[..., 0], axis=-1) * (0.229 / 0.5)
-                + (0.485 - 0.5) / 0.5
-            )
-            x_ch1 = (
-                jnp.expand_dims(x[..., 1], axis=-1) * (0.224 / 0.5)
-                + (0.456 - 0.5) / 0.5
-            )
-            x_ch2 = (
-                jnp.expand_dims(x[..., 2], axis=-1) * (0.225 / 0.5)
-                + (0.406 - 0.5) / 0.5
-            )
-            x = jnp.concatenate((x_ch0, x_ch1, x_ch2), axis=-1)
-        return x
+__all__ = [
+    "Array",
+    "BasicConv2d",
+    "BatchNorm",
+    "Dense",
+    "Dtype",
+    "InceptionA",
+    "InceptionAux",
+    "InceptionB",
+    "InceptionC",
+    "InceptionD",
+    "InceptionE",
+    "PRNGKey",
+    "Shape",
+    "avg_pool",
+    "pool",
+]
 
 
 class Dense(nn.Module):
+    """Dense layer with optional pretrained parameter initialization.
+
+    Attributes:
+        features: Number of output features.
+        kernel_init: Initializer for the kernel when no parameters are loaded.
+        bias_init: Initializer for the bias when no parameters are loaded.
+        params_dict: Optional pretrained parameter dictionary.
+        dtype: Computation dtype.
+    """
+
     features: int
     kernel_init: partial = nn.initializers.lecun_normal()
     bias_init: partial = nn.initializers.zeros
@@ -279,6 +55,14 @@ class Dense(nn.Module):
 
     @nn.compact
     def __call__(self, x):
+        """Apply the dense layer.
+
+        Args:
+            x: Input activations.
+
+        Returns:
+            Output activations.
+        """
         x = nn.Dense(
             features=self.features,
             kernel_init=(
@@ -296,6 +80,20 @@ class Dense(nn.Module):
 
 
 class BasicConv2d(nn.Module):
+    """Convolution, batch normalization, and ReLU block.
+
+    Attributes:
+        out_channels: Number of output channels.
+        kernel_size: Convolution kernel size.
+        strides: Convolution strides.
+        padding: Convolution padding.
+        use_bias: Whether the convolution includes a bias.
+        kernel_init: Initializer for the kernel when no parameters are loaded.
+        bias_init: Initializer for the bias when no parameters are loaded.
+        params_dict: Optional pretrained parameter dictionary.
+        dtype: Computation dtype.
+    """
+
     out_channels: int
     kernel_size: Union[int, Iterable[int]] = (3, 3)
     strides: Optional[Iterable[int]] = (1, 1)
@@ -308,6 +106,15 @@ class BasicConv2d(nn.Module):
 
     @nn.compact
     def __call__(self, x, train=True):
+        """Apply the convolutional block.
+
+        Args:
+            x: Input activations.
+            train: Whether to use training-mode batch normalization.
+
+        Returns:
+            Output activations.
+        """
         x = nn.Conv(
             features=self.out_channels,
             kernel_size=self.kernel_size,
@@ -349,12 +156,29 @@ class BasicConv2d(nn.Module):
 
 
 class InceptionA(nn.Module):
+    """InceptionV3 mixed block with parallel 1x1, 5x5, 3x3, and pool paths.
+
+    Attributes:
+        pool_features: Number of output channels for the pooling branch.
+        params_dict: Optional pretrained parameter dictionary.
+        dtype: Computation dtype.
+    """
+
     pool_features: int
     params_dict: dict = None
     dtype: str = "float32"
 
     @nn.compact
     def __call__(self, x, train=True):
+        """Apply the InceptionA block.
+
+        Args:
+            x: Input activations.
+            train: Whether to use training-mode batch normalization.
+
+        Returns:
+            Concatenated branch activations.
+        """
         branch1x1 = BasicConv2d(
             out_channels=64,
             kernel_size=(1, 1),
@@ -413,11 +237,27 @@ class InceptionA(nn.Module):
 
 
 class InceptionB(nn.Module):
+    """InceptionV3 downsampling mixed block.
+
+    Attributes:
+        params_dict: Optional pretrained parameter dictionary.
+        dtype: Computation dtype.
+    """
+
     params_dict: dict = None
     dtype: str = "float32"
 
     @nn.compact
     def __call__(self, x, train=True):
+        """Apply the InceptionB block.
+
+        Args:
+            x: Input activations.
+            train: Whether to use training-mode batch normalization.
+
+        Returns:
+            Concatenated branch activations.
+        """
         branch3x3 = BasicConv2d(
             out_channels=384,
             kernel_size=(3, 3),
@@ -454,12 +294,29 @@ class InceptionB(nn.Module):
 
 
 class InceptionC(nn.Module):
+    """InceptionV3 mixed block with factorized 7x7 branches.
+
+    Attributes:
+        channels_7x7: Intermediate channel count for 7x7 branches.
+        params_dict: Optional pretrained parameter dictionary.
+        dtype: Computation dtype.
+    """
+
     channels_7x7: int
     params_dict: dict = None
     dtype: str = "float32"
 
     @nn.compact
     def __call__(self, x, train=True):
+        """Apply the InceptionC block.
+
+        Args:
+            x: Input activations.
+            train: Whether to use training-mode batch normalization.
+
+        Returns:
+            Concatenated branch activations.
+        """
         branch1x1 = BasicConv2d(
             out_channels=192,
             kernel_size=(1, 1),
@@ -540,11 +397,27 @@ class InceptionC(nn.Module):
 
 
 class InceptionD(nn.Module):
+    """InceptionV3 downsampling mixed block with factorized branches.
+
+    Attributes:
+        params_dict: Optional pretrained parameter dictionary.
+        dtype: Computation dtype.
+    """
+
     params_dict: dict = None
     dtype: str = "float32"
 
     @nn.compact
     def __call__(self, x, train=True):
+        """Apply the InceptionD block.
+
+        Args:
+            x: Input activations.
+            train: Whether to use training-mode batch normalization.
+
+        Returns:
+            Concatenated branch activations.
+        """
         branch3x3 = BasicConv2d(
             out_channels=192,
             kernel_size=(1, 1),
@@ -594,12 +467,29 @@ class InceptionD(nn.Module):
 
 
 class InceptionE(nn.Module):
+    """InceptionV3 mixed block with split 3x3 branches.
+
+    Attributes:
+        pooling: Pooling function for the pooling branch.
+        params_dict: Optional pretrained parameter dictionary.
+        dtype: Computation dtype.
+    """
+
     pooling: Callable
     params_dict: dict = None
     dtype: str = "float32"
 
     @nn.compact
     def __call__(self, x, train=True):
+        """Apply the InceptionE block.
+
+        Args:
+            x: Input activations.
+            train: Whether to use training-mode batch normalization.
+
+        Returns:
+            Concatenated branch activations.
+        """
         branch1x1 = BasicConv2d(
             out_channels=320,
             kernel_size=(1, 1),
@@ -675,6 +565,16 @@ class InceptionE(nn.Module):
 
 
 class InceptionAux(nn.Module):
+    """Auxiliary classifier branch for InceptionV3.
+
+    Attributes:
+        num_classes: Number of output classes.
+        kernel_init: Initializer for the kernel when no parameters are loaded.
+        bias_init: Initializer for the bias when no parameters are loaded.
+        params_dict: Optional pretrained parameter dictionary.
+        dtype: Computation dtype.
+    """
+
     num_classes: int
     kernel_init: partial = nn.initializers.lecun_normal()
     bias_init: partial = nn.initializers.zeros
@@ -683,6 +583,15 @@ class InceptionAux(nn.Module):
 
     @nn.compact
     def __call__(self, x, train=True):
+        """Apply the auxiliary classifier branch.
+
+        Args:
+            x: Input activations.
+            train: Whether to use training-mode batch normalization.
+
+        Returns:
+            Auxiliary logits.
+        """
         x = avg_pool(x, window_shape=(5, 5), strides=(3, 3))
         x = BasicConv2d(
             out_channels=128,
@@ -707,10 +616,37 @@ class InceptionAux(nn.Module):
 
 
 def _absolute_dims(rank, dims):
+    """Convert possibly negative dimensions to absolute dimensions.
+
+    Args:
+        rank: Rank of the input array.
+        dims: Dimension indices.
+
+    Returns:
+        Absolute dimension indices.
+    """
     return tuple([rank + dim if dim < 0 else dim for dim in dims])
 
 
 class BatchNorm(nn.Module):
+    """Batch normalization layer compatible with pretrained Inception weights.
+
+    Attributes:
+        use_running_average: Whether to use stored running averages.
+        axis: Feature axis.
+        momentum: Running-average momentum.
+        epsilon: Numerical stability epsilon.
+        dtype: Output dtype.
+        use_bias: Whether to include bias.
+        use_scale: Whether to include scale.
+        bias_init: Bias initializer.
+        scale_init: Scale initializer.
+        mean_init: Running mean initializer.
+        var_init: Running variance initializer.
+        axis_name: Optional distributed axis name.
+        axis_index_groups: Optional distributed axis groups.
+    """
+
     use_running_average: Optional[bool] = None
     axis: int = -1
     momentum: float = 0.99
@@ -727,6 +663,15 @@ class BatchNorm(nn.Module):
 
     @nn.compact
     def __call__(self, x, use_running_average: Optional[bool] = None):
+        """Normalize input activations.
+
+        Args:
+            x: Input activations.
+            use_running_average: Optional override for running-average mode.
+
+        Returns:
+            Normalized activations.
+        """
         use_running_average = merge_param(
             "use_running_average", self.use_running_average, use_running_average
         )
@@ -787,6 +732,19 @@ class BatchNorm(nn.Module):
 
 
 def pool(inputs, init, reduce_fn, window_shape, strides, padding):
+    """Apply a generic reduce-window pooling operation.
+
+    Args:
+        inputs: Input activations.
+        init: Initial value for the reduction.
+        reduce_fn: Reduction function.
+        window_shape: Spatial pooling window.
+        strides: Spatial pooling strides.
+        padding: Pooling padding.
+
+    Returns:
+        Pooled activations.
+    """
     strides = strides or (1,) * len(window_shape)
     assert len(window_shape) == len(strides), f"len({window_shape}) == len({strides})"
     strides = (1,) + strides + (1,)
@@ -817,6 +775,17 @@ def pool(inputs, init, reduce_fn, window_shape, strides, padding):
 
 
 def avg_pool(inputs, window_shape, strides=None, padding="VALID"):
+    """Apply average pooling with explicit padding counts.
+
+    Args:
+        inputs: Input activations with shape ``(batch, height, width, channels)``.
+        window_shape: Spatial pooling window.
+        strides: Spatial pooling strides.
+        padding: Pooling padding.
+
+    Returns:
+        Average-pooled activations.
+    """
     assert inputs.ndim == 4
     assert len(window_shape) == 2
 

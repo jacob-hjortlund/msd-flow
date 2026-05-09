@@ -66,3 +66,15 @@ def test_convnext_package_exports_builder_and_encoder():
     assert build_zoobot_nano.__name__ == "build_zoobot_nano"
     assert ConvNeXtBlock.__name__ == "ConvNeXtBlock"
     assert ConvNeXtHead.__name__ == "ConvNeXtHead"
+
+
+def test_inceptionv3_package_exports_builder_and_model():
+    """InceptionV3 public symbols are available from the package path."""
+    from msdflow.model.inceptionv3 import InceptionV3, build_headless_inceptionv3
+    from msdflow.model.inceptionv3.blocks import BasicConv2d, InceptionA
+    from msdflow.model.inceptionv3.model import InceptionV3 as ModuleInceptionV3
+
+    assert InceptionV3 is ModuleInceptionV3
+    assert build_headless_inceptionv3.__name__ == "build_headless_inceptionv3"
+    assert BasicConv2d.__name__ == "BasicConv2d"
+    assert InceptionA.__name__ == "InceptionA"
