@@ -391,11 +391,24 @@ class SwiGLUFFN(eqx.Module):
             activation: Activation function for the gate branch.
             compute_dtype: Activation dtype used for linear projections.
             key: JAX PRNG key.
+
+        Raises:
+            ValueError: If any configured dimension is invalid.
         """
+
+        if hidden_size <= 0:
+            raise ValueError(f"hidden_size must be positive, got {hidden_size}.")
+        if mlp_ratio <= 0:
+            raise ValueError(f"mlp_ratio must be positive, got {mlp_ratio}.")
 
         k12, k3 = jax.random.split(key)
         mlp_hidden = int(hidden_size * mlp_ratio)
         swiglu_hidden = int(mlp_hidden * 2 / 3)
+        if swiglu_hidden <= 0:
+            raise ValueError(
+                "swiglu_hidden must be positive; increase hidden_size or mlp_ratio."
+            )
+
         self.w12 = eqx.nn.Linear(hidden_size, 2 * swiglu_hidden, key=k12)
         self.w3 = eqx.nn.Linear(swiglu_hidden, hidden_size, key=k3)
         self.dropout = eqx.nn.Dropout(dropout)
@@ -462,6 +475,10 @@ class JiTAttention(eqx.Module):
             ValueError: If the head configuration is invalid.
         """
 
+        if hidden_size <= 0:
+            raise ValueError(f"hidden_size must be positive, got {hidden_size}.")
+        if num_heads <= 0:
+            raise ValueError(f"num_heads must be positive, got {num_heads}.")
         if hidden_size % num_heads != 0:
             raise ValueError("hidden_size must be divisible by num_heads.")
         head_dim = hidden_size // num_heads
@@ -645,7 +662,18 @@ class FinalLayer(eqx.Module):
             activation: Activation function used before AdaLN projection.
             compute_dtype: Activation dtype used for linear projections.
             key: JAX PRNG key.
+
+        Raises:
+            ValueError: If any configured dimension is nonpositive.
         """
+
+        for name, value in (
+            ("hidden_size", hidden_size),
+            ("patch_size", patch_size),
+            ("out_channels", out_channels),
+        ):
+            if value <= 0:
+                raise ValueError(f"{name} must be positive, got {value}.")
 
         klin, kada = jax.random.split(key)
         out_features = patch_size * patch_size * out_channels

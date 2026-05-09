@@ -180,6 +180,27 @@ def test_swiglu_ffn_preserves_token_shape():
     assert out.dtype == jnp.float32
 
 
+@pytest.mark.parametrize(
+    ("hidden_size", "mlp_ratio", "match"),
+    [
+        (0, 4.0, "hidden_size"),
+        (16, 0.0, "mlp_ratio"),
+        (4, 0.1, "swiglu_hidden"),
+    ],
+)
+def test_swiglu_ffn_rejects_invalid_dimensions(hidden_size, mlp_ratio, match):
+    """SwiGLU FFN should reject nonpositive and zero-width dimensions."""
+    with pytest.raises(ValueError, match=match):
+        SwiGLUFFN(
+            hidden_size=hidden_size,
+            mlp_ratio=mlp_ratio,
+            dropout=0.0,
+            activation=jax.nn.silu,
+            compute_dtype=jnp.float32,
+            key=KEY,
+        )
+
+
 def test_jit_attention_preserves_token_shape_and_exposes_backend():
     """JiT attention should preserve token shape and store backend choice."""
     rope = TwoDimensionalRoPE(
@@ -202,6 +223,26 @@ def test_jit_attention_preserves_token_shape_and_exposes_backend():
     assert out.shape == x.shape
     assert out.dtype == jnp.float32
     assert attn.implementation == "xla"
+
+
+@pytest.mark.parametrize(
+    ("hidden_size", "num_heads", "match"),
+    [
+        (0, 2, "hidden_size"),
+        (16, 0, "num_heads"),
+    ],
+)
+def test_jit_attention_rejects_invalid_dimensions(hidden_size, num_heads, match):
+    """JiT attention should reject nonpositive dimensions clearly."""
+    with pytest.raises(ValueError, match=match):
+        JiTAttention(
+            hidden_size=hidden_size,
+            num_heads=num_heads,
+            dropout=0.0,
+            attention_dtype=jnp.float32,
+            implementation="xla",
+            key=KEY,
+        )
 
 
 def test_jit_block_preserves_token_shape():
@@ -246,3 +287,27 @@ def test_final_layer_projects_tokens_to_patch_pixels():
     out = layer(x, cond)
     assert out.shape == (4, 4)
     assert out.dtype == jnp.float32
+
+
+@pytest.mark.parametrize(
+    ("parameter", "value"),
+    [
+        ("hidden_size", 0),
+        ("patch_size", 0),
+        ("out_channels", 0),
+    ],
+)
+def test_final_layer_rejects_invalid_dimensions(parameter, value):
+    """FinalLayer should reject nonpositive dimensions clearly."""
+    kwargs = {
+        "hidden_size": 16,
+        "patch_size": 2,
+        "out_channels": 1,
+        "activation": jax.nn.silu,
+        "compute_dtype": jnp.float32,
+        "key": KEY,
+    }
+    kwargs[parameter] = value
+
+    with pytest.raises(ValueError, match=parameter):
+        FinalLayer(**kwargs)
