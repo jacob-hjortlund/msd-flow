@@ -478,3 +478,58 @@ def test_jit_gradient_flows():
     grad_leaves = jax.tree.leaves(eqx.filter(grads, eqx.is_array))
 
     assert any(jnp.any(leaf != 0.0) for leaf in grad_leaves)
+
+
+def test_jit_compute_dtype_bfloat16_smoke():
+    """bf16 compute should return finite fp32 outputs for fp32 inputs."""
+    model = JiT(**{**SMALL_CFG, "compute_dtype": jnp.bfloat16}, key=KEY)
+    x = jnp.ones((1, 8, 8), dtype=jnp.float32)
+    out = model(jnp.array(0.5), x, jnp.empty(0), jnp.array(False), KEY)
+    assert out.shape == x.shape
+    assert out.dtype == jnp.float32
+    assert jnp.all(jnp.isfinite(out))
+
+
+def test_jit_attention_dtype_bfloat16_smoke():
+    """bf16 attention should return finite fp32 outputs for fp32 inputs."""
+    model = JiT(**{**SMALL_CFG, "attention_dtype": jnp.bfloat16}, key=KEY)
+    x = jnp.ones((1, 8, 8), dtype=jnp.float32)
+    out = model(jnp.array(0.5), x, jnp.empty(0), jnp.array(False), KEY)
+    assert out.shape == x.shape
+    assert out.dtype == jnp.float32
+    assert jnp.all(jnp.isfinite(out))
+
+
+def test_jit_compute_dtype_keeps_stored_arrays_float32():
+    """bf16 compute should not convert stored trainable arrays."""
+    model = JiT(**{**SMALL_CFG, "compute_dtype": jnp.bfloat16}, key=KEY)
+    assert _array_leaf_dtypes(model) == {jnp.dtype(jnp.float32)}
+
+
+def test_jit_attention_implementation_passthrough():
+    """attention_implementation should reach every JiT block attention."""
+    model = JiT(**SMALL_CFG, key=KEY)
+    assert all(block.attn.implementation == "xla" for block in model.blocks)
+
+
+def test_jit_flow_matching_loss_smoke():
+    """JiT should plug into the standard flow_matching_loss."""
+    from msdflow.flow.interpolate import sample_path
+    from msdflow.train.metrics import flow_matching_loss
+
+    model = JiT(**SMALL_CFG, key=KEY)
+    x0 = jax.random.normal(KEY, (2, 1, 8, 8), dtype=jnp.float32)
+    x1 = jax.random.normal(jax.random.PRNGKey(1), (2, 1, 8, 8), dtype=jnp.float32)
+    t = jnp.array([0.25, 0.75], dtype=jnp.float32)
+    x_t, u_t = sample_path(x0, x1, t)
+    loss = flow_matching_loss(
+        model,
+        x_t,
+        u_t,
+        t,
+        jnp.empty((2, 0)),
+        jnp.zeros((2,), dtype=bool),
+        jax.random.split(KEY, 2),
+    )
+    assert loss.shape == ()
+    assert jnp.isfinite(loss)
