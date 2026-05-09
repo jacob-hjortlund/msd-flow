@@ -54,3 +54,15 @@ def test_ncsnpp_block_exports_are_available_from_new_package():
     assert GaussianFourierProjection.__name__ == "GaussianFourierProjection"
     assert RALAAttentionBlock.__name__ == "RALAAttentionBlock"
     assert ResBlockBigGAN.__name__ == "ResBlockBigGAN"
+
+
+def test_convnext_package_exports_builder_and_encoder():
+    """ConvNeXt public symbols are available from the package path."""
+    from msdflow.model.convnext import ConvNeXtEncoder, build_zoobot_nano
+    from msdflow.model.convnext.blocks import ConvNeXtBlock, ConvNeXtHead
+    from msdflow.model.convnext.model import ConvNeXtEncoder as ModuleEncoder
+
+    assert ConvNeXtEncoder is ModuleEncoder
+    assert build_zoobot_nano.__name__ == "build_zoobot_nano"
+    assert ConvNeXtBlock.__name__ == "ConvNeXtBlock"
+    assert ConvNeXtHead.__name__ == "ConvNeXtHead"
