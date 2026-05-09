@@ -7,10 +7,6 @@ import jax
 import jax.numpy as jnp
 
 from msdflow.model.common_blocks import AttentionBlock, _apply_conv2d, _apply_linear
-from msdflow.model.blocks import (
-    RALAAttentionBlock as _RootRALAAttentionBlock,
-    ResBlockBigGAN as _RootResBlockBigGAN,
-)
 
 __all__ = [
     "AttentionBlock",
@@ -188,7 +184,7 @@ def _theta_shift(x: jax.Array, sin: jax.Array, cos: jax.Array) -> jax.Array:
     return (x * cos) + (_rotate_every_two(x) * sin)
 
 
-class RALAAttentionBlock(_RootRALAAttentionBlock):
+class RALAAttentionBlock(eqx.Module):
     """Rank-Augmented Linear Attention over spatial tokens.
 
     This ports the official RALA ``GateLinearAttentionNoSilu`` block to
@@ -356,7 +352,7 @@ class GaussianFourierProjection(eqx.Module):
         return emb
 
 
-class ResBlockBigGAN(_RootResBlockBigGAN):
+class ResBlockBigGAN(eqx.Module):
     """BigGAN-style residual block with optional integrated up/down resampling.
 
     Pre-activation ordering (GroupNorm -> act -> Conv) with time-embedding

@@ -6,8 +6,10 @@ import pytest
 import equinox as eqx
 import jax.numpy as jnp
 
-from msdflow.model.blocks import RALAAttentionBlock, ResBlockBigGAN
+from msdflow.flow.interpolate import sample_path
 from msdflow.model.ncsnpp import NCSNpp
+from msdflow.model.ncsnpp.blocks import RALAAttentionBlock, ResBlockBigGAN
+from msdflow.train.metrics import flow_matching_loss
 
 KEY = jax.random.PRNGKey(42)
 
@@ -216,10 +218,6 @@ def test_ncsnpp_cond_dim0_backward_compat():
     cond_mask = jnp.array(False)
     out = model(t, x, cond, cond_mask, jax.random.PRNGKey(0))
     assert out.shape == (1, 8, 8)
-
-
-from msdflow.flow.interpolate import sample_path
-from msdflow.train.metrics import flow_matching_loss
 
 
 def test_ncsnpp_flow_matching_loss():
