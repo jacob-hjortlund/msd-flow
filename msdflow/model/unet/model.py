@@ -9,7 +9,7 @@ import jax.numpy as jnp
 
 import equinox as eqx
 
-from msdflow.model.blocks import (
+from msdflow.model.unet.blocks import (
     AttentionBlock,
     Downsample,
     ResBlock,
@@ -130,8 +130,8 @@ class UNet(eqx.Module):
         # Encoder
         enc_blocks, downsamples = [], []
         ch_in = base_channels
-        for l in range(L):
-            ch_out = base_channels * channel_multipliers[l]
+        for level_idx in range(L):
+            ch_out = base_channels * channel_multipliers[level_idx]
             level = []
             for i in range(num_res_blocks):
                 block_key, key = jax.random.split(key)
@@ -148,7 +148,7 @@ class UNet(eqx.Module):
                 )
             enc_blocks.append(level)
             ch_in = ch_out
-            if l < L - 1:
+            if level_idx < L - 1:
                 downsample_key, key = jax.random.split(key)
                 downsamples.append(Downsample(ch_out, downsample_key))
             else:
@@ -170,10 +170,10 @@ class UNet(eqx.Module):
         # Decoder (iterate levels from L-1 down to 0)
         dec_blocks, upsample_list = [], []
         ch_current = ch_bot
-        for l in reversed(range(L)):
-            ch_skip = base_channels * channel_multipliers[l]
+        for level_idx in reversed(range(L)):
+            ch_skip = base_channels * channel_multipliers[level_idx]
             ch_out = ch_skip
-            if l < L - 1:
+            if level_idx < L - 1:
                 upsample_key, key = jax.random.split(key)
                 upsample_list.append(Upsample(ch_current, upsample_key))
             else:
