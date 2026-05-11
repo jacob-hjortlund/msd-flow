@@ -15,13 +15,16 @@ from omegaconf import OmegaConf
 
 from msdflow.train.checkpointing import (
     compute_config_hash,
+    checkpoint_directory_name,
     checkpoint_run_dir,
     checkpoint_filename_stem,
     TrainingCheckpoint,
+    OrbaxAsyncCheckpointIO,
     latest_pointer_path,
     build_checkpoint_metadata,
     discover_latest_checkpoint,
     load_training_checkpoint,
+    raw_model_checkpoint_path,
     save_training_checkpoint,
     SigtermFlag,
     validate_checkpoint_metadata,
@@ -342,24 +345,26 @@ def test_discover_latest_checkpoint_returns_none_when_pointer_absent(tmp_path):
     assert result is None
 
 
-@pytest.mark.parametrize("payload_path", ["", None])
-def test_discover_latest_checkpoint_rejects_invalid_payload_path(
+@pytest.mark.parametrize("checkpoint_path", ["", None])
+def test_discover_latest_checkpoint_rejects_invalid_checkpoint_path(
     tmp_path,
-    payload_path,
+    checkpoint_path,
 ):
-    """Metadata payload_path must be a non-empty string path."""
+    """Metadata checkpoint_path must be a non-empty string path."""
     run_dir = tmp_path / "hash"
     run_dir.mkdir()
     metadata_path = run_dir / "checkpoint_epoch0001_step0000.json"
     metadata_path.write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "stable_hash": "hash",
                 "checkpoint_kind": "periodic",
                 "epoch": 1,
                 "completed_microsteps": 0,
-                "payload_path": payload_path,
+                "checkpoint_path": checkpoint_path,
+                "global_optimizer_step": 4,
+                "lr_schedule_step": 4,
                 "clearml_task_id": "task-1",
             }
         )
@@ -368,7 +373,7 @@ def test_discover_latest_checkpoint_rejects_invalid_payload_path(
         json.dumps({"metadata_path": str(metadata_path)})
     )
 
-    with pytest.raises(ValueError, match="payload_path"):
+    with pytest.raises(ValueError, match="checkpoint_path"):
         discover_latest_checkpoint(
             str(run_dir),
             latest_filename="latest.json",
@@ -379,18 +384,20 @@ def test_discover_latest_checkpoint_rejects_invalid_payload_path(
 def test_discover_latest_checkpoint_loads_pointer_metadata(tmp_path):
     """restart=false should load metadata referenced by latest.json."""
     run_dir = tmp_path / "hash"
-    run_dir.mkdir()
-    metadata_path = run_dir / "checkpoint_epoch0001_step0000.json"
-    payload_path = run_dir / "checkpoint_epoch0001_step0000.eqx"
+    checkpoint_path = run_dir / "checkpoint_epoch0001_step0000"
+    checkpoint_path.mkdir(parents=True)
+    metadata_path = checkpoint_path / "metadata.json"
     metadata_path.write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "stable_hash": "hash",
                 "checkpoint_kind": "periodic",
                 "epoch": 1,
                 "completed_microsteps": 0,
-                "payload_path": str(payload_path),
+                "checkpoint_path": str(checkpoint_path),
+                "global_optimizer_step": 4,
+                "lr_schedule_step": 4,
                 "clearml_task_id": "task-1",
             }
         )
@@ -407,8 +414,42 @@ def test_discover_latest_checkpoint_loads_pointer_metadata(tmp_path):
 
     assert result is not None
     assert result["metadata_path"] == str(metadata_path)
-    assert result["payload_path"] == str(payload_path)
+    assert result["checkpoint_path"] == str(checkpoint_path)
     assert result["clearml_task_id"] == "task-1"
+
+
+def test_discover_latest_checkpoint_rejects_checkpoint_path_file(tmp_path):
+    """Checkpoint metadata must point to an existing checkpoint directory."""
+    run_dir = tmp_path / "hash"
+    run_dir.mkdir()
+    checkpoint_path = run_dir / "checkpoint_epoch0001_step0000"
+    checkpoint_path.write_text("not a directory")
+    metadata_path = run_dir / "metadata.json"
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "stable_hash": "hash",
+                "checkpoint_kind": "periodic",
+                "epoch": 1,
+                "completed_microsteps": 0,
+                "checkpoint_path": str(checkpoint_path),
+                "global_optimizer_step": 4,
+                "lr_schedule_step": 4,
+                "clearml_task_id": "task-1",
+            }
+        )
+    )
+    (run_dir / "latest.json").write_text(
+        json.dumps({"metadata_path": str(metadata_path)})
+    )
+
+    with pytest.raises(ValueError, match="Checkpoint directory"):
+        discover_latest_checkpoint(
+            str(run_dir),
+            latest_filename="latest.json",
+            restart=False,
+        )
 
 
 def _linear_checkpoint_payload():
@@ -473,21 +514,173 @@ def test_checkpoint_filename_stem_uses_epoch_and_microstep():
     )
 
 
+def test_checkpoint_directory_name_includes_kind_epoch_and_microstep():
+    """Checkpoint directory names should be stable and human-readable."""
+    assert (
+        checkpoint_directory_name("periodic", epoch=6, completed_microsteps=0)
+        == "checkpoint_epoch0007_step0000"
+    )
+    assert (
+        checkpoint_directory_name("best", epoch=6, completed_microsteps=0)
+        == "best_epoch0007_step0000"
+    )
+    assert (
+        checkpoint_directory_name("sigterm", epoch=6, completed_microsteps=42)
+        == "sigterm_epoch0007_step0042"
+    )
+
+
+def test_raw_model_checkpoint_path_uses_optimizer_step(tmp_path):
+    """Raw model history should be keyed by global optimizer step."""
+    assert raw_model_checkpoint_path(str(tmp_path), 12) == str(
+        tmp_path / "raw_models" / "update_000000012"
+    )
+
+
+class StaticLeafModel(eqx.Module):
+    """Small Equinox module with static metadata for Orbax restore tests."""
+
+    weight: jax.Array
+    label: str = eqx.field(static=True)
+
+
+def test_orbax_io_preserves_equinox_static_fields(tmp_path):
+    """Orbax rich PyTree support should restore Equinox static fields."""
+    saved = StaticLeafModel(weight=jnp.ones((2,)), label="saved")
+    target = StaticLeafModel(weight=jnp.zeros((2,)), label="target")
+    checkpoint_io = OrbaxAsyncCheckpointIO()
+    path = tmp_path / "static_model"
+
+    try:
+        checkpoint_io.save_raw_model_item(path, saved)
+        checkpoint_io.wait_all()
+        restored = checkpoint_io.restore_item(path, target)
+    finally:
+        checkpoint_io.close()
+
+    assert restored.label == "saved"
+    assert jnp.array_equal(restored.weight, saved.weight)
+
+
+def test_orbax_io_preserves_repeated_static_fields_in_checkpoint(tmp_path):
+    """Static metadata should be restored for every repeated checkpoint path."""
+    saved_model = StaticLeafModel(weight=jnp.ones((2,)), label="saved")
+    target_model = StaticLeafModel(weight=jnp.zeros((2,)), label="target")
+    optimizer = optax.sgd(0.1)
+    saved = TrainingCheckpoint(
+        state=make_train_state(saved_model, optimizer),
+        ema_model=saved_model,
+        ema_initialized=True,
+        key=jax.random.PRNGKey(1),
+        sampling_key=jax.random.PRNGKey(2),
+        epoch=3,
+        completed_microsteps=5,
+        global_optimizer_step=17,
+        lr_schedule_step=19,
+        epoch_loss=7.5,
+        best_metric_value=0.25,
+        best_epoch=2,
+        patience_counter=1,
+        total_epoch_time=11.0,
+        total_train_time=9.0,
+        total_val_time=3.0,
+        val_runs=2,
+        val_time=1.5,
+        val_metrics={"flow_matching_loss": 0.25},
+        train_metrics={"flow_matching_loss": 0.5},
+        epoch_metric_results={"fid_zoobot": 10.0},
+    )
+    target = TrainingCheckpoint(
+        state=make_train_state(target_model, optimizer),
+        ema_model=target_model,
+        ema_initialized=True,
+        key=jax.random.PRNGKey(1),
+        sampling_key=jax.random.PRNGKey(2),
+        epoch=3,
+        completed_microsteps=5,
+        global_optimizer_step=17,
+        lr_schedule_step=19,
+        epoch_loss=7.5,
+        best_metric_value=0.25,
+        best_epoch=2,
+        patience_counter=1,
+        total_epoch_time=11.0,
+        total_train_time=9.0,
+        total_val_time=3.0,
+        val_runs=2,
+        val_time=1.5,
+        val_metrics={"flow_matching_loss": 0.25},
+        train_metrics={"flow_matching_loss": 0.5},
+        epoch_metric_results={"fid_zoobot": 10.0},
+    )
+    checkpoint_io = OrbaxAsyncCheckpointIO()
+    path = tmp_path / "repeated_static_checkpoint"
+
+    try:
+        checkpoint_io.save_training_item(path, saved)
+        checkpoint_io.wait_all()
+        restored = checkpoint_io.restore_item(path, target)
+    finally:
+        checkpoint_io.close()
+
+    assert restored.state.model.label == "saved"
+    assert restored.ema_model.label == "saved"
+
+
+def test_discover_latest_checkpoint_loads_orbax_pointer_metadata(tmp_path):
+    """restart=false should load metadata referenced by latest.json."""
+    run_dir = tmp_path / "hash"
+    checkpoint_path = run_dir / "checkpoint_epoch0001_step0000"
+    checkpoint_path.mkdir(parents=True)
+    metadata_path = checkpoint_path / "metadata.json"
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "stable_hash": "hash",
+                "checkpoint_kind": "periodic",
+                "epoch": 1,
+                "completed_microsteps": 0,
+                "checkpoint_path": str(checkpoint_path),
+                "global_optimizer_step": 4,
+                "lr_schedule_step": 4,
+                "clearml_task_id": "task-1",
+            }
+        )
+    )
+    (run_dir / "latest.json").write_text(
+        json.dumps({"metadata_path": str(metadata_path)})
+    )
+
+    result = discover_latest_checkpoint(
+        str(run_dir),
+        latest_filename="latest.json",
+        restart=False,
+    )
+
+    assert result is not None
+    assert result["metadata_path"] == str(metadata_path)
+    assert result["checkpoint_path"] == str(checkpoint_path)
+    assert result["clearml_task_id"] == "task-1"
+
+
 def test_build_checkpoint_metadata_returns_json_safe_required_fields(tmp_path):
     """Metadata should include all required JSON-safe checkpoint fields."""
-    payload_path = tmp_path / "checkpoint_epoch0007_step0042.eqx"
+    checkpoint_path = tmp_path / "checkpoint_epoch0007_step0042"
     metadata = build_checkpoint_metadata(
         stable_hash="abc123",
         checkpoint_kind="periodic",
         epoch=6,
         completed_microsteps=42,
-        payload_path=str(payload_path),
+        checkpoint_path=str(checkpoint_path),
         grad_accum_steps=2,
         microsteps_per_epoch=64,
+        global_optimizer_step=12,
+        lr_schedule_step=12,
         monitor="flow_matching_loss",
         monitor_mode="min",
         clearml_task_id="task-1",
-        source_checkpoint_path="/source/checkpoint.eqx",
+        source_checkpoint_path="/source/checkpoint",
         hash_payload={"train": {"optimizer": "sgd"}},
         ema_initialized=True,
         best_metric_value=float("nan"),
@@ -495,18 +688,20 @@ def test_build_checkpoint_metadata_returns_json_safe_required_fields(tmp_path):
     )
 
     json.dumps(metadata)
-    assert metadata["schema_version"] == 1
+    assert metadata["schema_version"] == 2
     assert metadata["stable_hash"] == "abc123"
     assert metadata["checkpoint_kind"] == "periodic"
     assert metadata["epoch"] == 6
     assert metadata["completed_microsteps"] == 42
-    assert metadata["payload_path"] == str(payload_path)
+    assert metadata["checkpoint_path"] == str(checkpoint_path)
     assert metadata["grad_accum_steps"] == 2
     assert metadata["microsteps_per_epoch"] == 64
+    assert metadata["global_optimizer_step"] == 12
+    assert metadata["lr_schedule_step"] == 12
     assert metadata["monitor"] == "flow_matching_loss"
     assert metadata["monitor_mode"] == "min"
     assert metadata["clearml_task_id"] == "task-1"
-    assert metadata["source_checkpoint_path"] == "/source/checkpoint.eqx"
+    assert metadata["source_checkpoint_path"] == "/source/checkpoint"
     assert metadata["hash_payload"] == {"train": {"optimizer": "sgd"}}
     assert metadata["ema_initialized"] is True
     assert metadata["best_metric_value"] == "nan"
@@ -574,13 +769,13 @@ def test_build_checkpoint_metadata_derives_schedule_steps_from_checkpoint(
 def test_build_checkpoint_metadata_accepts_checkpoint_payload_context(tmp_path):
     """Metadata builder should accept checkpoint payload context directly."""
     checkpoint = _linear_checkpoint_payload()
-    payload_path = tmp_path / "checkpoint_epoch0004_step0005.eqx"
+    checkpoint_path = tmp_path / "checkpoint_epoch0004_step0005"
 
     metadata = build_checkpoint_metadata(
         stable_hash="abc123",
         checkpoint_kind="manual",
         checkpoint=checkpoint,
-        payload_path=str(payload_path),
+        checkpoint_path=str(checkpoint_path),
         grad_accum_steps=1,
         microsteps_per_epoch=8,
         monitor="flow_matching_loss",
@@ -604,9 +799,11 @@ def test_validate_checkpoint_metadata_rejects_wrong_stable_hash(tmp_path):
         checkpoint_kind="periodic",
         epoch=0,
         completed_microsteps=0,
-        payload_path=str(tmp_path / "checkpoint.eqx"),
+        checkpoint_path=str(tmp_path / "checkpoint"),
         grad_accum_steps=1,
         microsteps_per_epoch=8,
+        global_optimizer_step=1,
+        lr_schedule_step=1,
         monitor="flow_matching_loss",
         monitor_mode="min",
         clearml_task_id=None,
@@ -700,12 +897,14 @@ def test_validate_checkpoint_metadata_rejects_bool_schedule_steps(
 def test_validate_checkpoint_metadata_accepts_expected_hash_alias():
     """Validation should support the approved-plan expected_hash keyword."""
     metadata = {
-        "schema_version": 1,
+        "schema_version": 2,
         "stable_hash": "abc123",
         "checkpoint_kind": "periodic",
         "epoch": 1,
         "completed_microsteps": 0,
-        "payload_path": "/tmp/checkpoint.eqx",
+        "checkpoint_path": "/tmp/checkpoint",
+        "global_optimizer_step": 1,
+        "lr_schedule_step": 1,
         "monitor": "flow_matching_loss",
         "monitor_mode": "min",
     }
@@ -721,8 +920,8 @@ def test_validate_checkpoint_metadata_accepts_expected_hash_alias():
         )
 
 
-def test_save_training_checkpoint_writes_payload_metadata_and_latest(tmp_path):
-    """Saving should write payload, metadata, and latest pointer atomically."""
+def test_save_training_checkpoint_writes_checkpoint_metadata_and_latest(tmp_path):
+    """Saving should write checkpoint, metadata, and latest pointer atomically."""
     run_dir = tmp_path / "checkpoints"
     checkpoint = _linear_checkpoint_payload()
 
@@ -741,13 +940,102 @@ def test_save_training_checkpoint_writes_payload_metadata_and_latest(tmp_path):
         hash_payload={"train": {"optimizer": "sgd"}},
     )
 
-    assert os.path.exists(metadata["payload_path"])
+    assert os.path.isdir(metadata["checkpoint_path"])
     assert os.path.exists(metadata["metadata_path"])
     assert json.loads((run_dir / "latest.json").read_text()) == {
         "metadata_path": metadata["metadata_path"]
     }
-    assert metadata["payload_path"].endswith("checkpoint_epoch0004_step0005.eqx")
-    assert metadata["metadata_path"].endswith("checkpoint_epoch0004_step0005.json")
+    assert metadata["checkpoint_path"].endswith("checkpoint_epoch0004_step0005")
+    assert metadata["metadata_path"].endswith(
+        "checkpoint_epoch0004_step0005/metadata.json"
+    )
+
+
+def test_save_training_checkpoint_wait_false_publishes_sidecars_after_wait(tmp_path):
+    """Deferred checkpoint saves should publish metadata after finalization."""
+    run_dir = tmp_path / "checkpoints"
+    checkpoint_io = OrbaxAsyncCheckpointIO()
+
+    try:
+        metadata = save_training_checkpoint(
+            run_dir=str(run_dir),
+            checkpoint=_linear_checkpoint_payload(),
+            stable_hash="abc123",
+            checkpoint_kind="periodic",
+            grad_accum_steps=1,
+            microsteps_per_epoch=8,
+            monitor="flow_matching_loss",
+            monitor_mode="min",
+            clearml_task_id="task-1",
+            latest_filename="latest.json",
+            source_checkpoint_path=None,
+            hash_payload={"train": {"optimizer": "sgd"}},
+            checkpoint_io=checkpoint_io,
+            wait=False,
+        )
+
+        assert not Path(metadata["metadata_path"]).exists()
+        checkpoint_io.wait_training()
+    finally:
+        checkpoint_io.close()
+
+    assert Path(metadata["metadata_path"]).exists()
+    assert json.loads((run_dir / "latest.json").read_text()) == {
+        "metadata_path": metadata["metadata_path"]
+    }
+
+
+def test_save_training_checkpoint_closes_owned_io_when_wait_all_fails(
+    tmp_path,
+    monkeypatch,
+):
+    """Owned checkpoint I/O should close even if async finalization fails."""
+    import msdflow.train.checkpointing as checkpointing
+
+    instances = []
+
+    class FailingCheckpointIO:
+        """Fake checkpoint I/O that fails during finalization."""
+
+        def __init__(self):
+            """Record the fake I/O instance."""
+            self.closed = False
+            instances.append(self)
+
+        def save_training_item(self, path, item):
+            """Accept a fake training checkpoint save."""
+
+        def wait_training(self):
+            """Accept immediate training checkpoint finalization."""
+
+        def wait_all(self):
+            """Fail during owned I/O finalization."""
+            raise RuntimeError("finalization failed")
+
+        def close(self):
+            """Record that close was called."""
+            self.closed = True
+
+    monkeypatch.setattr(checkpointing, "OrbaxAsyncCheckpointIO", FailingCheckpointIO)
+
+    with pytest.raises(RuntimeError, match="finalization failed"):
+        save_training_checkpoint(
+            run_dir=str(tmp_path / "checkpoints"),
+            checkpoint=_linear_checkpoint_payload(),
+            stable_hash="abc123",
+            checkpoint_kind="periodic",
+            grad_accum_steps=1,
+            microsteps_per_epoch=8,
+            monitor="flow_matching_loss",
+            monitor_mode="min",
+            clearml_task_id="task-1",
+            latest_filename="latest.json",
+            source_checkpoint_path=None,
+            hash_payload={"train": {"optimizer": "sgd"}},
+        )
+
+    assert len(instances) == 1
+    assert instances[0].closed is True
 
 
 def test_save_with_relative_run_dir_discovers_absolute_metadata(tmp_path, monkeypatch):
@@ -780,10 +1068,10 @@ def test_save_with_relative_run_dir_discovers_absolute_metadata(tmp_path, monkey
 
     assert discovered is not None
     assert os.path.isabs(metadata["metadata_path"])
-    assert os.path.isabs(metadata["payload_path"])
+    assert os.path.isabs(metadata["checkpoint_path"])
     assert pointer == {"metadata_path": metadata["metadata_path"]}
     assert discovered["metadata_path"] == metadata["metadata_path"]
-    assert discovered["payload_path"] == metadata["payload_path"]
+    assert discovered["checkpoint_path"] == metadata["checkpoint_path"]
     assert not (
         tmp_path / run_dir / run_dir / "checkpoint_epoch0004_step0005.json"
     ).exists()
@@ -821,12 +1109,14 @@ def test_save_training_checkpoint_rejects_unsafe_latest_filename(
     assert not outside.exists()
 
 
-def test_save_training_checkpoint_invalid_kind_does_not_replace_payload(tmp_path):
-    """Invalid metadata should be rejected before payload replacement."""
+def test_save_training_checkpoint_invalid_kind_does_not_replace_checkpoint(tmp_path):
+    """Invalid metadata should be rejected before checkpoint replacement."""
     run_dir = tmp_path / "checkpoints"
     run_dir.mkdir()
-    payload_path = run_dir / "checkpoint_epoch0004_step0005.eqx"
-    payload_path.write_bytes(b"existing payload")
+    checkpoint_path = run_dir / "checkpoint_epoch0004_step0005"
+    checkpoint_path.mkdir()
+    existing_metadata = checkpoint_path / "metadata.json"
+    existing_metadata.write_text("{}")
 
     with pytest.raises(ValueError, match="checkpoint kind"):
         save_training_checkpoint(
@@ -844,8 +1134,7 @@ def test_save_training_checkpoint_invalid_kind_does_not_replace_payload(tmp_path
             hash_payload={"train": {"optimizer": "sgd"}},
         )
 
-    assert payload_path.read_bytes() == b"existing payload"
-    assert not (run_dir / "checkpoint_epoch0004_step0005.json").exists()
+    assert existing_metadata.read_text() == "{}"
     assert not (run_dir / "latest.json").exists()
 
 
@@ -856,9 +1145,11 @@ def test_validate_checkpoint_metadata_rejects_invalid_checkpoint_kind(tmp_path):
         checkpoint_kind="periodic",
         epoch=0,
         completed_microsteps=0,
-        payload_path=str(tmp_path / "checkpoint.eqx"),
+        checkpoint_path=str(tmp_path / "checkpoint"),
         grad_accum_steps=1,
         microsteps_per_epoch=8,
+        global_optimizer_step=1,
+        lr_schedule_step=1,
         monitor="flow_matching_loss",
         monitor_mode="min",
         clearml_task_id=None,
@@ -900,10 +1191,10 @@ def test_load_training_checkpoint_round_trips_full_state(tmp_path):
     )
     like = _linear_checkpoint_payload()
 
-    restored = load_training_checkpoint(metadata["payload_path"], like)
+    restored = load_training_checkpoint(metadata["checkpoint_path"], like)
     pointer = json.loads((run_dir / "latest.json").read_text())
 
-    assert os.path.exists(metadata["payload_path"])
+    assert os.path.isdir(metadata["checkpoint_path"])
     assert os.path.exists(metadata["metadata_path"])
     assert pointer == {"metadata_path": metadata["metadata_path"]}
     assert restored.ema_initialized == checkpoint.ema_initialized
