@@ -1123,16 +1123,19 @@ def compute_fid_metrics(
             pbar.update(batch_n)
 
         pbar.close()
+        if requires_conditions:
+            if n_real_seen < n_real:
+                for acc in accumulators.values():
+                    acc.reset()
+                raise ValueError(
+                    "CFG FID requires validation conditions for "
+                    f"n_real={n_real}, but only {n_real_seen} rows were available"
+                )
         for acc in accumulators.values():
             mu, sigma, n = acc.statistics()
             acc._cached_real = (mu, sigma, n)
             acc.reset()
         if requires_conditions:
-            if n_real_seen < n_real:
-                raise ValueError(
-                    "CFG FID requires validation conditions for "
-                    f"n_real={n_real}, but only {n_real_seen} rows were available"
-                )
             condition_cache.conditions = np.concatenate(condition_chunks, axis=0)
             condition_cache.n_real = n_real
 
@@ -1227,9 +1230,10 @@ class FIDMetric:
     Args:
         accumulators:   Named accumulators, one per encoder. Keys become
             the output metric names.
-        generate_fn:    ``(model, key=...) -> jax.Array`` of shape ``(C, H, W)``.
-            One unconditional sample. Solver args baked in via partial.
-            Called as ``generate_fn(model, key=k)``.
+        generate_fn:    ``(model, key=...) -> jax.Array`` of shape ``(C, H, W)``
+            for unconditional generation, or ``(model, key=..., cond=...)``
+            when its configured ``guidance_scale`` enables CFG. Solver args are
+            baked in via partial.
         n_samples:      Number of fake images. ``None`` matches real count.
         gen_batch_size: Images generated and encoded per chunk.
         n_real:         Maximum real images from val_dataloader. ``None``

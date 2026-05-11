@@ -585,6 +585,29 @@ def test_compute_fid_metrics_cfg_rejects_empty_metadata():
         )
 
 
+def test_compute_fid_metrics_cfg_short_dataloader_does_not_cache_partial_reals():
+    """Failed CFG real passes must not cache partial real-image statistics."""
+    acc = FIDAccumulator(encoder=_identity_encoder)
+    dataloader = _make_conditioned_dataloader(n_batches=1, batch_size=4)
+    generate_fn = functools.partial(_guided_generate_fn, guidance_scale=2.0)
+
+    with pytest.raises(ValueError, match="n_real=8"):
+        compute_fid_metrics(
+            accumulators={"fid": acc},
+            model=None,
+            val_dataloader=dataloader,
+            generate_fn=generate_fn,
+            batched_generate_wrapper=_make_batched_generate_step(),
+            parallel_batched_generate_wrapper=_make_parallel_batched_generate_step(),
+            n_samples=4,
+            gen_batch_size=4,
+            key=jax.random.PRNGKey(37),
+            n_real=8,
+        )
+
+    assert acc._cached_real is None
+
+
 def test_compute_fid_metrics_cfg_allows_fewer_samples_than_real():
     """CFG FID may generate fewer fake samples than cached real samples."""
     acc = FIDAccumulator(encoder=_identity_encoder)
