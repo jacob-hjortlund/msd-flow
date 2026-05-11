@@ -35,6 +35,16 @@ def test_ncsnpp_package_exports_match_top_level_export():
     assert PackageNCSNpp is ModuleNCSNpp
 
 
+def test_jit_package_exports_match_top_level_export():
+    """JiT is available from package and top-level public imports."""
+    from msdflow.model import JiT as TopLevelJiT
+    from msdflow.model.jit import JiT as PackageJiT
+    from msdflow.model.jit.model import JiT as ModuleJiT
+
+    assert TopLevelJiT is PackageJiT
+    assert PackageJiT is ModuleJiT
+
+
 def test_ncsnpp_block_exports_are_available_from_new_package():
     """NCSN++ blocks are importable from the new package path."""
     from msdflow.model.common_blocks import AttentionBlock
@@ -54,6 +64,25 @@ def test_ncsnpp_block_exports_are_available_from_new_package():
     assert GaussianFourierProjection.__name__ == "GaussianFourierProjection"
     assert RALAAttentionBlock.__name__ == "RALAAttentionBlock"
     assert ResBlockBigGAN.__name__ == "ResBlockBigGAN"
+
+
+def test_jit_block_exports_are_available_from_new_package():
+    """JiT blocks are importable from the package path."""
+    from msdflow.model.jit.blocks import (
+        BottleneckPatchEmbed,
+        FinalLayer,
+        JiTAttention,
+        JiTBlock,
+        SwiGLUFFN,
+        TwoDimensionalRoPE,
+    )
+
+    assert BottleneckPatchEmbed.__name__ == "BottleneckPatchEmbed"
+    assert FinalLayer.__name__ == "FinalLayer"
+    assert JiTAttention.__name__ == "JiTAttention"
+    assert JiTBlock.__name__ == "JiTBlock"
+    assert SwiGLUFFN.__name__ == "SwiGLUFFN"
+    assert TwoDimensionalRoPE.__name__ == "TwoDimensionalRoPE"
 
 
 def test_convnext_package_exports_builder_and_encoder():
@@ -104,11 +133,13 @@ def test_legacy_hydra_model_target_paths_resolve():
 
     from msdflow.model.convnext import build_zoobot_nano
     from msdflow.model.inceptionv3 import InceptionV3
+    from msdflow.model.jit import JiT
     from msdflow.model.ncsnpp import NCSNpp
     from msdflow.model.unet import UNet
 
     assert get_class("msdflow.model.unet.UNet") is UNet
     assert get_class("msdflow.model.ncsnpp.NCSNpp") is NCSNpp
+    assert get_class("msdflow.model.JiT") is JiT
     assert get_class("msdflow.model.inceptionv3.InceptionV3") is InceptionV3
     assert get_method("msdflow.model.convnext.build_zoobot_nano") is build_zoobot_nano
 
@@ -118,12 +149,14 @@ def test_root_blocks_module_reexports_moved_blocks():
     from msdflow.model import blocks as root_blocks
     from msdflow.model import common_blocks
     from msdflow.model.convnext import blocks as convnext_blocks
+    from msdflow.model.jit import blocks as jit_blocks
     from msdflow.model.ncsnpp import blocks as ncsnpp_blocks
     from msdflow.model.unet import blocks as unet_blocks
 
     expected_exports = {
         "AttentionBlock": common_blocks.AttentionBlock,
         "AttnBlockNCSN": ncsnpp_blocks.AttnBlockNCSN,
+        "BottleneckPatchEmbed": jit_blocks.BottleneckPatchEmbed,
         "Conv2d": ncsnpp_blocks.Conv2d,
         "ConvNeXtBlock": convnext_blocks.ConvNeXtBlock,
         "ConvNeXtDownsample": convnext_blocks.ConvNeXtDownsample,
@@ -133,13 +166,18 @@ def test_root_blocks_module_reexports_moved_blocks():
         "CoordConv": ncsnpp_blocks.CoordConv,
         "Downsample": unet_blocks.Downsample,
         "DropPath": convnext_blocks.DropPath,
+        "FinalLayer": jit_blocks.FinalLayer,
         "GaussianFourierProjection": ncsnpp_blocks.GaussianFourierProjection,
         "Identity": convnext_blocks.Identity,
+        "JiTAttention": jit_blocks.JiTAttention,
+        "JiTBlock": jit_blocks.JiTBlock,
         "LayerNorm2d": convnext_blocks.LayerNorm2d,
         "RALAAttentionBlock": ncsnpp_blocks.RALAAttentionBlock,
         "ResBlock": unet_blocks.ResBlock,
         "ResBlockBigGAN": ncsnpp_blocks.ResBlockBigGAN,
         "SinusoidalEmbedding": unet_blocks.SinusoidalEmbedding,
+        "SwiGLUFFN": jit_blocks.SwiGLUFFN,
+        "TwoDimensionalRoPE": jit_blocks.TwoDimensionalRoPE,
         "Upsample": unet_blocks.Upsample,
     }
 

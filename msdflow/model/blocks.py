@@ -6,6 +6,7 @@ The block implementations live in model-family packages:
 """
 
 from msdflow.model.common_blocks import AttentionBlock
+from msdflow.model.common_blocks import SinusoidalEmbedding
 from msdflow.model.convnext.blocks import (
     ConvNeXtBlock,
     ConvNeXtDownsample,
@@ -15,6 +16,14 @@ from msdflow.model.convnext.blocks import (
     DropPath,
     Identity,
     LayerNorm2d,
+)
+from msdflow.model.jit.blocks import (
+    BottleneckPatchEmbed,
+    FinalLayer,
+    JiTAttention,
+    JiTBlock,
+    SwiGLUFFN,
+    TwoDimensionalRoPE,
 )
 from msdflow.model.ncsnpp.blocks import (
     AttnBlockNCSN,
@@ -27,13 +36,13 @@ from msdflow.model.ncsnpp.blocks import (
 from msdflow.model.unet.blocks import (
     Downsample,
     ResBlock,
-    SinusoidalEmbedding,
     Upsample,
 )
 
 __all__ = [
     "AttentionBlock",
     "AttnBlockNCSN",
+    "BottleneckPatchEmbed",
     "Conv2d",
     "ConvNeXtBlock",
     "ConvNeXtDownsample",
@@ -43,12 +52,17 @@ __all__ = [
     "CoordConv",
     "Downsample",
     "DropPath",
+    "FinalLayer",
     "GaussianFourierProjection",
     "Identity",
+    "JiTAttention",
+    "JiTBlock",
     "LayerNorm2d",
     "RALAAttentionBlock",
     "ResBlock",
     "ResBlockBigGAN",
     "SinusoidalEmbedding",
+    "SwiGLUFFN",
+    "TwoDimensionalRoPE",
     "Upsample",
 ]

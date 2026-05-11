@@ -7,11 +7,13 @@ import equinox as eqx
 import jax.numpy as jnp
 
 from msdflow.model.common_blocks import AttentionBlock
+from msdflow.model.common_blocks import SinusoidalEmbedding
 from msdflow.model.ncsnpp.blocks import AttnBlockNCSN
 from msdflow.model.ncsnpp.blocks import GaussianFourierProjection
 from msdflow.model.ncsnpp.blocks import RALAAttentionBlock
 from msdflow.model.ncsnpp.blocks import ResBlockBigGAN
-from msdflow.model.unet.blocks import Downsample, ResBlock, SinusoidalEmbedding
+from msdflow.model.unet.blocks import Downsample, ResBlock
+from msdflow.model.unet.blocks import SinusoidalEmbedding as UNetSinusoidalEmbedding
 from msdflow.model.unet.blocks import Upsample
 
 
@@ -41,6 +43,34 @@ def _primitive_io_dtypes(jaxpr, primitive_name):
         )
         records.append((in_dtypes, out_dtypes))
     return records
+
+
+def test_sinusoidal_embedding_unet_reexport_matches_common():
+    """UNet block imports must re-export the common sinusoidal embedding."""
+    assert UNetSinusoidalEmbedding is SinusoidalEmbedding
+
+
+def test_sinusoidal_embedding_frequency_dim_projects_to_output_dim():
+    """A smaller sinusoidal basis should project to the requested output dim."""
+    emb = SinusoidalEmbedding(
+        dim=32,
+        activation=jax.nn.silu,
+        key=KEY,
+        frequency_dim=16,
+    )
+    out = emb(jnp.array(0.5))
+    assert out.shape == (32,)
+
+
+def test_sinusoidal_embedding_odd_frequency_dim_raises():
+    """The optional frequency basis must have an even dimension."""
+    with pytest.raises(ValueError, match="frequency dimension"):
+        SinusoidalEmbedding(
+            dim=32,
+            activation=jax.nn.silu,
+            key=KEY,
+            frequency_dim=15,
+        )
 
 
 def test_sinusoidal_embedding_output_shape():
