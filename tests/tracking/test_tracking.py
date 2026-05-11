@@ -4,7 +4,7 @@ import os
 import warnings
 import numpy as np
 import pytest
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 
 # ---------------------------------------------------------------------------
@@ -117,10 +117,10 @@ def test_log_metrics_calls_report_scalar_per_key():
     logger = mock_task.get_logger.return_value
     assert logger.report_scalar.call_count == 2
     logger.report_scalar.assert_any_call(
-        title="train/loss", series="train/loss", value=0.5, iteration=2
+        title="loss", series="train/loss", value=0.5, iteration=2
     )
     logger.report_scalar.assert_any_call(
-        title="val/loss", series="val/loss", value=0.3, iteration=2
+        title="loss", series="val/loss", value=0.3, iteration=2
     )
 
 
@@ -129,19 +129,35 @@ def test_log_metrics_calls_report_scalar_per_key():
 # ---------------------------------------------------------------------------
 
 
-def test_log_checkpoint_noop_when_task_is_none():
-    from msdflow.tracking import log_checkpoint
-
-    log_checkpoint(None, "/tmp/checkpoint.eqx", epoch=1)
-
-
-def test_log_checkpoint_uploads_artifact():
+def test_log_checkpoint_uploads_orbax_directory_artifact():
+    """Checkpoint upload should accept finalized Orbax directories."""
     from msdflow.tracking import log_checkpoint
 
     mock_task = MagicMock()
-    log_checkpoint(mock_task, "/tmp/model_epoch5_ema.eqx", epoch=5)
+    log_checkpoint(
+        mock_task,
+        "/tmp/checkpoint_epoch0005_step0000",
+        epoch=5,
+        checkpoint_kind="periodic",
+        completed_microsteps=0,
+    )
+
     mock_task.upload_artifact.assert_called_once_with(
-        name="checkpoint_epoch_5", artifact_object="/tmp/model_epoch5_ema.eqx"
+        name="checkpoint_periodic_epoch_5_step_0",
+        artifact_object="/tmp/checkpoint_epoch0005_step0000",
+    )
+
+
+def test_log_checkpoint_noop_when_task_is_none():
+    """Checkpoint upload remains a no-op without ClearML."""
+    from msdflow.tracking import log_checkpoint
+
+    log_checkpoint(
+        None,
+        "/tmp/checkpoint_epoch0005_step0000",
+        epoch=5,
+        checkpoint_kind="periodic",
+        completed_microsteps=0,
     )
 
 

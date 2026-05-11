@@ -327,17 +327,31 @@ def log_metrics(task: Any, scalars: dict, epoch: int) -> None:
         )
 
 
-def log_checkpoint(task: Any, path: str, epoch: int) -> None:
-    """Upload a checkpoint file as a ClearML artifact.
+def log_checkpoint(
+    task: Any,
+    path: str,
+    epoch: int,
+    checkpoint_kind: str = "periodic",
+    completed_microsteps: int = 0,
+) -> None:
+    """Upload a finalized checkpoint directory as a ClearML artifact.
 
     Args:
         task: Active ClearML Task, or None (no-op).
-        path: Local path to the checkpoint file.
-        epoch: Current epoch number (used in artifact name).
+        path: Local path to the finalized Orbax checkpoint directory.
+        epoch: One-based epoch number used in the artifact name.
+        checkpoint_kind: Checkpoint event kind.
+        completed_microsteps: Completed microsteps within the epoch.
     """
     if task is None:
         return
-    task.upload_artifact(name=f"checkpoint_epoch_{epoch}", artifact_object=path)
+    task.upload_artifact(
+        name=(
+            f"checkpoint_{checkpoint_kind}_epoch_{epoch}"
+            f"_step_{completed_microsteps}"
+        ),
+        artifact_object=path,
+    )
 
 
 def prepare_images_for_plotting(
