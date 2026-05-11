@@ -686,12 +686,6 @@ def _batched_generate_impl(model, keys, generate_fn):
     return jax.vmap(lambda key: generate_fn(model, key=key))(keys)
 
 
-@eqx.filter_jit
-def _batched_generate(model, keys, generate_fn):
-    """Generate a fake-image batch for direct helper callers."""
-    return _batched_generate_impl(model, keys, generate_fn)
-
-
 def _make_batched_generate_step():
     """Return a per-FID-call JIT guard for serial generation.
 
@@ -711,21 +705,6 @@ def _make_batched_generate_step():
 def _parallel_batched_generate_impl(model, keys, generate_fn):
     """Generate a fake-image batch from sharded keys."""
     return jax.vmap(lambda key: generate_fn(model, key=key))(keys)
-
-
-@eqx.filter_jit
-def _parallel_batched_generate(model, keys, generate_fn):
-    """Generate a sharded fake-image batch without donating the model.
-
-    Args:
-        model: Generative model or model-like pytree passed to generate_fn.
-        keys: Device-sharded PRNG keys with leading sample dimension.
-        generate_fn: Callable ``(model, key=...) -> image``.
-
-    Returns:
-        Generated image batch.
-    """
-    return _parallel_batched_generate_impl(model, keys, generate_fn)
 
 
 def _make_parallel_batched_generate_step():
