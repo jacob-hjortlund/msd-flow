@@ -25,6 +25,7 @@ from msdflow.train.checkpointing import (
     discover_latest_checkpoint,
     load_training_checkpoint,
     raw_model_checkpoint_path,
+    save_raw_model_checkpoint,
     save_training_checkpoint,
     SigtermFlag,
     validate_checkpoint_metadata,
@@ -544,6 +545,13 @@ class StaticLeafModel(eqx.Module):
     label: str = eqx.field(static=True)
 
 
+class StaticCallableModel(eqx.Module):
+    """Small Equinox module with a non-pickleable static callable."""
+
+    weight: jax.Array
+    transform: object = eqx.field(static=True)
+
+
 def test_orbax_io_preserves_equinox_static_fields(tmp_path):
     """Orbax rich PyTree support should restore Equinox static fields."""
     saved = StaticLeafModel(weight=jnp.ones((2,)), label="saved")
@@ -560,6 +568,28 @@ def test_orbax_io_preserves_equinox_static_fields(tmp_path):
 
     assert restored.label == "saved"
     assert jnp.array_equal(restored.weight, saved.weight)
+
+
+def test_raw_model_checkpoint_skips_unpickleable_static_metadata(tmp_path):
+    """Raw model saves should tolerate static callables Orbax can restore from target."""
+    model = StaticCallableModel(
+        weight=jnp.ones((2,)),
+        transform=lambda value: value,
+    )
+    checkpoint_io = OrbaxAsyncCheckpointIO()
+
+    try:
+        path = save_raw_model_checkpoint(
+            run_dir=str(tmp_path),
+            model=model,
+            global_optimizer_step=1,
+            checkpoint_io=checkpoint_io,
+        )
+        checkpoint_io.wait_all()
+    finally:
+        checkpoint_io.close()
+
+    assert Path(path).is_dir()
 
 
 def test_orbax_io_preserves_repeated_static_fields_in_checkpoint(tmp_path):

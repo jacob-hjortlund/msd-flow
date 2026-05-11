@@ -3,6 +3,7 @@
 import inspect
 import json
 from decimal import Decimal
+from pathlib import Path
 
 import jax
 import jax.numpy as jnp
@@ -121,7 +122,10 @@ def test_trainer_reexports_parallel_helpers():
         trainer_module._validate_data_parallel_config
         is train_parallel._validate_data_parallel_config
     )
-    assert trainer_module.make_data_parallel_config is train_parallel.make_data_parallel_config
+    assert (
+        trainer_module.make_data_parallel_config
+        is train_parallel.make_data_parallel_config
+    )
     assert (
         trainer_module.resolve_data_parallel_config
         is train_parallel.resolve_data_parallel_config
@@ -406,7 +410,9 @@ def test_train_step_updates_model_params():
     state = make_train_state(model, optimizer)
     train_step = make_train_step(optimizer, _fml)
     orig_leaves = jax.tree_util.tree_leaves(eqx.filter(state.model, eqx.is_array))
-    orig_leaves = [jnp.array(leaf, copy=True).block_until_ready() for leaf in orig_leaves]
+    orig_leaves = [
+        jnp.array(leaf, copy=True).block_until_ready() for leaf in orig_leaves
+    ]
 
     B = 2
     k1, k2 = jax.random.split(KEY)
@@ -651,6 +657,7 @@ def _make_train_kwargs(num_epochs=1, num_steps_per_epoch=3, p_uncond=0.0):
         loss_fn=_fml,
         batch_metrics=[_fml],
         epoch_metrics=[],
+        eval_train_dataloader=_fake_val_dataloader(),
         num_train_eval_batches=0,
         coupling=independent_coupling,
         time_sampler=partial(sample_time_uniform, t_min=0.0, t_max=1.0),
@@ -663,6 +670,9 @@ def _make_train_kwargs(num_epochs=1, num_steps_per_epoch=3, p_uncond=0.0):
         val_every=1,
         checkpoint_every=100,
         checkpoint_dir="/tmp/test_ckpt",
+        lr_schedule=lambda step: 1e-3,
+        monitor="flow_matching_loss",
+        monitor_mode="min",
     )
 
 
@@ -672,6 +682,7 @@ class ScalarLogTask:
     def __init__(self):
         """Initialize an empty scalar call list."""
         self.scalars = []
+        self.artifacts = []
 
     class Logger:
         """Minimal ClearML logger facade used by log_metrics()."""
@@ -688,6 +699,10 @@ class ScalarLogTask:
         """Return a logger facade."""
         return self.Logger(self)
 
+    def upload_artifact(self, name, artifact_object):
+        """Record uploaded artifact calls for checkpoint logging assertions."""
+        self.artifacts.append((name, artifact_object))
+
 
 def constant_zero_metric(model, x_t, u_t, t, cond, cond_mask, key):
     """Return a constant zero metric."""
@@ -698,6 +713,15 @@ def constant_one_loss(model, x_t, u_t, t, cond, cond_mask, key):
     """Return a differentiable constant loss for resume accounting tests."""
     leaves = jax.tree_util.tree_leaves(eqx.filter(model, eqx.is_array))
     return jnp.sum(leaves[0]) * 0.0 + jnp.array(1.0)
+
+
+def _make_resume_train_state(model, kwargs):
+    """Return a train state matching train() optimizer wrapping."""
+    optimizer = optax.MultiSteps(
+        kwargs["optimizer"],
+        every_k_schedule=kwargs.get("grad_accum_steps", 1),
+    )
+    return make_train_state(model, optimizer)
 
 
 def test_train_runs_and_returns_model():
@@ -714,8 +738,8 @@ def test_train_runs_and_returns_model():
     assert trained_model is not None
 
 
-def test_train_saves_full_state_periodic_checkpoint(tmp_path):
-    """Periodic checkpointing must save a resumable full-state checkpoint."""
+def test_train_saves_periodic_orbax_checkpoint_and_raw_history(tmp_path):
+    """Periodic checkpoints should be resumable Orbax dirs with raw history."""
     dataloader = list(_make_fake_dataloader(B=2, num_batches=2))
     val_dataloader = _fake_val_dataloader(B=2)
     kwargs = _make_train_kwargs(num_epochs=1, num_steps_per_epoch=1)
@@ -736,20 +760,38 @@ def test_train_saves_full_state_periodic_checkpoint(tmp_path):
     pointer = json.loads((tmp_path / "latest.json").read_text())
     metadata = json.loads(open(pointer["metadata_path"]).read())
     assert metadata["checkpoint_kind"] == "periodic"
-    assert metadata["stable_hash"] == "hash123"
     assert metadata["epoch"] == 1
-    assert metadata["completed_microsteps"] == 0
-    assert (tmp_path / "model_epoch1_raw.eqx").exists()
-    assert (tmp_path / "model_epoch1_ema.eqx").exists()
+    assert metadata["checkpoint_path"].endswith("checkpoint_epoch0001_step0000")
+    assert Path(metadata["checkpoint_path"]).is_dir()
+    assert metadata["global_optimizer_step"] == 1
+    assert metadata["lr_schedule_step"] == 1
+    assert (tmp_path / "raw_models" / "update_000000001").is_dir()
+    assert not list(tmp_path.glob("*.eqx"))
 
-    like_model = _make_small_model()
-    like_state = make_train_state(like_model, kwargs["optimizer"])
-    like_checkpoint = TrainingCheckpoint(
-        state=like_state,
-        ema_model=like_model,
+
+def test_train_resume_continues_lr_schedule_step(tmp_path):
+    """Resumed runs should log LR values from the saved schedule step."""
+    dataloader = list(_make_fake_dataloader(B=2, num_batches=2))
+    val_dataloader = _fake_val_dataloader(B=2)
+    lr_values = []
+
+    def lr_schedule(step):
+        lr_values.append(int(step))
+        return 1.0 / (int(step) + 1)
+
+    kwargs = _make_train_kwargs(num_epochs=1, num_steps_per_epoch=1)
+    kwargs["checkpoint_dir"] = str(tmp_path)
+    kwargs["checkpoint_every"] = 100
+    kwargs["clearml_task"] = ScalarLogTask()
+    kwargs["lr_schedule"] = lr_schedule
+    model = _make_small_model()
+    state = _make_resume_train_state(model, kwargs)
+    resume_payload = TrainingCheckpoint(
+        state=state,
+        ema_model=model,
         ema_initialized=True,
-        key=jax.random.PRNGKey(0),
-        sampling_key=jax.random.PRNGKey(1),
+        key=jax.random.PRNGKey(5),
+        sampling_key=jax.random.PRNGKey(6),
         epoch=0,
         completed_microsteps=0,
         epoch_loss=0.0,
@@ -764,10 +806,35 @@ def test_train_saves_full_state_periodic_checkpoint(tmp_path):
         val_metrics={},
         train_metrics={},
         epoch_metric_results={},
+        global_optimizer_step=7,
+        lr_schedule_step=7,
     )
-    checkpoint = load_training_checkpoint(metadata["payload_path"], like_checkpoint)
-    assert checkpoint.epoch == 1
-    assert checkpoint.completed_microsteps == 0
+
+    train(
+        model=model,
+        dataloader=dataloader,
+        val_dataloader=val_dataloader,
+        resume_checkpoint=resume_payload,
+        resume_metadata={
+            "metadata_path": str(tmp_path / "checkpoint" / "metadata.json"),
+            "checkpoint_kind": "periodic",
+            "checkpoint_path": str(tmp_path / "checkpoint"),
+            "schema_version": 2,
+            "stable_hash": "hash123",
+            "epoch": 0,
+            "completed_microsteps": 0,
+            "global_optimizer_step": 7,
+            "lr_schedule_step": 7,
+            "monitor": kwargs["monitor"],
+            "monitor_mode": kwargs["monitor_mode"],
+            "microsteps_per_epoch": 1,
+        },
+        checkpoint_hash="hash123",
+        **kwargs,
+    )
+
+    assert 7 in lr_values
+    assert 8 in lr_values
 
 
 def test_train_resume_checkpoint_path_loads_sidecar_metadata(tmp_path):
@@ -798,7 +865,7 @@ def test_train_resume_checkpoint_path_loads_sidecar_metadata(tmp_path):
         model=_make_small_model(),
         dataloader=dataloader,
         val_dataloader=val_dataloader,
-        resume_checkpoint_path=metadata["payload_path"],
+        resume_checkpoint_path=metadata["checkpoint_path"],
         **resume_kwargs,
     )
 
@@ -817,7 +884,7 @@ def test_train_resumes_mid_epoch_and_normalizes_loss_with_saved_microsteps(tmp_p
     kwargs["clearml_task"] = ScalarLogTask()
     kwargs["val_every"] = 100
     model = _make_small_model()
-    state = make_train_state(model, kwargs["optimizer"])
+    state = _make_resume_train_state(model, kwargs)
     resume_payload = TrainingCheckpoint(
         state=state,
         ema_model=model,
@@ -838,6 +905,8 @@ def test_train_resumes_mid_epoch_and_normalizes_loss_with_saved_microsteps(tmp_p
         val_metrics={},
         train_metrics={},
         epoch_metric_results={},
+        global_optimizer_step=0,
+        lr_schedule_step=0,
     )
 
     train(
@@ -853,9 +922,7 @@ def test_train_resumes_mid_epoch_and_normalizes_loss_with_saved_microsteps(tmp_p
     )
 
     loss_scalars = [
-        scalar
-        for scalar in kwargs["clearml_task"].scalars
-        if scalar[0] == "train/loss"
+        scalar for scalar in kwargs["clearml_task"].scalars if scalar[0] == "train/loss"
     ]
     assert loss_scalars
     assert loss_scalars[-1][3] == 1
@@ -1002,7 +1069,7 @@ def test_train_sigterm_during_resumed_epoch_waits_for_replay_boundary(tmp_path):
     kwargs["checkpoint_every"] = 100
     kwargs["val_every"] = 100
     model = _make_small_model()
-    state = make_train_state(model, kwargs["optimizer"])
+    state = _make_resume_train_state(model, kwargs)
     resume_payload = TrainingCheckpoint(
         state=state,
         ema_model=model,
@@ -1023,6 +1090,8 @@ def test_train_sigterm_during_resumed_epoch_waits_for_replay_boundary(tmp_path):
         val_metrics={},
         train_metrics={},
         epoch_metric_results={},
+        global_optimizer_step=0,
+        lr_schedule_step=0,
     )
 
     class RequestedFlag:
@@ -1044,12 +1113,14 @@ def test_train_sigterm_during_resumed_epoch_waits_for_replay_boundary(tmp_path):
         val_dataloader=val_dataloader,
         resume_checkpoint=resume_payload,
         resume_metadata={
-            "schema_version": 1,
+            "schema_version": 2,
             "stable_hash": "hash123",
             "checkpoint_kind": "sigterm",
             "epoch": 0,
             "completed_microsteps": 1,
-            "payload_path": str(tmp_path / "resume.eqx"),
+            "checkpoint_path": str(tmp_path / "resume"),
+            "global_optimizer_step": 0,
+            "lr_schedule_step": 0,
             "monitor": "flow_matching_loss",
             "monitor_mode": "min",
             "microsteps_per_epoch": 2,
@@ -1077,7 +1148,7 @@ def test_train_sigterm_during_repeated_resume_caps_completed_microsteps(tmp_path
     kwargs["val_every"] = 100
     kwargs["loss_fn"] = constant_one_loss
     model = _make_small_model()
-    state = make_train_state(model, kwargs["optimizer"])
+    state = _make_resume_train_state(model, kwargs)
     resume_payload = TrainingCheckpoint(
         state=state,
         ema_model=model,
@@ -1098,6 +1169,8 @@ def test_train_sigterm_during_repeated_resume_caps_completed_microsteps(tmp_path
         val_metrics={},
         train_metrics={},
         epoch_metric_results={},
+        global_optimizer_step=0,
+        lr_schedule_step=0,
     )
 
     class SecondMicrostepFlag:
@@ -1127,12 +1200,14 @@ def test_train_sigterm_during_repeated_resume_caps_completed_microsteps(tmp_path
         val_dataloader=val_dataloader,
         resume_checkpoint=resume_payload,
         resume_metadata={
-            "schema_version": 1,
+            "schema_version": 2,
             "stable_hash": "hash123",
             "checkpoint_kind": "sigterm",
             "epoch": 0,
             "completed_microsteps": 3,
-            "payload_path": str(tmp_path / "resume.eqx"),
+            "checkpoint_path": str(tmp_path / "resume"),
+            "global_optimizer_step": 0,
+            "lr_schedule_step": 0,
             "monitor": "flow_matching_loss",
             "monitor_mode": "min",
             "microsteps_per_epoch": 4,
@@ -1167,8 +1242,10 @@ def test_train_sigterm_during_repeated_resume_caps_completed_microsteps(tmp_path
         val_metrics={},
         train_metrics={},
         epoch_metric_results={},
+        global_optimizer_step=0,
+        lr_schedule_step=0,
     )
-    checkpoint = load_training_checkpoint(metadata["payload_path"], like_checkpoint)
+    checkpoint = load_training_checkpoint(metadata["checkpoint_path"], like_checkpoint)
     assert checkpoint.completed_microsteps == 3
     assert checkpoint.epoch_loss / checkpoint.completed_microsteps == pytest.approx(
         11.0 / 5.0,
@@ -1372,7 +1449,9 @@ def test_train_returns_ema_model_not_live_model():
     kwargs["optimizer"] = optax.adam(1e-1)
     model = _make_small_model()
     init_leaves = jax.tree_util.tree_leaves(eqx.filter(model, eqx.is_array))
-    init_leaves = [jnp.array(leaf, copy=True).block_until_ready() for leaf in init_leaves]
+    init_leaves = [
+        jnp.array(leaf, copy=True).block_until_ready() for leaf in init_leaves
+    ]
     trained = train(
         model=model,
         dataloader=dataloader,
@@ -1415,7 +1494,11 @@ def test_train_full_state_checkpoint_keeps_ema_out_of_inference_mode(tmp_path):
     def capture_checkpoint(**kwargs):
         """Capture checkpoint payloads without writing full-state files."""
         captured_checkpoints.append(kwargs["checkpoint"])
-        return {"payload_path": str(tmp_path / "captured.eqx")}
+        return {
+            "checkpoint_path": str(tmp_path / "captured"),
+            "epoch": kwargs["checkpoint"].epoch,
+            "completed_microsteps": kwargs["checkpoint"].completed_microsteps,
+        }
 
     dataloader = list(_make_fake_dataloader(B=2, num_batches=2))
     val_dataloader = _fake_val_dataloader(B=2)
@@ -2565,11 +2648,14 @@ def test_train_forwards_project_velocity_to_time_binned_loss_step(tmp_path):
 
 def test_train_time_loss_diagnostic_disabled_preserves_epoch_metric_key(tmp_path):
     """Disabled diagnostics should preserve pre-diagnostic epoch metric keys."""
+
     def run_and_capture(time_loss_diagnostic=None):
         captured = []
 
         def fake_split(key, num=2):
-            return tuple(jnp.array([num, index], dtype=jnp.uint32) for index in range(num))
+            return tuple(
+                jnp.array([num, index], dtype=jnp.uint32) for index in range(num)
+            )
 
         def fake_prepare_jax(images_np, cond_np, key):
             batch_size = images_np.shape[0]
@@ -2595,7 +2681,9 @@ def test_train_time_loss_diagnostic_disabled_preserves_epoch_metric_key(tmp_path
 
         with (
             patch("msdflow.train.trainer.jax.random.split", side_effect=fake_split),
-            patch("msdflow.train.trainer.make_train_step", return_value=fake_train_step),
+            patch(
+                "msdflow.train.trainer.make_train_step", return_value=fake_train_step
+            ),
             patch(
                 "msdflow.train.trainer.make_prepare_batch_jax",
                 return_value=fake_prepare_jax,
@@ -2669,7 +2757,9 @@ def test_train_time_loss_diagnostic_does_not_change_training_prepare_keys(tmp_pa
             return state, jnp.array(0.0)
 
         with (
-            patch("msdflow.train.trainer.make_train_step", return_value=fake_train_step),
+            patch(
+                "msdflow.train.trainer.make_train_step", return_value=fake_train_step
+            ),
             patch(
                 "msdflow.train.trainer.make_prepare_batch_jax",
                 return_value=fake_prepare_jax,
@@ -3667,9 +3757,13 @@ def test_make_prepare_batch_jax_output_shapes():
 def test_make_prepare_batch_jax_clr_mode_returns_clr_compatible_path():
     """CLR x0 mode should keep x_t and u_t sum-zero per sample and channel."""
     batch_size = 4
-    images_np = np.random.default_rng(0).normal(
-        size=(batch_size, 2, 8, 8),
-    ).astype(np.float32)
+    images_np = (
+        np.random.default_rng(0)
+        .normal(
+            size=(batch_size, 2, 8, 8),
+        )
+        .astype(np.float32)
+    )
     images_np = images_np - images_np.mean(axis=(-2, -1), keepdims=True)
     cond_np = np.empty((batch_size, 0), dtype=np.float32)
 

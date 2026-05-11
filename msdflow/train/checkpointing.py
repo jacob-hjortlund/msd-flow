@@ -358,6 +358,22 @@ def _pickle_to_text(value: Any) -> str:
     return base64.b64encode(payload).decode("ascii")
 
 
+def _try_pickle_to_text(value: Any) -> str | None:
+    """Return encoded pickle text when a metadata value can be serialized.
+
+    Args:
+        value: Python value to encode.
+
+    Returns:
+        Base64-encoded pickle payload, or None when ``value`` cannot be
+        pickled for checkpoint metadata.
+    """
+    try:
+        return _pickle_to_text(value)
+    except (pickle.PickleError, TypeError, AttributeError):
+        return None
+
+
 def _pickle_from_text(value: str) -> Any:
     """Decode a metadata value produced by :func:`_pickle_to_text`.
 
@@ -411,12 +427,14 @@ def _collect_equinox_static_fields(
                 field_value = getattr(value, field.name)
                 field_path = (*path, _path_element("attr", name=field.name))
                 if field.metadata.get("static") is True:
-                    fields.append(
-                        {
-                            "path": list(field_path),
-                            "value": _pickle_to_text(field_value),
-                        }
-                    )
+                    encoded_value = _try_pickle_to_text(field_value)
+                    if encoded_value is not None:
+                        fields.append(
+                            {
+                                "path": list(field_path),
+                                "value": encoded_value,
+                            }
+                        )
                 else:
                     _collect_equinox_static_fields(
                         field_value,
@@ -999,6 +1017,7 @@ def save_training_checkpoint(
     checkpoint_io: OrbaxAsyncCheckpointIO | None = None,
     update_latest: bool = True,
     wait: bool = True,
+    directory_epoch: int | None = None,
 ) -> dict[str, Any]:
     """Save a resumable Orbax training checkpoint and optional latest pointer.
 
@@ -1023,6 +1042,8 @@ def save_training_checkpoint(
             ``checkpoint_io.wait_training()`` or ``checkpoint_io.wait_all()``.
             If no shared ``checkpoint_io`` is supplied, the owned I/O is still
             finalized before return.
+        directory_epoch: Optional zero-based epoch index used only for the
+            checkpoint directory name. Defaults to ``checkpoint.epoch``.
 
     Returns:
         Metadata written for the checkpoint, including metadata path.
@@ -1031,9 +1052,10 @@ def save_training_checkpoint(
     owns_io = checkpoint_io is None
     latest_pathname = _latest_filename_path(latest_filename)
     run_path = Path(run_dir).expanduser().resolve()
+    path_epoch = checkpoint.epoch if directory_epoch is None else int(directory_epoch)
     checkpoint_path = run_path / checkpoint_directory_name(
         checkpoint_kind,
-        checkpoint.epoch,
+        path_epoch,
         checkpoint.completed_microsteps,
     )
     metadata_path = checkpoint_path / "metadata.json"
