@@ -276,8 +276,25 @@ def make_train_step(
         loss_fn:   Differentiable loss callable with signature
                    ``(model, x_t, u_t, t, cond, cond_mask, key) -> scalar``.
         data_parallel: Optional data-parallel runtime configuration.
+
+    Returns:
+        JIT-compiled callable returning ``(new_state, loss, acc_grads)``. When
+        the optimizer state does not come from ``optax.MultiSteps``,
+        ``acc_grads`` is the current microstep gradient tree.
     """
     data_parallel = resolve_data_parallel_config(data_parallel)
+
+    def accumulated_grads(grads, opt_state):
+        """Return the current averaged accumulated gradients for diagnostics."""
+        if not hasattr(opt_state, "acc_grads") or not hasattr(opt_state, "mini_step"):
+            return grads
+
+        acc_grads = jax.tree.map(
+            lambda grad, acc: acc + (grad - acc) / (opt_state.mini_step + 1),
+            grads,
+            opt_state.acc_grads,
+        )
+        return optax.tree.cast_like(acc_grads, grads)
 
     @eqx.filter_jit(donate="all")
     @eqx.debug.assert_max_traces(max_traces=1)
@@ -289,7 +306,7 @@ def make_train_step(
         cond: jax.Array,
         cond_mask: jax.Array,
         key: jax.Array,
-    ) -> tuple[TrainState, jax.Array]:
+    ) -> tuple[TrainState, jax.Array, Any]:
         if data_parallel.enabled:
             state = eqx.filter_shard(state, data_parallel.model_sharding)
             x_t, u_t, t, cond, cond_mask, key = eqx.filter_shard(
@@ -300,14 +317,6 @@ def make_train_step(
             state.model, x_t, u_t, t, cond, cond_mask, key
         )
 
-        opt_state = state.opt_state
-        acc_grads = jax.tree.map(
-            lambda grad, acc: acc + (grad - acc) / (opt_state.mini_step + 1),
-            grads,
-            opt_state.acc_grads,
-        )
-        acc_grads = optax.tree.cast_like(acc_grads, grads)
-
         updates, new_opt_state = optimizer.update(
             grads, state.opt_state, eqx.filter(state.model, eqx.is_array)
         )
@@ -315,14 +324,13 @@ def make_train_step(
         new_state = TrainState(model=new_model, opt_state=new_opt_state)
         if data_parallel.enabled:
             new_state = eqx.filter_shard(new_state, data_parallel.model_sharding)
-        return new_state, loss, acc_grads
+        return new_state, loss, accumulated_grads(grads, state.opt_state)
 
     return train_step
 
 
-@eqx.filter_jit
-@eqx.debug.assert_max_traces(max_traces=1)
-def grad_clip_diagnostics(grads, global_norm: float | None = None):
+def _grad_clip_diagnostics_impl(grads, global_norm: float | None = None):
+    """Compute gradient clipping diagnostics from a gradient tree."""
     grad_norm_pre_clip = optax.tree.norm(grads)
 
     if global_norm is None:
@@ -345,7 +353,40 @@ def grad_clip_diagnostics(grads, global_norm: float | None = None):
 
 
 @eqx.filter_jit
-@eqx.debug.assert_max_traces(max_traces=1)
+def grad_clip_diagnostics(grads, global_norm: float | None = None):
+    """Return gradient clipping diagnostics for direct helper callers."""
+    return _grad_clip_diagnostics_impl(grads, global_norm)
+
+
+def make_grad_clip_diagnostics_step():
+    """Return a per-training-run JIT guard for gradient diagnostics.
+
+    Returns:
+        JIT-compiled callable guarded against retracing within one training
+        loop.
+    """
+
+    @eqx.filter_jit
+    @eqx.debug.assert_max_traces(max_traces=1)
+    def grad_clip_step(grads, global_norm: float | None = None):
+        return _grad_clip_diagnostics_impl(grads, global_norm)
+
+    return grad_clip_step
+
+
+def _ema_update_impl(ema_model, new_model, decay: float):
+    """Update EMA model arrays and preserve static leaves."""
+    ema_arrays, static = eqx.partition(ema_model, eqx.is_array)
+    new_arrays, _ = eqx.partition(new_model, eqx.is_array)
+    updated = jax.tree_util.tree_map(
+        lambda e, m: decay * e + (1.0 - decay) * m,
+        ema_arrays,
+        new_arrays,
+    )
+    return eqx.combine(updated, static)
+
+
+@eqx.filter_jit
 def ema_update(ema_model, new_model, decay: float):
     """Update EMA model weights using exponential moving average.
 
@@ -360,14 +401,23 @@ def ema_update(ema_model, new_model, decay: float):
     Returns:
         Updated EMA model with blended array leaves.
     """
-    ema_arrays, static = eqx.partition(ema_model, eqx.is_array)
-    new_arrays, _ = eqx.partition(new_model, eqx.is_array)
-    updated = jax.tree_util.tree_map(
-        lambda e, m: decay * e + (1.0 - decay) * m,
-        ema_arrays,
-        new_arrays,
-    )
-    return eqx.combine(updated, static)
+    return _ema_update_impl(ema_model, new_model, decay)
+
+
+def make_ema_update_step():
+    """Return a per-training-run JIT guard for EMA updates.
+
+    Returns:
+        JIT-compiled EMA update callable guarded against retracing within one
+        training loop.
+    """
+
+    @eqx.filter_jit
+    @eqx.debug.assert_max_traces(max_traces=1)
+    def ema_update_step(ema_model, new_model, decay: float):
+        return _ema_update_impl(ema_model, new_model, decay)
+
+    return ema_update_step
 
 
 def _copy_array_tree(tree):
@@ -595,7 +645,7 @@ def batch_metric_loop(
     prepare_jax: callable,
     num_batches: int = 0,
     data_parallel: DataParallelConfig | None = None,
-) -> dict:
+) -> tuple[dict[str, float], int]:
     """Stream a dataloader through a batch metric step and return per-metric means.
 
     Args:
@@ -609,32 +659,40 @@ def batch_metric_loop(
         data_parallel: Optional data-parallel runtime configuration.
 
     Returns:
-        ``dict[str, float]`` mapping metric name to its mean value over all
-        processed batches. Batches are weighted equally regardless of size;
-        use uniform batch sizes for unbiased estimates. Returns an empty dict
-        if the dataloader yields no batches.
+        Tuple of ``(metrics, num_eval_batches)``. ``metrics`` maps metric name
+        to its mean value over all processed batches. Batches are weighted
+        equally regardless of size; use uniform batch sizes for unbiased
+        estimates. ``num_eval_batches`` is the requested loop length after
+        validation.
     """
     data_parallel = resolve_data_parallel_config(data_parallel)
     ema_model = shard_model(ema_model, data_parallel)
 
     totals: dict = {}
     n_batches = 0
-    n_dl = len(dataloader)
+    try:
+        n_dl = len(dataloader)
+    except TypeError:
+        n_dl = None
     num_batches_given = num_batches > 0
-    num_batches_invalid = num_batches > n_dl and num_batches_given
+    num_batches_invalid = n_dl is not None and num_batches > n_dl and num_batches_given
     if num_batches_invalid:
         logger.warning(
             f"Invalid num_batches: {num_batches}. Using full dataloader with {n_dl} batches."
         )
         num_batches = 0
-    total = num_batches if num_batches > 0 else len(dataloader)
     data_iter = iter(dataloader)
+    total = num_batches if num_batches > 0 else n_dl
+    progress = range(total) if total is not None else data_iter
 
-    for _ in tqdm(range(total), desc="Batch metrics", leave=False, dynamic_ncols=True):
-        try:
-            batch = next(data_iter)
-        except StopIteration:
-            break
+    for item in tqdm(progress, desc="Batch metrics", leave=False, dynamic_ncols=True):
+        if total is None:
+            batch = item
+        else:
+            try:
+                batch = next(data_iter)
+            except StopIteration:
+                break
         batch_key, key = jax.random.split(key, 2)
         images_np, cond_np = prepare_batch(batch)
         t, x_t, u_t, cond, cond_mask, dropout_keys = prepare_jax(
@@ -650,8 +708,8 @@ def batch_metric_loop(
         n_batches += 1
 
     if n_batches == 0:
-        return {}
-    return {k: v / n_batches for k, v in totals.items()}, total
+        return {}, 0
+    return {k: v / n_batches for k, v in totals.items()}, n_batches
 
 
 def time_binned_loss_loop(
@@ -914,7 +972,7 @@ def train(
         batch_metrics:          List of callables with signature
                                 ``(model, x_t, u_t, t, cond, cond_mask, key) -> scalar``.
                                 Evaluated every ``val_every`` epochs over the full
-                                val loader and ``num_train_eval_batches`` train batches.
+                                val loader and ``num_eval_batches`` train batches.
         epoch_metrics:          List of callables with signature
                                 ``(model, val_dataloader, key) -> scalar | dict``.
                                 Evaluated every ``val_every`` epochs. Receives
@@ -941,8 +999,9 @@ def train(
         val_every:              Run validation every this many epochs.
         checkpoint_every:       Save checkpoints every this many epochs.
         checkpoint_dir:         Directory for checkpoint files.
-        num_train_eval_batches: Batches from train loader for batch metrics.
-                                ``0`` = all.
+        num_eval_batches: Batches from train and validation loaders for batch
+            metrics. ``0`` = all validation batches, then the same observed
+            validation batch count is reused for train metrics.
         clearml_task:           ClearML Task for experiment tracking, or None
                                 to disable all tracking (default).
         sample_fn:              Callable ``(model, key, num_samples) ->
@@ -1065,6 +1124,8 @@ def train(
         batch_metrics,
         data_parallel=data_parallel_config,
     )
+    ema_update_step = make_ema_update_step()
+    grad_clip_diagnostics_step = make_grad_clip_diagnostics_step()
     time_binned_loss_step = None
     if time_loss_enabled:
         time_binned_loss_step = make_time_binned_loss_step(
@@ -1386,14 +1447,14 @@ def train(
                                     ema_model = _copy_array_tree(state.model)
                                     ema_initialized = True
                                 else:
-                                    ema_model = ema_update(
+                                    ema_model = ema_update_step(
                                         ema_model,
                                         state.model,
                                         ema_decay,
                                     )
 
                                 grad_norm, was_clipped, clip_scale = (
-                                    grad_clip_diagnostics(
+                                    grad_clip_diagnostics_step(
                                         grads=acc_grads, global_norm=global_norm
                                     )
                                 )

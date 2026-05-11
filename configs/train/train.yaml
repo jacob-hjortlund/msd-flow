@@ -82,9 +82,9 @@ trainer:
     hash: null
     hash_exclude:
       - clearml
-      - train.resume
-      - train.num_epochs
-      - train.time_loss_diagnostic
+      - train.trainer.resume
+      - train.trainer.num_epochs
+      - train.trainer.time_loss_diagnostic
     latest_filename: latest.json
     save_on_sigterm: true
   val_every: 1

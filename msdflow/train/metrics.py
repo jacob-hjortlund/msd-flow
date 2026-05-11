@@ -443,9 +443,7 @@ def _frechet_distance(
     return float(diff @ diff + np.trace(sigma_real + sigma_fake - 2 * covmean))
 
 
-@eqx.filter_jit
-@eqx.debug.assert_max_traces(max_traces=2)
-def _extract_batch(encoder, images):
+def _extract_batch_impl(encoder, images):
     """Encode a batch of images into feature vectors.
 
     Args:
@@ -456,6 +454,28 @@ def _extract_batch(encoder, images):
         Feature matrix of shape (B, D).
     """
     return jax.vmap(encoder)(images)
+
+
+@eqx.filter_jit
+def _extract_batch(encoder, images):
+    """Encode one batch for direct helper callers."""
+    return _extract_batch_impl(encoder, images)
+
+
+def _make_extract_batch_step():
+    """Return a per-accumulator JIT guard for feature extraction.
+
+    Returns:
+        JIT-compiled feature extraction callable guarded against repeated
+        retracing for one accumulator.
+    """
+
+    @eqx.filter_jit
+    @eqx.debug.assert_max_traces(max_traces=2)
+    def extract_batch(encoder, images):
+        return _extract_batch_impl(encoder, images)
+
+    return extract_batch
 
 
 class FIDAccumulator:
@@ -471,18 +491,23 @@ class FIDAccumulator:
 
     def __init__(self, encoder: callable):
         self.encoder = encoder
+        self._extract_batch = _make_extract_batch_step()
         self._sum_features = None  # np.ndarray (D,)
         self._sum_outer = None  # np.ndarray (D, D)
         self._n = 0
         self._cached_real = None  # set by compute_fid_metrics
 
-    def update(self, images: jax.Array) -> None:
+    def update(self, images: jax.Array, n_images: int | None = None) -> None:
         """Encode a batch and update running accumulators.
 
         Args:
             images: Batch of images, shape (B, C, H, W).
+            n_images: Optional number of leading encoded images to accumulate.
+                ``None`` accumulates the whole batch.
         """
-        features = np.asarray(_extract_batch(self.encoder, images))  # (B, D)
+        features = np.asarray(self._extract_batch(self.encoder, images))  # (B, D)
+        if n_images is not None:
+            features = features[: int(n_images)]
 
         if self._sum_features is None:
             D = features.shape[1]
@@ -510,7 +535,8 @@ class FIDAccumulator:
     def reset(self) -> None:
         """Zero streaming accumulators for reuse across epochs.
 
-        Does not clear cached real-image statistics (``_cached_real``).
+        Does not clear cached real-image statistics (``_cached_real``) or
+        replace the per-accumulator feature-extraction trace guard.
         """
         self._sum_features = None
         self._sum_outer = None
@@ -655,14 +681,39 @@ def _log_parallel_gen_batch_size_adjustment(
     )
 
 
-@eqx.filter_jit(donate="all-except-first")
-@eqx.debug.assert_max_traces(max_traces=1)
-def _batched_generate(model, keys, generate_fn):
+def _batched_generate_impl(model, keys, generate_fn):
+    """Generate a fake-image batch with vmap."""
     return jax.vmap(lambda key: generate_fn(model, key=key))(keys)
 
 
 @eqx.filter_jit
-@eqx.debug.assert_max_traces(max_traces=1)
+def _batched_generate(model, keys, generate_fn):
+    """Generate a fake-image batch for direct helper callers."""
+    return _batched_generate_impl(model, keys, generate_fn)
+
+
+def _make_batched_generate_step():
+    """Return a per-FID-call JIT guard for serial generation.
+
+    Returns:
+        JIT-compiled generation callable guarded against retracing within one
+        FID metric computation.
+    """
+
+    @eqx.filter_jit(donate="all-except-first")
+    @eqx.debug.assert_max_traces(max_traces=1)
+    def batched_generate(model, keys, generate_fn):
+        return _batched_generate_impl(model, keys, generate_fn)
+
+    return batched_generate
+
+
+def _parallel_batched_generate_impl(model, keys, generate_fn):
+    """Generate a fake-image batch from sharded keys."""
+    return jax.vmap(lambda key: generate_fn(model, key=key))(keys)
+
+
+@eqx.filter_jit
 def _parallel_batched_generate(model, keys, generate_fn):
     """Generate a sharded fake-image batch without donating the model.
 
@@ -674,7 +725,23 @@ def _parallel_batched_generate(model, keys, generate_fn):
     Returns:
         Generated image batch.
     """
-    return jax.vmap(lambda key: generate_fn(model, key=key))(keys)
+    return _parallel_batched_generate_impl(model, keys, generate_fn)
+
+
+def _make_parallel_batched_generate_step():
+    """Return a per-FID-call JIT guard for parallel generation.
+
+    Returns:
+        JIT-compiled parallel generation callable guarded against retracing
+        within one FID metric computation.
+    """
+
+    @eqx.filter_jit
+    @eqx.debug.assert_max_traces(max_traces=1)
+    def parallel_batched_generate(model, keys, generate_fn):
+        return _parallel_batched_generate_impl(model, keys, generate_fn)
+
+    return parallel_batched_generate
 
 
 def _device_put_array_leaves(pytree: Any, sharding: Any | None) -> Any:
@@ -701,6 +768,8 @@ def _generate_fake_images(
     keys: jax.Array,
     generate_fn: callable,
     fid_parallel: DataParallelConfig,
+    batched_generate: callable,
+    parallel_batched_generate: callable,
 ) -> jax.Array:
     """Generate fake images through the selected FID generation path.
 
@@ -709,16 +778,78 @@ def _generate_fake_images(
         keys: PRNG keys for fake-image generation.
         generate_fn: Callable ``(model, key=...) -> image``.
         fid_parallel: Resolved FID parallel-generation config.
+        batched_generate: Per-call serial generation step.
+        parallel_batched_generate: Per-call parallel generation step.
 
     Returns:
         Generated image batch as a normal JAX array.
     """
     if not fid_parallel.enabled:
-        return _batched_generate(model, keys, generate_fn)
+        return batched_generate(model, keys, generate_fn)
 
     sharded_keys = jax.device_put(keys, fid_parallel.data_sharding)
-    fake_images = _parallel_batched_generate(model, sharded_keys, generate_fn)
+    fake_images = parallel_batched_generate(model, sharded_keys, generate_fn)
     return jnp.asarray(jax.device_get(fake_images))
+
+
+def _limited_image_chunks(
+    val_dataloader,
+    n_images: int,
+    chunk_size: int,
+):
+    """Yield validation images in stable-size chunks.
+
+    Args:
+        val_dataloader: Iterable yielding ``(images, meta)`` tuples.
+        n_images: Maximum number of leading images to consume.
+        chunk_size: Leading dimension for yielded arrays.
+
+    Yields:
+        Tuples of ``(images, n_valid)`` where ``images`` has leading size
+        ``chunk_size`` and ``n_valid`` is the number of rows that should
+        contribute to statistics. The final chunk is zero-padded when needed.
+
+    Raises:
+        ValueError: If ``chunk_size`` is less than one.
+    """
+    chunk_size = int(chunk_size)
+    if chunk_size < 1:
+        raise ValueError(f"chunk_size must be >= 1, got {chunk_size}")
+
+    remaining = int(n_images)
+    buffer = None
+    for images, _meta in val_dataloader:
+        if remaining <= 0:
+            break
+
+        if hasattr(images, "numpy"):
+            batch = images.numpy()
+        else:
+            batch = np.asarray(images)
+        take = min(batch.shape[0], remaining)
+        if take <= 0:
+            continue
+
+        batch = batch[:take]
+        remaining -= take
+        if buffer is None:
+            buffer = batch
+        else:
+            buffer = np.concatenate((buffer, batch), axis=0)
+
+        while buffer is not None and buffer.shape[0] >= chunk_size:
+            yield jnp.asarray(buffer[:chunk_size]), chunk_size
+            buffer = buffer[chunk_size:]
+            if buffer.shape[0] == 0:
+                buffer = None
+
+    if buffer is None or buffer.shape[0] == 0:
+        return
+
+    n_valid = int(buffer.shape[0])
+    pad_width = [(0, chunk_size - n_valid)]
+    pad_width.extend((0, 0) for _ in range(buffer.ndim - 1))
+    yield jnp.asarray(np.pad(buffer, pad_width, mode="constant")), n_valid
 
 
 def compute_fid_metrics(
@@ -795,19 +926,13 @@ def compute_fid_metrics(
         )
         n_real_seen = 0
 
-        for images, _meta in val_dataloader:
-            images = images.numpy()
-            images = jnp.asarray(images)
-
-            remaining = n_real - n_real_seen
-            if remaining <= 0:
-                break
-
-            batch_n = min(images.shape[0], remaining)
-            images = images[:batch_n]
-
+        for images, batch_n in _limited_image_chunks(
+            val_dataloader,
+            n_images=n_real,
+            chunk_size=effective_gen_batch_size,
+        ):
             for acc in accumulators.values():
-                acc.update(images)
+                acc.update(images, n_images=batch_n)
 
             n_real_seen += batch_n
             pbar.update(batch_n)
@@ -819,7 +944,7 @@ def compute_fid_metrics(
             acc.reset()
 
     # --- Determine n_samples ---
-    if (n_samples == 0) or (n_samples == None):
+    if (n_samples == 0) or (n_samples is None):
         n_samples = max(acc._cached_real[2] for acc in accumulators.values())
 
     # --- Fake-image pass ---
@@ -830,16 +955,14 @@ def compute_fid_metrics(
     if fid_parallel.enabled:
         generation_model = _device_put_array_leaves(model, fid_parallel.model_sharding)
 
+    batched_generate = _make_batched_generate_step()
+    parallel_batched_generate = _make_parallel_batched_generate_step()
     n_generated = 0
 
     pbar = tqdm(total=n_samples, desc="FID fake", leave=False, dynamic_ncols=True)
     while n_generated < n_samples:
         remaining = n_samples - n_generated
-        chunk_size = (
-            effective_gen_batch_size
-            if fid_parallel.enabled
-            else min(effective_gen_batch_size, remaining)
-        )
+        chunk_size = effective_gen_batch_size
         all_keys = jax.random.split(key, chunk_size + 1)
         key = all_keys[0]
         sub_keys = all_keys[1:]
@@ -848,11 +971,12 @@ def compute_fid_metrics(
             keys=sub_keys,
             generate_fn=generate_fn,
             fid_parallel=fid_parallel,
+            batched_generate=batched_generate,
+            parallel_batched_generate=parallel_batched_generate,
         )
         consume_n = min(remaining, fake_images.shape[0])
-        fake_images = fake_images[:consume_n]
         for acc in accumulators.values():
-            acc.update(fake_images)
+            acc.update(fake_images, n_images=consume_n)
         n_generated += consume_n
         pbar.update(consume_n)
     pbar.close()

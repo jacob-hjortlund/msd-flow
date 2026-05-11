@@ -37,15 +37,15 @@ def test_train_config_contains_resume_defaults():
     """Hydra train config should expose resume defaults."""
     cfg = OmegaConf.load("configs/train/train.yaml")
 
-    assert cfg.resume.restart is False
-    assert cfg.resume.auto is True
-    assert cfg.resume.hash is None
-    assert "clearml" in list(cfg.resume.hash_exclude)
-    assert "train.resume" in list(cfg.resume.hash_exclude)
-    assert "train.num_epochs" in list(cfg.resume.hash_exclude)
-    assert "train.time_loss_diagnostic" in list(cfg.resume.hash_exclude)
-    assert cfg.resume.latest_filename == "latest.json"
-    assert cfg.resume.save_on_sigterm is True
+    assert cfg.trainer.resume.restart is False
+    assert cfg.trainer.resume.auto is True
+    assert cfg.trainer.resume.hash is None
+    assert "clearml" in list(cfg.trainer.resume.hash_exclude)
+    assert "train.trainer.resume" in list(cfg.trainer.resume.hash_exclude)
+    assert "train.trainer.num_epochs" in list(cfg.trainer.resume.hash_exclude)
+    assert "train.trainer.time_loss_diagnostic" in list(cfg.trainer.resume.hash_exclude)
+    assert cfg.trainer.resume.latest_filename == "latest.json"
+    assert cfg.trainer.resume.save_on_sigterm is True
 
 
 def test_train_config_enables_time_loss_diagnostic_by_default():
@@ -54,13 +54,13 @@ def test_train_config_enables_time_loss_diagnostic_by_default():
         config_dir=str(Path("configs").resolve()), version_base=None
     ):
         cfg = compose(
-            config_name="config", overrides=["train.num_train_eval_batches=7"]
+            config_name="config", overrides=["train.trainer.num_eval_batches=7"]
         )
 
     assert cfg.train.trainer.time_loss_diagnostic.enabled is True
     assert cfg.train.trainer.time_loss_diagnostic.split == "val"
     assert cfg.train.trainer.time_loss_diagnostic.num_bins == 20
-    assert cfg.train.trainer.num_train_eval_batches == 7
+    assert cfg.train.trainer.num_eval_batches == 7
     assert cfg.train.trainer.time_loss_diagnostic.num_batches == 7
     assert cfg.train.trainer.time_loss_diagnostic.log_heatmap is True
 
@@ -69,14 +69,19 @@ def test_train_config_exposes_clr_defaults():
     """Default train config should expose opt-in CLR controls as no-ops."""
     cfg = OmegaConf.load("configs/train/train.yaml")
 
-    assert cfg.loss_fn.project_velocity is False
-    assert cfg.batch_metrics[0].project_velocity is False
-    assert cfg.x0_mode == "gaussian"
-    assert cfg.project_velocity is False
-    assert cfg["_epoch_metrics_dict"].fid_metric.generate_fn.x0_mode == "gaussian"
-    assert cfg["_epoch_metrics_dict"].fid_metric.generate_fn.project_velocity is False
-    assert cfg.sample_fn.x0_mode == "gaussian"
-    assert cfg.sample_fn.project_velocity is False
+    assert cfg.trainer.loss_fn.project_velocity is False
+    assert cfg.trainer.batch_metrics[0].project_velocity is False
+    assert cfg.trainer.x0_mode == "gaussian"
+    assert cfg.trainer.project_velocity is False
+    assert (
+        cfg.trainer["_epoch_metrics_dict"].fid_metric.generate_fn.x0_mode == "gaussian"
+    )
+    assert (
+        cfg.trainer["_epoch_metrics_dict"].fid_metric.generate_fn.project_velocity
+        is False
+    )
+    assert cfg.trainer.sample_fn.x0_mode == "gaussian"
+    assert cfg.trainer.sample_fn.project_velocity is False
 
 
 def test_run_sh_uses_stable_checkpoint_root():
@@ -86,9 +91,9 @@ def test_run_sh_uses_stable_checkpoint_root():
     assert "#SBATCH --signal=TERM@600" in text
     assert 'export CHECKPOINT_ROOT="$PROJECT_ROOT/checkpoints"' in text
     assert '"$CHECKPOINT_ROOT"' in text
-    assert '"train.checkpoint_dir=${CHECKPOINT_ROOT}"' in text
-    assert '"train.resume.restart=false"' in text
-    assert '"train.resume.save_on_sigterm=true"' in text
+    assert '"train.trainer.checkpoint_dir=${CHECKPOINT_ROOT}"' in text
+    assert '"train.trainer.resume.restart=false"' in text
+    assert '"train.trainer.resume.save_on_sigterm=true"' in text
 
 
 def test_compute_config_hash_ignores_excluded_paths():
@@ -97,8 +102,10 @@ def test_compute_config_hash_ignores_excluded_paths():
         {
             "clearml": {"task_name": "job-a"},
             "train": {
-                "num_epochs": 100,
-                "resume": {"restart": False},
+                "trainer": {
+                    "num_epochs": 100,
+                    "resume": {"restart": False},
+                },
                 "optimizer": {"learning_rate": 1.0e-4},
             },
             "model": {"base_channels": 64},
@@ -108,8 +115,10 @@ def test_compute_config_hash_ignores_excluded_paths():
         {
             "clearml": {"task_name": "job-b"},
             "train": {
-                "num_epochs": 200,
-                "resume": {"restart": True},
+                "trainer": {
+                    "num_epochs": 200,
+                    "resume": {"restart": True},
+                },
                 "optimizer": {"learning_rate": 1.0e-4},
             },
             "model": {"base_channels": 64},
@@ -118,18 +127,26 @@ def test_compute_config_hash_ignores_excluded_paths():
 
     hash_a, payload_a = compute_config_hash(
         cfg_a,
-        exclude_paths=["clearml", "train.resume", "train.num_epochs"],
+        exclude_paths=[
+            "clearml",
+            "train.trainer.resume",
+            "train.trainer.num_epochs",
+        ],
     )
     hash_b, payload_b = compute_config_hash(
         cfg_b,
-        exclude_paths=["clearml", "train.resume", "train.num_epochs"],
+        exclude_paths=[
+            "clearml",
+            "train.trainer.resume",
+            "train.trainer.num_epochs",
+        ],
     )
 
     assert hash_a == hash_b
     assert payload_a == payload_b
     assert "clearml" not in payload_a
-    assert "resume" not in payload_a["train"]
-    assert "num_epochs" not in payload_a["train"]
+    assert "resume" not in payload_a["train"]["trainer"]
+    assert "num_epochs" not in payload_a["train"]["trainer"]
 
 
 def test_composed_config_hash_ignores_time_loss_diagnostic_defaults():
@@ -147,28 +164,28 @@ def test_composed_config_hash_ignores_time_loss_diagnostic_defaults():
             overrides=["work_dir=/tmp/msdflow-test"],
         )
 
-    cfg_b.train.time_loss_diagnostic.enabled = (
-        not cfg_a.train.time_loss_diagnostic.enabled
+    cfg_b.train.trainer.time_loss_diagnostic.enabled = (
+        not cfg_a.train.trainer.time_loss_diagnostic.enabled
     )
-    cfg_b.train.time_loss_diagnostic.num_bins = (
-        cfg_a.train.time_loss_diagnostic.num_bins + 1
+    cfg_b.train.trainer.time_loss_diagnostic.num_bins = (
+        cfg_a.train.trainer.time_loss_diagnostic.num_bins + 1
     )
-    cfg_b.train.time_loss_diagnostic.log_heatmap = (
-        not cfg_a.train.time_loss_diagnostic.log_heatmap
+    cfg_b.train.trainer.time_loss_diagnostic.log_heatmap = (
+        not cfg_a.train.trainer.time_loss_diagnostic.log_heatmap
     )
 
     hash_a, payload_a = compute_config_hash(
         cfg_a,
-        exclude_paths=list(cfg_a.train.resume.hash_exclude),
+        exclude_paths=list(cfg_a.train.trainer.resume.hash_exclude),
     )
     hash_b, payload_b = compute_config_hash(
         cfg_b,
-        exclude_paths=list(cfg_b.train.resume.hash_exclude),
+        exclude_paths=list(cfg_b.train.trainer.resume.hash_exclude),
     )
 
     assert hash_a == hash_b
     assert payload_a == payload_b
-    assert "time_loss_diagnostic" not in payload_a["train"]
+    assert "time_loss_diagnostic" not in payload_a["train"]["trainer"]
 
 
 def test_composed_config_hash_changes_for_clr_defaults():
@@ -187,19 +204,19 @@ def test_composed_config_hash_changes_for_clr_defaults():
         )
 
     without_payload = OmegaConf.to_container(cfg_without_defaults, resolve=True)
-    without_train = without_payload["train"]
-    without_train["loss_fn"].pop("project_velocity")
-    without_train["batch_metrics"][0].pop("project_velocity")
-    without_train["_epoch_metrics_dict"]["fid_metric"]["generate_fn"].pop("x0_mode")
-    without_train["_epoch_metrics_dict"]["fid_metric"]["generate_fn"].pop(
+    without_trainer = without_payload["train"]["trainer"]
+    without_trainer["loss_fn"].pop("project_velocity")
+    without_trainer["batch_metrics"][0].pop("project_velocity")
+    without_trainer["_epoch_metrics_dict"]["fid_metric"]["generate_fn"].pop("x0_mode")
+    without_trainer["_epoch_metrics_dict"]["fid_metric"]["generate_fn"].pop(
         "project_velocity"
     )
-    without_train["epoch_metrics"][0]["generate_fn"].pop("x0_mode")
-    without_train["epoch_metrics"][0]["generate_fn"].pop("project_velocity")
-    without_train.pop("x0_mode")
-    without_train.pop("project_velocity")
-    without_train["sample_fn"].pop("x0_mode")
-    without_train["sample_fn"].pop("project_velocity")
+    without_trainer["epoch_metrics"][0]["generate_fn"].pop("x0_mode")
+    without_trainer["epoch_metrics"][0]["generate_fn"].pop("project_velocity")
+    without_trainer.pop("x0_mode")
+    without_trainer.pop("project_velocity")
+    without_trainer["sample_fn"].pop("x0_mode")
+    without_trainer["sample_fn"].pop("project_velocity")
     cfg_without_defaults = OmegaConf.create(
         without_payload,
         flags={"allow_objects": True},
@@ -207,28 +224,25 @@ def test_composed_config_hash_changes_for_clr_defaults():
 
     hash_with, payload_with = compute_config_hash(
         cfg_with_defaults,
-        exclude_paths=list(cfg_with_defaults.train.resume.hash_exclude),
+        exclude_paths=list(cfg_with_defaults.train.trainer.resume.hash_exclude),
     )
     hash_without, payload_without = compute_config_hash(
         cfg_without_defaults,
-        exclude_paths=list(cfg_without_defaults.train.resume.hash_exclude),
+        exclude_paths=list(cfg_without_defaults.train.trainer.resume.hash_exclude),
     )
 
     assert hash_with != hash_without
     assert payload_with != payload_without
-    assert payload_with["train"]["x0_mode"] == "gaussian"
-    assert payload_with["train"]["project_velocity"] is False
-    assert payload_with["train"]["loss_fn"]["project_velocity"] is False
-    assert payload_with["train"]["batch_metrics"][0]["project_velocity"] is False
-    assert payload_with["train"]["sample_fn"]["x0_mode"] == "gaussian"
-    assert payload_with["train"]["sample_fn"]["project_velocity"] is False
+    payload_trainer = payload_with["train"]["trainer"]
+    assert payload_trainer["x0_mode"] == "gaussian"
+    assert payload_trainer["project_velocity"] is False
+    assert payload_trainer["loss_fn"]["project_velocity"] is False
+    assert payload_trainer["batch_metrics"][0]["project_velocity"] is False
+    assert payload_trainer["sample_fn"]["x0_mode"] == "gaussian"
+    assert payload_trainer["sample_fn"]["project_velocity"] is False
+    assert payload_trainer["epoch_metrics"][0]["generate_fn"]["x0_mode"] == "gaussian"
     assert (
-        payload_with["train"]["epoch_metrics"][0]["generate_fn"]["x0_mode"]
-        == "gaussian"
-    )
-    assert (
-        payload_with["train"]["epoch_metrics"][0]["generate_fn"]["project_velocity"]
-        is False
+        payload_trainer["epoch_metrics"][0]["generate_fn"]["project_velocity"] is False
     )
 
 
@@ -246,34 +260,36 @@ def test_composed_config_hash_changes_for_clr_opt_in():
             config_name="config",
             overrides=[
                 "work_dir=/tmp/msdflow-test",
-                "train.x0_mode=clr",
-                "train.project_velocity=true",
+                "train.trainer.x0_mode=clr",
+                "train.trainer.project_velocity=true",
             ],
         )
 
     hash_default, payload_default = compute_config_hash(
         cfg_default,
-        exclude_paths=list(cfg_default.train.resume.hash_exclude),
+        exclude_paths=list(cfg_default.train.trainer.resume.hash_exclude),
     )
     hash_clr, payload_clr = compute_config_hash(
         cfg_clr,
-        exclude_paths=list(cfg_clr.train.resume.hash_exclude),
+        exclude_paths=list(cfg_clr.train.trainer.resume.hash_exclude),
     )
 
     assert hash_default != hash_clr
-    assert payload_default["train"]["x0_mode"] == "gaussian"
-    assert payload_default["train"]["project_velocity"] is False
-    assert payload_clr["train"]["x0_mode"] == "clr"
-    assert payload_clr["train"]["project_velocity"] is True
-    assert payload_clr["train"]["loss_fn"]["project_velocity"] is True
-    assert payload_clr["train"]["batch_metrics"][0]["project_velocity"] is True
-    assert payload_clr["train"]["epoch_metrics"][0]["generate_fn"]["x0_mode"] == "clr"
+    payload_default_trainer = payload_default["train"]["trainer"]
+    payload_clr_trainer = payload_clr["train"]["trainer"]
+    assert payload_default_trainer["x0_mode"] == "gaussian"
+    assert payload_default_trainer["project_velocity"] is False
+    assert payload_clr_trainer["x0_mode"] == "clr"
+    assert payload_clr_trainer["project_velocity"] is True
+    assert payload_clr_trainer["loss_fn"]["project_velocity"] is True
+    assert payload_clr_trainer["batch_metrics"][0]["project_velocity"] is True
+    assert payload_clr_trainer["epoch_metrics"][0]["generate_fn"]["x0_mode"] == "clr"
     assert (
-        payload_clr["train"]["epoch_metrics"][0]["generate_fn"]["project_velocity"]
+        payload_clr_trainer["epoch_metrics"][0]["generate_fn"]["project_velocity"]
         is True
     )
-    assert payload_clr["train"]["sample_fn"]["x0_mode"] == "clr"
-    assert payload_clr["train"]["sample_fn"]["project_velocity"] is True
+    assert payload_clr_trainer["sample_fn"]["x0_mode"] == "clr"
+    assert payload_clr_trainer["sample_fn"]["project_velocity"] is True
 
 
 def test_compute_config_hash_changes_for_model_fields():

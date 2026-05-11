@@ -97,6 +97,17 @@ def test_accumulator_reset_clears_state():
     assert n == 0
 
 
+def test_accumulator_reset_preserves_trace_guard():
+    """Reset should not replace the shared per-accumulator extraction guard."""
+    acc = FIDAccumulator(encoder=_identity_encoder)
+    extract_batch = acc._extract_batch
+
+    acc.update(jnp.ones((2, 1, 2, 2)))
+    acc.reset()
+
+    assert acc._extract_batch is extract_batch
+
+
 def test_accumulator_single_image():
     """Accumulator works with a single image (covariance is zero matrix)."""
     image = jnp.ones((1, 1, 2, 2)) * 3.0
@@ -109,8 +120,6 @@ def test_accumulator_single_image():
     np.testing.assert_allclose(sigma, np.zeros((4, 4)), atol=1e-6)
 
 
-
-
 def _make_dummy_dataloader(n_batches, batch_size, shape=(1, 2, 2), seed=0):
     """Return a torch DataLoader yielding (images, meta) tuples.
 
@@ -120,9 +129,7 @@ def _make_dummy_dataloader(n_batches, batch_size, shape=(1, 2, 2), seed=0):
     """
     rng = np.random.default_rng(seed)
     n_total = n_batches * batch_size
-    images = torch.from_numpy(
-        rng.standard_normal((n_total, *shape)).astype(np.float32)
-    )
+    images = torch.from_numpy(rng.standard_normal((n_total, *shape)).astype(np.float32))
     meta = torch.empty(n_total, 0)
     dataset = TensorDataset(images, meta)
     return DataLoader(dataset, batch_size=batch_size, shuffle=False)
@@ -217,9 +224,9 @@ def test_effective_parallel_gen_batch_size_rounds_large_ints_without_float():
         num_devices=num_devices,
     )
 
-    assert effective == (
-        (gen_batch_size + num_devices - 1) // num_devices
-    ) * num_devices
+    assert (
+        effective == ((gen_batch_size + num_devices - 1) // num_devices) * num_devices
+    )
 
 
 def test_effective_parallel_gen_batch_size_rejects_invalid_values():
@@ -431,6 +438,29 @@ def test_compute_fid_metrics_parallel_generation_preserves_exact_n_samples():
     assert n_fake == 6
 
 
+def test_compute_fid_metrics_preserves_exact_n_samples_with_mixed_batch_shapes():
+    """FID should tolerate real and fake remainder batches without over-counting."""
+    acc = FIDAccumulator(encoder=_identity_encoder)
+    dataloader = _make_dummy_dataloader(n_batches=3, batch_size=4)
+
+    result = compute_fid_metrics(
+        accumulators={"fid": acc},
+        model=None,
+        val_dataloader=dataloader,
+        generate_fn=_dummy_generate_fn,
+        n_samples=6,
+        gen_batch_size=5,
+        key=jax.random.PRNGKey(26),
+        n_real=10,
+    )
+
+    assert np.isfinite(result["fid"])
+    _, _, n_real = acc._cached_real
+    _, _, n_fake = acc.statistics()
+    assert n_real == 10
+    assert n_fake == 6
+
+
 def _model_generate_fn(model, key):
     """Generate an image from a model array without mutating the model."""
     noise = jax.random.normal(key, model.shape)
@@ -539,8 +569,6 @@ def test_train_has_no_num_val_eval_batches_param():
     """The num_val_eval_batches parameter must be removed from train()."""
     sig = inspect.signature(train)
     assert "num_val_eval_batches" not in sig.parameters
-
-
 
 
 def test_fid_metric_delegates_to_compute_fid_metrics():
