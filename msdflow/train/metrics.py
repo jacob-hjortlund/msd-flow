@@ -830,6 +830,8 @@ def compute_fid_metrics(
     model,
     val_dataloader,
     generate_fn: callable,
+    batched_generate_wrapper: callable,
+    parallel_batched_generate_wrapper: callable,
     n_samples: int | None,
     gen_batch_size: int,
     key: jax.Array,
@@ -928,8 +930,6 @@ def compute_fid_metrics(
     if fid_parallel.enabled:
         generation_model = _device_put_array_leaves(model, fid_parallel.model_sharding)
 
-    batched_generate = _make_batched_generate_step()
-    parallel_batched_generate = _make_parallel_batched_generate_step()
     n_generated = 0
 
     pbar = tqdm(total=n_samples, desc="FID fake", leave=False, dynamic_ncols=True)
@@ -944,8 +944,8 @@ def compute_fid_metrics(
             keys=sub_keys,
             generate_fn=generate_fn,
             fid_parallel=fid_parallel,
-            batched_generate=batched_generate,
-            parallel_batched_generate=parallel_batched_generate,
+            batched_generate=batched_generate_wrapper,
+            parallel_batched_generate=parallel_batched_generate_wrapper,
         )
         consume_n = min(remaining, fake_images.shape[0])
         for acc in accumulators.values():
@@ -1000,6 +1000,8 @@ class FIDMetric:
         self.gen_batch_size = gen_batch_size
         self.n_real = n_real
         self.parallel_generation = parallel_generation
+        self.batched_generate_wrapper = _make_batched_generate_step()
+        self.parallel_batched_generate_wrapper = _make_parallel_batched_generate_step()
 
     def __call__(
         self,
@@ -1025,6 +1027,8 @@ class FIDMetric:
             model=model,
             val_dataloader=val_dataloader,
             generate_fn=self.generate_fn,
+            batched_generate_wrapper=self.batched_generate_wrapper,
+            parallel_batched_generate_wrapper=self.parallel_batched_generate_wrapper,
             n_samples=self.n_samples,
             gen_batch_size=self.gen_batch_size,
             key=key,
