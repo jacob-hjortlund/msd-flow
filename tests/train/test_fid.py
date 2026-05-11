@@ -137,6 +137,27 @@ def _make_dummy_dataloader(n_batches, batch_size, shape=(1, 2, 2), seed=0):
     return DataLoader(dataset, batch_size=batch_size, shuffle=False)
 
 
+def _make_conditioned_dataloader(
+    n_batches,
+    batch_size,
+    shape=(1, 2, 2),
+    seed=0,
+):
+    """Return a DataLoader with one scalar validation condition per image."""
+    rng = np.random.default_rng(seed)
+    n_total = n_batches * batch_size
+    images = torch.from_numpy(rng.standard_normal((n_total, *shape)).astype(np.float32))
+    meta = torch.arange(n_total, dtype=torch.float32).reshape(n_total, 1)
+    dataset = TensorDataset(images, meta)
+    return DataLoader(dataset, batch_size=batch_size, shuffle=False)
+
+
+def _guided_generate_fn(model, key, cond, guidance_scale=1.0):
+    """Generate an image whose pixels encode the supplied condition."""
+    del model, key
+    return jnp.ones((1, 2, 2), dtype=jnp.float32) * cond[0] * guidance_scale
+
+
 def _make_empty_dataloader(shape=(1, 2, 2)):
     """Return a torch DataLoader over a zero-length TensorDataset.
 
@@ -480,6 +501,121 @@ def test_compute_fid_metrics_preserves_exact_n_samples_with_mixed_batch_shapes()
     _, _, n_real = acc._cached_real
     _, _, n_fake = acc.statistics()
     assert n_real == 10
+    assert n_fake == 6
+
+
+def test_compute_fid_metrics_cfg_uses_validation_conditions():
+    """CFG FID must pass validation metadata as per-sample generation cond."""
+    acc = FIDAccumulator(encoder=_identity_encoder)
+    dataloader = _make_conditioned_dataloader(n_batches=2, batch_size=4)
+    generate_fn = functools.partial(_guided_generate_fn, guidance_scale=2.0)
+
+    result = compute_fid_metrics(
+        accumulators={"fid": acc},
+        model=None,
+        val_dataloader=dataloader,
+        generate_fn=generate_fn,
+        batched_generate_wrapper=_make_batched_generate_step(),
+        parallel_batched_generate_wrapper=_make_parallel_batched_generate_step(),
+        n_samples=3,
+        gen_batch_size=4,
+        key=jax.random.PRNGKey(30),
+        n_real=8,
+    )
+
+    assert np.isfinite(result["fid"])
+    mu_fake, _, n_fake = acc.statistics()
+    assert n_fake == 3
+    np.testing.assert_allclose(mu_fake, np.full(4, 2.0), atol=1e-6)
+
+
+def test_compute_fid_metrics_cfg_rejects_more_samples_than_real():
+    """CFG FID must reject n_samples greater than available real conditions."""
+    dataloader = _make_conditioned_dataloader(n_batches=1, batch_size=4)
+    generate_fn = functools.partial(_guided_generate_fn, guidance_scale=2.0)
+
+    with pytest.raises(ValueError, match="n_samples <= n_real"):
+        compute_fid_metrics(
+            accumulators={"fid": FIDAccumulator(encoder=_identity_encoder)},
+            model=None,
+            val_dataloader=dataloader,
+            generate_fn=generate_fn,
+            batched_generate_wrapper=_make_batched_generate_step(),
+            parallel_batched_generate_wrapper=_make_parallel_batched_generate_step(),
+            n_samples=5,
+            gen_batch_size=4,
+            key=jax.random.PRNGKey(31),
+            n_real=4,
+        )
+
+
+def test_compute_fid_metrics_cfg_rejects_empty_metadata():
+    """CFG FID must fail clearly when validation metadata is absent."""
+    dataloader = _make_dummy_dataloader(n_batches=1, batch_size=4)
+    generate_fn = functools.partial(_guided_generate_fn, guidance_scale=2.0)
+
+    with pytest.raises(ValueError, match="validation metadata"):
+        compute_fid_metrics(
+            accumulators={"fid": FIDAccumulator(encoder=_identity_encoder)},
+            model=None,
+            val_dataloader=dataloader,
+            generate_fn=generate_fn,
+            batched_generate_wrapper=_make_batched_generate_step(),
+            parallel_batched_generate_wrapper=_make_parallel_batched_generate_step(),
+            n_samples=2,
+            gen_batch_size=4,
+            key=jax.random.PRNGKey(32),
+            n_real=4,
+        )
+
+
+def test_compute_fid_metrics_cfg_allows_fewer_samples_than_real():
+    """CFG FID may generate fewer fake samples than cached real samples."""
+    acc = FIDAccumulator(encoder=_identity_encoder)
+    dataloader = _make_conditioned_dataloader(n_batches=2, batch_size=4)
+    generate_fn = functools.partial(_guided_generate_fn, guidance_scale=2.0)
+
+    compute_fid_metrics(
+        accumulators={"fid": acc},
+        model=None,
+        val_dataloader=dataloader,
+        generate_fn=generate_fn,
+        batched_generate_wrapper=_make_batched_generate_step(),
+        parallel_batched_generate_wrapper=_make_parallel_batched_generate_step(),
+        n_samples=2,
+        gen_batch_size=4,
+        key=jax.random.PRNGKey(33),
+        n_real=8,
+    )
+
+    _, _, n_real = acc._cached_real
+    _, _, n_fake = acc.statistics()
+    assert n_real == 8
+    assert n_fake == 2
+
+
+def test_compute_fid_metrics_parallel_generation_with_cfg_conditions():
+    """Parallel FID generation must shard and pass validation conditions."""
+    acc = FIDAccumulator(encoder=_identity_encoder)
+    dataloader = _make_conditioned_dataloader(n_batches=2, batch_size=4)
+    generate_fn = functools.partial(_guided_generate_fn, guidance_scale=2.0)
+
+    result = compute_fid_metrics(
+        accumulators={"fid": acc},
+        model=None,
+        val_dataloader=dataloader,
+        generate_fn=generate_fn,
+        batched_generate_wrapper=_make_batched_generate_step(),
+        parallel_batched_generate_wrapper=_make_parallel_batched_generate_step(),
+        n_samples=6,
+        gen_batch_size=4,
+        key=jax.random.PRNGKey(36),
+        n_real=8,
+        parallel_generation={"enabled": True, "min_devices": 1},
+    )
+
+    assert np.isfinite(result["fid"])
+    _, _, n_fake = acc.statistics()
     assert n_fake == 6
 
 

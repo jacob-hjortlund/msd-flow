@@ -537,6 +537,35 @@ class FIDAccumulator:
         self._n = 0
 
 
+@dataclass
+class FIDConditionCache:
+    """Cached validation conditions shared by all FID accumulators.
+
+    Attributes:
+        conditions: Cached validation metadata with shape ``(N, cond_dim)``.
+        n_real: Number of real validation rows represented by ``conditions``.
+    """
+
+    conditions: np.ndarray | None = None
+    n_real: int | None = None
+
+    def matches(self, n_real: int) -> bool:
+        """Return whether the cache contains conditions for ``n_real`` rows.
+
+        Args:
+            n_real: Required real validation row count.
+
+        Returns:
+            ``True`` when this cache can supply conditions for the requested
+            real-image population.
+        """
+        return (
+            self.conditions is not None
+            and self.n_real == int(n_real)
+            and self.conditions.shape[0] >= int(n_real)
+        )
+
+
 def _parse_parallel_generation_enabled(value: Any) -> bool:
     """Parse a FID parallel-generation enabled flag.
 
@@ -675,9 +704,41 @@ def _log_parallel_gen_batch_size_adjustment(
     )
 
 
-def _batched_generate_impl(model, keys, generate_fn):
-    """Generate a fake-image batch with vmap."""
-    return jax.vmap(lambda key: generate_fn(model, key=key))(keys)
+def _generate_fn_guidance_scale(generate_fn: callable) -> float:
+    """Return the configured guidance scale for a generation callable.
+
+    Args:
+        generate_fn: Generation function or ``functools.partial``.
+
+    Returns:
+        Configured guidance scale, defaulting to ``1.0`` when not present.
+    """
+    keywords = getattr(generate_fn, "keywords", None)
+    if isinstance(keywords, Mapping) and "guidance_scale" in keywords:
+        return float(keywords["guidance_scale"])
+    return float(getattr(generate_fn, "guidance_scale", 1.0))
+
+
+def _fid_requires_validation_conditions(generate_fn: callable) -> bool:
+    """Return whether FID generation must pass validation conditions.
+
+    Args:
+        generate_fn: Generation function or ``functools.partial``.
+
+    Returns:
+        ``True`` when classifier-free guidance is enabled for FID generation.
+    """
+    return _generate_fn_guidance_scale(generate_fn) != 1.0
+
+
+def _batched_generate_impl(model, keys, conditions, generate_fn):
+    """Generate a fake-image batch with optional validation conditions."""
+    if conditions is None:
+        return jax.vmap(lambda key: generate_fn(model, key=key))(keys)
+    return jax.vmap(lambda key, cond: generate_fn(model, key=key, cond=cond))(
+        keys,
+        conditions,
+    )
 
 
 def _make_batched_generate_step():
@@ -690,15 +751,20 @@ def _make_batched_generate_step():
 
     @eqx.filter_jit(donate="all-except-first")
     @eqx.debug.assert_max_traces(max_traces=1)
-    def batched_generate(model, keys, generate_fn):
-        return _batched_generate_impl(model, keys, generate_fn)
+    def batched_generate(model, keys, conditions, generate_fn):
+        return _batched_generate_impl(model, keys, conditions, generate_fn)
 
     return batched_generate
 
 
-def _parallel_batched_generate_impl(model, keys, generate_fn):
-    """Generate a fake-image batch from sharded keys."""
-    return jax.vmap(lambda key: generate_fn(model, key=key))(keys)
+def _parallel_batched_generate_impl(model, keys, conditions, generate_fn):
+    """Generate a fake-image batch from sharded keys and optional conditions."""
+    if conditions is None:
+        return jax.vmap(lambda key: generate_fn(model, key=key))(keys)
+    return jax.vmap(lambda key, cond: generate_fn(model, key=key, cond=cond))(
+        keys,
+        conditions,
+    )
 
 
 def _make_parallel_batched_generate_step():
@@ -711,8 +777,8 @@ def _make_parallel_batched_generate_step():
 
     @eqx.filter_jit
     @eqx.debug.assert_max_traces(max_traces=1)
-    def parallel_batched_generate(model, keys, generate_fn):
-        return _parallel_batched_generate_impl(model, keys, generate_fn)
+    def parallel_batched_generate(model, keys, conditions, generate_fn):
+        return _parallel_batched_generate_impl(model, keys, conditions, generate_fn)
 
     return parallel_batched_generate
 
@@ -739,6 +805,7 @@ def _device_put_array_leaves(pytree: Any, sharding: Any | None) -> Any:
 def _generate_fake_images(
     model,
     keys: jax.Array,
+    conditions: jax.Array | None,
     generate_fn: callable,
     fid_parallel: DataParallelConfig,
     batched_generate: callable,
@@ -749,7 +816,9 @@ def _generate_fake_images(
     Args:
         model: Generative model passed to generate_fn.
         keys: PRNG keys for fake-image generation.
-        generate_fn: Callable ``(model, key=...) -> image``.
+        conditions: Optional validation conditions for CFG generation.
+        generate_fn: Callable ``(model, key=..., cond=...) -> image`` when
+            conditions are supplied, otherwise ``(model, key=...) -> image``.
         fid_parallel: Resolved FID parallel-generation config.
         batched_generate: Per-call serial generation step.
         parallel_batched_generate: Per-call parallel generation step.
@@ -758,11 +827,138 @@ def _generate_fake_images(
         Generated image batch as a normal JAX array.
     """
     if not fid_parallel.enabled:
-        return batched_generate(model, keys, generate_fn)
+        return batched_generate(model, keys, conditions, generate_fn)
 
     sharded_keys = jax.device_put(keys, fid_parallel.data_sharding)
-    fake_images = parallel_batched_generate(model, sharded_keys, generate_fn)
+    sharded_conditions = None
+    if conditions is not None:
+        sharded_conditions = jax.device_put(conditions, fid_parallel.data_sharding)
+    fake_images = parallel_batched_generate(
+        model,
+        sharded_keys,
+        sharded_conditions,
+        generate_fn,
+    )
     return jnp.asarray(jax.device_get(fake_images))
+
+
+def _numpy_batch(batch: Any) -> np.ndarray:
+    """Convert a tensor-like batch to a NumPy array.
+
+    Args:
+        batch: PyTorch tensor, NumPy array, or array-like object.
+
+    Returns:
+        NumPy representation of ``batch``.
+    """
+    if hasattr(batch, "numpy"):
+        return batch.numpy()
+    return np.asarray(batch)
+
+
+def _validate_condition_batch(meta: np.ndarray) -> np.ndarray:
+    """Validate and normalize a validation metadata batch for CFG FID.
+
+    Args:
+        meta: Metadata batch from the validation dataloader.
+
+    Returns:
+        Metadata array with shape ``(B, cond_dim)``.
+
+    Raises:
+        ValueError: If metadata is empty.
+    """
+    if meta.ndim == 1:
+        meta = meta[:, None]
+    if meta.shape[-1] == 0:
+        raise ValueError("CFG FID requires validation metadata, but meta has width 0")
+    return meta
+
+
+def _limited_validation_chunks(
+    val_dataloader,
+    n_images: int,
+    chunk_size: int,
+    include_conditions: bool = False,
+):
+    """Yield validation images and optional conditions in stable-size chunks.
+
+    Args:
+        val_dataloader: Iterable yielding ``(images, meta)`` tuples.
+        n_images: Maximum number of leading images to consume.
+        chunk_size: Leading dimension for yielded arrays.
+        include_conditions: Whether to collect validation metadata.
+
+    Yields:
+        Tuples of ``(images, conditions, n_valid)``. ``conditions`` is ``None``
+        unless ``include_conditions`` is true. The final chunk is zero-padded.
+
+    Raises:
+        ValueError: If ``chunk_size`` is less than one or CFG metadata is empty.
+    """
+    chunk_size = int(chunk_size)
+    if chunk_size < 1:
+        raise ValueError(f"chunk_size must be >= 1, got {chunk_size}")
+
+    remaining = int(n_images)
+    image_buffer = None
+    condition_buffer = None
+    for images, meta in val_dataloader:
+        if remaining <= 0:
+            break
+
+        image_batch = _numpy_batch(images)
+        take = min(image_batch.shape[0], remaining)
+        if take <= 0:
+            continue
+
+        image_batch = image_batch[:take]
+        remaining -= take
+        if image_buffer is None:
+            image_buffer = image_batch
+        else:
+            image_buffer = np.concatenate((image_buffer, image_batch), axis=0)
+
+        if include_conditions:
+            condition_batch = _validate_condition_batch(_numpy_batch(meta))[:take]
+            if condition_buffer is None:
+                condition_buffer = condition_batch
+            else:
+                condition_buffer = np.concatenate(
+                    (condition_buffer, condition_batch),
+                    axis=0,
+                )
+
+        while image_buffer is not None and image_buffer.shape[0] >= chunk_size:
+            if include_conditions:
+                conditions = jnp.asarray(condition_buffer[:chunk_size])
+                condition_buffer = condition_buffer[chunk_size:]
+                if condition_buffer.shape[0] == 0:
+                    condition_buffer = None
+            else:
+                conditions = None
+            yield jnp.asarray(image_buffer[:chunk_size]), conditions, chunk_size
+            image_buffer = image_buffer[chunk_size:]
+            if image_buffer.shape[0] == 0:
+                image_buffer = None
+
+    if image_buffer is None or image_buffer.shape[0] == 0:
+        return
+
+    n_valid = int(image_buffer.shape[0])
+    pad_width = [(0, chunk_size - n_valid)]
+    pad_width.extend((0, 0) for _ in range(image_buffer.ndim - 1))
+    padded_images = np.pad(image_buffer, pad_width, mode="constant")
+
+    if include_conditions:
+        condition_pad_width = [(0, chunk_size - n_valid)]
+        condition_pad_width.extend((0, 0) for _ in range(condition_buffer.ndim - 1))
+        conditions = jnp.asarray(
+            np.pad(condition_buffer, condition_pad_width, mode="constant")
+        )
+    else:
+        conditions = None
+    yield jnp.asarray(padded_images), conditions, n_valid
 
 
 def _limited_image_chunks(
@@ -780,49 +976,49 @@ def _limited_image_chunks(
     Yields:
         Tuples of ``(images, n_valid)`` where ``images`` has leading size
         ``chunk_size`` and ``n_valid`` is the number of rows that should
-        contribute to statistics. The final chunk is zero-padded when needed.
+        contribute to statistics.
+    """
+    for images, _conditions, n_valid in _limited_validation_chunks(
+        val_dataloader,
+        n_images=n_images,
+        chunk_size=chunk_size,
+        include_conditions=False,
+    ):
+        yield images, n_valid
+
+
+def _condition_chunk(
+    conditions: np.ndarray,
+    start: int,
+    n_samples: int,
+    chunk_size: int,
+) -> jax.Array:
+    """Return a stable-size condition chunk from cached validation conditions.
+
+    Args:
+        conditions: Cached validation metadata with shape ``(N, cond_dim)``.
+        start: Starting row for this chunk.
+        n_samples: Total number of fake samples requested.
+        chunk_size: Stable generation chunk size.
+
+    Returns:
+        Condition chunk with leading dimension ``chunk_size``.
 
     Raises:
-        ValueError: If ``chunk_size`` is less than one.
+        ValueError: If not enough conditions are cached.
     """
-    chunk_size = int(chunk_size)
-    if chunk_size < 1:
-        raise ValueError(f"chunk_size must be >= 1, got {chunk_size}")
-
-    remaining = int(n_images)
-    buffer = None
-    for images, _meta in val_dataloader:
-        if remaining <= 0:
-            break
-
-        if hasattr(images, "numpy"):
-            batch = images.numpy()
-        else:
-            batch = np.asarray(images)
-        take = min(batch.shape[0], remaining)
-        if take <= 0:
-            continue
-
-        batch = batch[:take]
-        remaining -= take
-        if buffer is None:
-            buffer = batch
-        else:
-            buffer = np.concatenate((buffer, batch), axis=0)
-
-        while buffer is not None and buffer.shape[0] >= chunk_size:
-            yield jnp.asarray(buffer[:chunk_size]), chunk_size
-            buffer = buffer[chunk_size:]
-            if buffer.shape[0] == 0:
-                buffer = None
-
-    if buffer is None or buffer.shape[0] == 0:
-        return
-
-    n_valid = int(buffer.shape[0])
-    pad_width = [(0, chunk_size - n_valid)]
-    pad_width.extend((0, 0) for _ in range(buffer.ndim - 1))
-    yield jnp.asarray(np.pad(buffer, pad_width, mode="constant")), n_valid
+    valid_n = min(int(chunk_size), int(n_samples) - int(start))
+    if conditions.shape[0] < start + valid_n:
+        raise ValueError(
+            "CFG FID requires cached validation conditions for "
+            f"n_samples={n_samples}, but only {conditions.shape[0]} are available"
+        )
+    chunk = conditions[start : start + valid_n]
+    if valid_n == chunk_size:
+        return jnp.asarray(chunk)
+    pad_width = [(0, chunk_size - valid_n)]
+    pad_width.extend((0, 0) for _ in range(chunk.ndim - 1))
+    return jnp.asarray(np.pad(chunk, pad_width, mode="constant"))
 
 
 def compute_fid_metrics(
@@ -838,6 +1034,7 @@ def compute_fid_metrics(
     n_real: int | None = None,
     parallel_generation: Any = None,
     data_parallel: DataParallelConfig | None = None,
+    condition_cache: FIDConditionCache | None = None,
 ) -> dict[str, float]:
     """Compute FID scores for one or more encoders.
 
@@ -850,9 +1047,9 @@ def compute_fid_metrics(
             the output metric names.
         model:           The generative model passed to ``generate_fn``.
         val_dataloader:  Iterable yielding ``(images, meta)`` tuples.
-        generate_fn:     ``(model, key=...) -> jax.Array`` of shape ``(C, H, W)``.
-            One unconditional sample. Solver args baked in via partial.
-            Called as ``generate_fn(model, key=k)``.
+        generate_fn:     ``(model, key=...) -> jax.Array`` of shape ``(C, H, W)``
+            for unconditional generation, or ``(model, key=..., cond=...)``
+            when classifier-free guidance conditions are required.
         n_samples:       Number of fake images. ``None`` matches real count.
         gen_batch_size:  Images generated and encoded per chunk.
         key:             PRNG key for generation.
@@ -861,6 +1058,8 @@ def compute_fid_metrics(
         parallel_generation: Optional FID-specific parallel generation config.
         data_parallel: Optional resolved trainer data-parallel config used for
             parallel_generation defaults.
+        condition_cache: Optional local validation-condition cache for direct
+            callers that reuse cached real statistics.
 
     Returns:
         Dict mapping accumulator names to FID scores.
@@ -887,27 +1086,38 @@ def compute_fid_metrics(
             f"got gen_batch_size={gen_batch_size}"
         )
 
-    # --- Real-image pass (skip if all accumulators have cached stats) ---
-    if (n_real == 0) or (n_real is None):
-        n_real = len(val_dataloader.dataset)
+    requires_conditions = _fid_requires_validation_conditions(generate_fn)
+    if condition_cache is None:
+        condition_cache = FIDConditionCache()
 
+    # --- Real-image pass (skip if all accumulators have cached stats) ---
     all_cached = all(acc._cached_real is not None for acc in accumulators.values())
+    if (n_real == 0) or (n_real is None):
+        if all_cached:
+            n_real = max(acc._cached_real[2] for acc in accumulators.values())
+        else:
+            n_real = len(val_dataloader.dataset)
+    n_real = int(n_real)
+
+    condition_chunks = []
     if not all_cached:
         for acc in accumulators.values():
             acc.reset()
-        n_real_seen = 0
         pbar = tqdm(
             total=n_real, desc="FID real", leave=False, dynamic_ncols=True, unit="img"
         )
         n_real_seen = 0
 
-        for images, batch_n in _limited_image_chunks(
+        for images, conditions, batch_n in _limited_validation_chunks(
             val_dataloader,
             n_images=n_real,
             chunk_size=effective_gen_batch_size,
+            include_conditions=requires_conditions,
         ):
             for acc in accumulators.values():
                 acc.update(images, n_images=batch_n)
+            if requires_conditions:
+                condition_chunks.append(np.asarray(conditions)[:batch_n])
 
             n_real_seen += batch_n
             pbar.update(batch_n)
@@ -917,10 +1127,43 @@ def compute_fid_metrics(
             mu, sigma, n = acc.statistics()
             acc._cached_real = (mu, sigma, n)
             acc.reset()
+        if requires_conditions:
+            if n_real_seen < n_real:
+                raise ValueError(
+                    "CFG FID requires validation conditions for "
+                    f"n_real={n_real}, but only {n_real_seen} rows were available"
+                )
+            condition_cache.conditions = np.concatenate(condition_chunks, axis=0)
+            condition_cache.n_real = n_real
 
     # --- Determine n_samples ---
     if (n_samples == 0) or (n_samples is None):
         n_samples = max(acc._cached_real[2] for acc in accumulators.values())
+    n_samples = int(n_samples)
+    if requires_conditions:
+        if n_samples > n_real:
+            raise ValueError(
+                "CFG FID requires n_samples <= n_real when using validation "
+                f"conditions, got n_samples={n_samples}, n_real={n_real}"
+            )
+        if not condition_cache.matches(n_real):
+            condition_chunks = []
+            n_condition_seen = 0
+            for _images, conditions, batch_n in _limited_validation_chunks(
+                val_dataloader,
+                n_images=n_real,
+                chunk_size=effective_gen_batch_size,
+                include_conditions=True,
+            ):
+                condition_chunks.append(np.asarray(conditions)[:batch_n])
+                n_condition_seen += batch_n
+            if n_condition_seen < n_real:
+                raise ValueError(
+                    "CFG FID requires validation conditions for "
+                    f"n_real={n_real}, but only {n_condition_seen} rows were available"
+                )
+            condition_cache.conditions = np.concatenate(condition_chunks, axis=0)
+            condition_cache.n_real = n_real
 
     # --- Fake-image pass ---
     for acc in accumulators.values():
@@ -939,9 +1182,18 @@ def compute_fid_metrics(
         all_keys = jax.random.split(key, chunk_size + 1)
         key = all_keys[0]
         sub_keys = all_keys[1:]
+        condition_chunk = None
+        if requires_conditions:
+            condition_chunk = _condition_chunk(
+                condition_cache.conditions,
+                start=n_generated,
+                n_samples=n_samples,
+                chunk_size=chunk_size,
+            )
         fake_images = _generate_fake_images(
             model=generation_model,
             keys=sub_keys,
+            conditions=condition_chunk,
             generate_fn=generate_fn,
             fid_parallel=fid_parallel,
             batched_generate=batched_generate_wrapper,
