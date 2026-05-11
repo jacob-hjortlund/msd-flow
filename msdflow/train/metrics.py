@@ -456,12 +456,6 @@ def _extract_batch_impl(encoder, images):
     return jax.vmap(encoder)(images)
 
 
-@eqx.filter_jit
-def _extract_batch(encoder, images):
-    """Encode one batch for direct helper callers."""
-    return _extract_batch_impl(encoder, images)
-
-
 def _make_extract_batch_step():
     """Return a per-accumulator JIT guard for feature extraction.
 
