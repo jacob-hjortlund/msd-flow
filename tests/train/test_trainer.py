@@ -724,6 +724,14 @@ def _make_resume_train_state(model, kwargs):
     return make_train_state(model, optimizer)
 
 
+def _assert_sigterm_orbax_metadata(metadata):
+    """Assert SIGTERM metadata points to a resumable Orbax checkpoint."""
+    assert metadata["checkpoint_kind"] == "sigterm"
+    assert Path(metadata["checkpoint_path"]).is_dir()
+    assert metadata["global_optimizer_step"] >= 0
+    assert metadata["lr_schedule_step"] >= 0
+
+
 def test_train_runs_and_returns_model():
     """Verify the full training loop completes and returns a model."""
     dataloader = list(_make_fake_dataloader(B=2, num_batches=3))
@@ -965,7 +973,7 @@ def test_train_sigterm_flag_saves_checkpoint_and_stops(tmp_path):
 
     pointer = json.loads((tmp_path / "latest.json").read_text())
     metadata = json.loads(open(pointer["metadata_path"]).read())
-    assert metadata["checkpoint_kind"] == "sigterm"
+    _assert_sigterm_orbax_metadata(metadata)
     assert metadata["epoch"] == 0
     assert metadata["completed_microsteps"] == 1
 
@@ -1003,7 +1011,7 @@ def test_train_sigterm_at_epoch_boundary_resumes_next_epoch(tmp_path):
 
     pointer = json.loads((tmp_path / "latest.json").read_text())
     metadata = json.loads(open(pointer["metadata_path"]).read())
-    assert metadata["checkpoint_kind"] == "sigterm"
+    _assert_sigterm_orbax_metadata(metadata)
     assert metadata["epoch"] == 1
     assert metadata["completed_microsteps"] == 0
 
@@ -1053,7 +1061,7 @@ def test_train_sigterm_requested_after_final_microstep_stops_at_epoch_boundary(
 
     pointer = json.loads((tmp_path / "latest.json").read_text())
     metadata = json.loads(open(pointer["metadata_path"]).read())
-    assert metadata["checkpoint_kind"] == "sigterm"
+    _assert_sigterm_orbax_metadata(metadata)
     assert metadata["epoch"] == 1
     assert metadata["completed_microsteps"] == 0
 
@@ -1131,7 +1139,7 @@ def test_train_sigterm_during_resumed_epoch_waits_for_replay_boundary(tmp_path):
 
     pointer = json.loads((tmp_path / "latest.json").read_text())
     metadata = json.loads(open(pointer["metadata_path"]).read())
-    assert metadata["checkpoint_kind"] == "sigterm"
+    _assert_sigterm_orbax_metadata(metadata)
     assert metadata["epoch"] == 0
     assert metadata["completed_microsteps"] == 1
 
@@ -1218,7 +1226,7 @@ def test_train_sigterm_during_repeated_resume_caps_completed_microsteps(tmp_path
 
     pointer = json.loads((tmp_path / "latest.json").read_text())
     metadata = json.loads(open(pointer["metadata_path"]).read())
-    assert metadata["checkpoint_kind"] == "sigterm"
+    _assert_sigterm_orbax_metadata(metadata)
     assert metadata["epoch"] == 0
     assert metadata["completed_microsteps"] == 3
 
@@ -1245,7 +1253,11 @@ def test_train_sigterm_during_repeated_resume_caps_completed_microsteps(tmp_path
         global_optimizer_step=0,
         lr_schedule_step=0,
     )
-    checkpoint = load_training_checkpoint(metadata["checkpoint_path"], like_checkpoint)
+    checkpoint = load_training_checkpoint(
+        metadata["checkpoint_path"],
+        like_checkpoint,
+        metadata=metadata,
+    )
     assert checkpoint.completed_microsteps == 3
     assert checkpoint.epoch_loss / checkpoint.completed_microsteps == pytest.approx(
         11.0 / 5.0,
@@ -1295,7 +1307,7 @@ def test_train_sigterm_after_epoch_work_stops_before_next_epoch(tmp_path):
 
     pointer = json.loads((tmp_path / "latest.json").read_text())
     metadata = json.loads(open(pointer["metadata_path"]).read())
-    assert metadata["checkpoint_kind"] == "sigterm"
+    _assert_sigterm_orbax_metadata(metadata)
     assert metadata["epoch"] == 1
     assert metadata["completed_microsteps"] == 0
 
@@ -1355,7 +1367,7 @@ def test_train_sigterm_during_validation_preempts_early_stopping(tmp_path):
 
     pointer = json.loads((tmp_path / "latest.json").read_text())
     metadata = json.loads(open(pointer["metadata_path"]).read())
-    assert metadata["checkpoint_kind"] == "sigterm"
+    _assert_sigterm_orbax_metadata(metadata)
     assert metadata["epoch"] == 2
     assert metadata["completed_microsteps"] == 0
 
@@ -2314,6 +2326,7 @@ def test_train_calls_log_checkpoint_when_task_provided(tmp_path):
     key = jax.random.PRNGKey(2)
     dl = _make_dataloader()
     mock_task = MagicMock()
+    mock_task.id = "task123"
     model = _make_small_model()
 
     with patch("msdflow.train.trainer.log_checkpoint") as mock_log_ckpt:
@@ -2326,6 +2339,7 @@ def test_train_calls_log_checkpoint_when_task_provided(tmp_path):
             loss_fn=lambda model, x_t, u_t, t, cond, cond_mask, key: jnp.mean(x_t),
             batch_metrics=[],
             epoch_metrics=[],
+            eval_train_dataloader=dl,
             coupling=_COUPLING,
             time_sampler=_time_sampler,
             path_sampler=_PATH_SAMPLER,
@@ -2338,10 +2352,19 @@ def test_train_calls_log_checkpoint_when_task_provided(tmp_path):
             checkpoint_every=1,
             checkpoint_dir=str(tmp_path),
             clearml_task=mock_task,
+            lr_schedule=lambda step: 1e-3,
+            checkpoint_hash="hash123",
+            hash_payload={"model": {"base_channels": 4}},
         )
     assert mock_log_ckpt.call_count == 1
-    called_path = mock_log_ckpt.call_args[0][1]
-    assert "ema" in called_path
+    called_path = mock_log_ckpt.call_args.args[1]
+    called_kwargs = mock_log_ckpt.call_args.kwargs
+    assert Path(called_path).is_dir()
+    assert called_kwargs["checkpoint_kind"] in {"best", "periodic"}
+    assert "raw_models" not in called_path
+    assert all(
+        "raw_models" not in call.args[1] for call in mock_log_ckpt.call_args_list
+    )
 
 
 def test_train_logs_time_binned_loss_diagnostic_at_validation_cadence(tmp_path):
@@ -3187,11 +3210,13 @@ def test_train_invalid_monitor_mode_raises(tmp_path):
 
 
 def test_best_checkpoint_saved_on_first_val(tmp_path):
-    """Best-model checkpoint (raw + ema) is created after the first validation epoch."""
+    """Best checkpoint metadata is created after the first validation epoch."""
     dataloader = list(_make_fake_dataloader())
     val_dataloader = _fake_val_dataloader()
     kwargs = _make_train_kwargs(num_epochs=1)
     kwargs["checkpoint_dir"] = str(tmp_path)
+    kwargs["checkpoint_hash"] = "hash123"
+    kwargs["hash_payload"] = {"model": {"base_channels": 4}}
     model = _make_small_model()
     train(
         model=model,
@@ -3199,20 +3224,20 @@ def test_best_checkpoint_saved_on_first_val(tmp_path):
         val_dataloader=val_dataloader,
         **kwargs,
     )
-    best_ema = list(tmp_path.glob("*_best_ema.eqx"))
-    best_raw = list(tmp_path.glob("*_best_raw.eqx"))
-    assert len(best_ema) == 1
-    assert len(best_raw) == 1
-    assert "epoch1_best_ema" in best_ema[0].name
+    best_dirs = sorted(tmp_path.glob("best_epoch*_step*"))
+    assert len(best_dirs) == 1
+    metadata = json.loads((best_dirs[0] / "metadata.json").read_text())
+    assert metadata["checkpoint_kind"] == "best"
+    assert metadata["best_epoch"] == 1
 
 
 def test_best_checkpoint_not_saved_when_no_improvement(tmp_path):
-    """No new best-model file is written when the metric does not improve."""
+    """No new best checkpoint is written when the metric does not improve."""
     call_count = [0]
 
     def plateau_metric(model, val_batches, key):
         call_count[0] += 1
-        return 1.0  # constant — never beats itself in max mode after epoch 1
+        return 1.0
 
     dataloader = list(_make_fake_dataloader())
     val_dataloader = _fake_val_dataloader()
@@ -3221,6 +3246,8 @@ def test_best_checkpoint_not_saved_when_no_improvement(tmp_path):
     kwargs["epoch_metrics"] = [plateau_metric]
     kwargs["monitor"] = "plateau_metric"
     kwargs["monitor_mode"] = "max"
+    kwargs["checkpoint_hash"] = "hash123"
+    kwargs["hash_payload"] = {"model": {"base_channels": 4}}
     model = _make_small_model()
     train(
         model=model,
@@ -3228,19 +3255,20 @@ def test_best_checkpoint_not_saved_when_no_improvement(tmp_path):
         val_dataloader=val_dataloader,
         **kwargs,
     )
-    best_ema = list(tmp_path.glob("*_best_ema.eqx"))
-    # Only epoch 1 improves (−∞ → 1.0); epochs 2 and 3 are tied
-    assert len(best_ema) == 1
-    assert "epoch1_best_ema" in best_ema[0].name
+    best_dirs = sorted(tmp_path.glob("best_epoch*_step*"))
+    assert len(best_dirs) == 1
+    metadata = json.loads((best_dirs[0] / "metadata.json").read_text())
+    assert metadata["checkpoint_kind"] == "best"
+    assert metadata["best_epoch"] == 1
 
 
 def test_best_checkpoint_max_mode_saves_on_each_improvement(tmp_path):
-    """In max mode, a new best file is written every time the metric strictly improves."""
+    """In max mode, a best checkpoint is written for each strict improvement."""
     call_count = [0]
 
     def rising_metric(model, val_batches, key):
         call_count[0] += 1
-        return float(call_count[0])  # 1.0 → 2.0 → 3.0, always better
+        return float(call_count[0])
 
     dataloader = list(_make_fake_dataloader())
     val_dataloader = _fake_val_dataloader()
@@ -3249,6 +3277,8 @@ def test_best_checkpoint_max_mode_saves_on_each_improvement(tmp_path):
     kwargs["epoch_metrics"] = [rising_metric]
     kwargs["monitor"] = "rising_metric"
     kwargs["monitor_mode"] = "max"
+    kwargs["checkpoint_hash"] = "hash123"
+    kwargs["hash_payload"] = {"model": {"base_channels": 4}}
     model = _make_small_model()
     train(
         model=model,
@@ -3256,8 +3286,13 @@ def test_best_checkpoint_max_mode_saves_on_each_improvement(tmp_path):
         val_dataloader=val_dataloader,
         **kwargs,
     )
-    best_ema = sorted(tmp_path.glob("*_best_ema.eqx"))
-    assert len(best_ema) == 3
+    best_dirs = sorted(tmp_path.glob("best_epoch*_step*"))
+    assert len(best_dirs) == 3
+    assert [path.name for path in best_dirs] == [
+        "best_epoch0001_step0000",
+        "best_epoch0002_step0000",
+        "best_epoch0003_step0000",
+    ]
 
 
 def test_train_unknown_monitor_raises_value_error(tmp_path):
