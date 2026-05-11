@@ -18,8 +18,8 @@ import equinox as eqx
 from omegaconf import OmegaConf
 
 
-CHECKPOINT_SCHEMA_VERSION = 1
-CHECKPOINT_KINDS = frozenset({"periodic", "sigterm", "manual"})
+CHECKPOINT_SCHEMA_VERSION = 2
+CHECKPOINT_KINDS = frozenset({"periodic", "best", "sigterm", "manual"})
 
 
 class SigtermFlag:
@@ -76,6 +76,9 @@ class TrainingCheckpoint(eqx.Module):
         sampling_key: Sampling PRNG key.
         epoch: Zero-based epoch index for the checkpoint.
         completed_microsteps: Completed microsteps within the current epoch.
+        global_optimizer_step: Number of completed optimizer update steps.
+        lr_schedule_step: Trainer-side learning-rate schedule step used for
+            logging and schedule continuity.
         epoch_loss: Accumulated epoch loss value.
         best_metric_value: Best monitored metric value observed so far.
         best_epoch: Epoch index associated with the best monitored metric.
@@ -97,6 +100,8 @@ class TrainingCheckpoint(eqx.Module):
     sampling_key: Any
     epoch: int
     completed_microsteps: int
+    global_optimizer_step: int
+    lr_schedule_step: int
     epoch_loss: float
     best_metric_value: float
     best_epoch: int | None
@@ -251,9 +256,11 @@ def build_checkpoint_metadata(
     *,
     stable_hash: str,
     checkpoint_kind: str,
-    payload_path: str,
+    checkpoint_path: str,
     grad_accum_steps: int,
     microsteps_per_epoch: int,
+    global_optimizer_step: int | None = None,
+    lr_schedule_step: int | None = None,
     monitor: str | None,
     monitor_mode: str | None,
     clearml_task_id: str | None,
@@ -270,11 +277,16 @@ def build_checkpoint_metadata(
 
     Args:
         stable_hash: Stable configuration compatibility hash.
-        checkpoint_kind: Checkpoint kind, one of ``periodic``, ``sigterm``, or
-            ``manual``.
-        payload_path: Path to the serialized Equinox payload.
+        checkpoint_kind: Checkpoint kind, one of ``periodic``, ``best``,
+            ``sigterm``, or ``manual``.
+        checkpoint_path: Path to the checkpoint directory.
         grad_accum_steps: Gradient accumulation steps per optimizer update.
         microsteps_per_epoch: Number of microsteps in a full epoch.
+        global_optimizer_step: Number of completed optimizer update steps.
+            Defaults to ``checkpoint.global_optimizer_step``.
+        lr_schedule_step: Trainer-side learning-rate schedule step used for
+            logging and schedule continuity. Defaults to
+            ``checkpoint.lr_schedule_step``.
         monitor: Name of the monitored metric.
         monitor_mode: Optimization direction for the monitored metric.
         clearml_task_id: Optional ClearML task id associated with the run.
@@ -316,6 +328,16 @@ def build_checkpoint_metadata(
             else best_metric_value
         )
         best_epoch = checkpoint.best_epoch if best_epoch is None else best_epoch
+        global_optimizer_step = (
+            checkpoint.global_optimizer_step
+            if global_optimizer_step is None
+            else global_optimizer_step
+        )
+        lr_schedule_step = (
+            checkpoint.lr_schedule_step
+            if lr_schedule_step is None
+            else lr_schedule_step
+        )
 
     if epoch is None:
         raise ValueError("Checkpoint metadata requires epoch.")
@@ -323,6 +345,10 @@ def build_checkpoint_metadata(
         raise ValueError("Checkpoint metadata requires completed_microsteps.")
     if ema_initialized is None:
         raise ValueError("Checkpoint metadata requires ema_initialized.")
+    if global_optimizer_step is None:
+        raise ValueError("Checkpoint metadata requires global_optimizer_step.")
+    if lr_schedule_step is None:
+        raise ValueError("Checkpoint metadata requires lr_schedule_step.")
 
     return {
         "schema_version": CHECKPOINT_SCHEMA_VERSION,
@@ -330,9 +356,11 @@ def build_checkpoint_metadata(
         "checkpoint_kind": checkpoint_kind,
         "epoch": int(epoch),
         "completed_microsteps": int(completed_microsteps),
-        "payload_path": str(payload_path),
+        "checkpoint_path": str(checkpoint_path),
         "grad_accum_steps": int(grad_accum_steps),
         "microsteps_per_epoch": int(microsteps_per_epoch),
+        "global_optimizer_step": int(global_optimizer_step),
+        "lr_schedule_step": int(lr_schedule_step),
         "monitor": monitor,
         "monitor_mode": monitor_mode,
         "clearml_task_id": clearml_task_id,
@@ -408,9 +436,14 @@ def validate_checkpoint_metadata(
             f"{metadata.get('monitor_mode')!r} does not match {monitor_mode!r}."
         )
 
-    payload_path = metadata.get("payload_path")
-    if not isinstance(payload_path, str) or not payload_path:
-        raise ValueError("Checkpoint metadata is missing payload_path.")
+    checkpoint_path = metadata.get("checkpoint_path")
+    if not isinstance(checkpoint_path, str) or not checkpoint_path:
+        raise ValueError("Checkpoint metadata is missing checkpoint_path.")
+
+    for field_name in ("global_optimizer_step", "lr_schedule_step"):
+        value = metadata.get(field_name)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"Checkpoint metadata has invalid {field_name}.")
 
     microsteps_limit = (
         microsteps_per_epoch
@@ -505,8 +538,8 @@ def save_training_checkpoint(
         run_dir: Directory where checkpoint files should be written.
         checkpoint: Full training checkpoint payload to serialize.
         stable_hash: Stable configuration compatibility hash.
-        checkpoint_kind: Checkpoint kind, one of ``periodic``, ``sigterm``, or
-            ``manual``.
+        checkpoint_kind: Checkpoint kind, one of ``periodic``, ``best``,
+            ``sigterm``, or ``manual``.
         grad_accum_steps: Gradient accumulation steps per optimizer update.
         microsteps_per_epoch: Number of microsteps in a full epoch.
         monitor: Name of the monitored metric.
@@ -517,7 +550,7 @@ def save_training_checkpoint(
         hash_payload: Normalized configuration payload used to compute the hash.
 
     Returns:
-        Metadata written for the checkpoint, including metadata and payload paths.
+        Metadata written for the checkpoint, including metadata path.
     """
     latest_pathname = _latest_filename_path(latest_filename)
     run_path = Path(run_dir).expanduser().resolve()
@@ -525,6 +558,7 @@ def save_training_checkpoint(
         epoch=checkpoint.epoch,
         completed_microsteps=checkpoint.completed_microsteps,
     )
+    checkpoint_path = run_path / stem
     payload_path = run_path / f"{stem}.eqx"
     metadata_path = run_path / f"{stem}.json"
     latest_path = run_path / latest_pathname
@@ -534,9 +568,11 @@ def save_training_checkpoint(
         checkpoint_kind=checkpoint_kind,
         epoch=checkpoint.epoch,
         completed_microsteps=checkpoint.completed_microsteps,
-        payload_path=str(payload_path),
+        checkpoint_path=str(checkpoint_path),
         grad_accum_steps=grad_accum_steps,
         microsteps_per_epoch=microsteps_per_epoch,
+        global_optimizer_step=checkpoint.global_optimizer_step,
+        lr_schedule_step=checkpoint.lr_schedule_step,
         monitor=monitor,
         monitor_mode=monitor_mode,
         clearml_task_id=clearml_task_id,

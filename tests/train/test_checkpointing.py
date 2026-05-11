@@ -424,6 +424,8 @@ def _linear_checkpoint_payload():
         sampling_key=jax.random.PRNGKey(2),
         epoch=3,
         completed_microsteps=5,
+        global_optimizer_step=17,
+        lr_schedule_step=19,
         epoch_loss=7.5,
         best_metric_value=0.25,
         best_epoch=2,
@@ -512,6 +514,63 @@ def test_build_checkpoint_metadata_returns_json_safe_required_fields(tmp_path):
     assert isinstance(metadata["saved_at_unix"], float)
 
 
+def test_checkpoint_metadata_schema_v2_includes_orbax_paths_and_steps(tmp_path):
+    """Orbax metadata should identify checkpoint dirs and schedule state."""
+    checkpoint_path = tmp_path / "checkpoint_epoch0004_step0000"
+    metadata = build_checkpoint_metadata(
+        stable_hash="abc123",
+        checkpoint_kind="best",
+        epoch=3,
+        completed_microsteps=0,
+        checkpoint_path=str(checkpoint_path),
+        grad_accum_steps=2,
+        microsteps_per_epoch=64,
+        global_optimizer_step=12,
+        lr_schedule_step=12,
+        monitor="fid_zoobot",
+        monitor_mode="min",
+        clearml_task_id="task-1",
+        source_checkpoint_path="/source/checkpoint",
+        hash_payload={"train": {"optimizer": "adam"}},
+        ema_initialized=True,
+        best_metric_value=42.0,
+        best_epoch=3,
+    )
+
+    assert metadata["schema_version"] == 2
+    assert metadata["checkpoint_kind"] == "best"
+    assert metadata["checkpoint_path"] == str(checkpoint_path)
+    assert "payload_path" not in metadata
+    assert metadata["global_optimizer_step"] == 12
+    assert metadata["lr_schedule_step"] == 12
+    assert metadata["best_metric_value"] == 42.0
+
+
+def test_build_checkpoint_metadata_derives_schedule_steps_from_checkpoint(
+    tmp_path,
+):
+    """Metadata builder should derive schedule steps from checkpoint payloads."""
+    checkpoint = _linear_checkpoint_payload()
+    checkpoint_path = tmp_path / "checkpoint_epoch0004_step0005"
+
+    metadata = build_checkpoint_metadata(
+        stable_hash="abc123",
+        checkpoint_kind="manual",
+        checkpoint=checkpoint,
+        checkpoint_path=str(checkpoint_path),
+        grad_accum_steps=1,
+        microsteps_per_epoch=8,
+        monitor="flow_matching_loss",
+        monitor_mode="min",
+        clearml_task_id=None,
+        source_checkpoint_path=None,
+        hash_payload={"train": {"optimizer": "sgd"}},
+    )
+
+    assert metadata["global_optimizer_step"] == checkpoint.global_optimizer_step
+    assert metadata["lr_schedule_step"] == checkpoint.lr_schedule_step
+
+
 def test_build_checkpoint_metadata_accepts_checkpoint_payload_context(tmp_path):
     """Metadata builder should accept checkpoint payload context directly."""
     checkpoint = _linear_checkpoint_payload()
@@ -565,6 +624,76 @@ def test_validate_checkpoint_metadata_rejects_wrong_stable_hash(tmp_path):
             monitor="flow_matching_loss",
             monitor_mode="min",
             allow_hash_override=False,
+        )
+
+
+def test_validate_checkpoint_metadata_rejects_missing_schedule_steps(tmp_path):
+    """Resume metadata must include optimizer and LR schedule progress."""
+    metadata = build_checkpoint_metadata(
+        stable_hash="abc123",
+        checkpoint_kind="periodic",
+        epoch=1,
+        completed_microsteps=0,
+        checkpoint_path=str(tmp_path / "checkpoint_epoch0002_step0000"),
+        grad_accum_steps=1,
+        microsteps_per_epoch=8,
+        global_optimizer_step=2,
+        lr_schedule_step=2,
+        monitor="flow_matching_loss",
+        monitor_mode="min",
+        clearml_task_id=None,
+        source_checkpoint_path=None,
+        hash_payload={"model": {}},
+        ema_initialized=True,
+        best_metric_value=0.5,
+        best_epoch=1,
+    )
+    metadata.pop("lr_schedule_step")
+
+    with pytest.raises(ValueError, match="lr_schedule_step"):
+        validate_checkpoint_metadata(
+            metadata,
+            stable_hash="abc123",
+            monitor="flow_matching_loss",
+            monitor_mode="min",
+            microsteps_per_epoch=8,
+        )
+
+
+@pytest.mark.parametrize("field_name", ["global_optimizer_step", "lr_schedule_step"])
+def test_validate_checkpoint_metadata_rejects_bool_schedule_steps(
+    tmp_path,
+    field_name,
+):
+    """Resume metadata step fields must reject bools masquerading as ints."""
+    metadata = build_checkpoint_metadata(
+        stable_hash="abc123",
+        checkpoint_kind="periodic",
+        epoch=1,
+        completed_microsteps=0,
+        checkpoint_path=str(tmp_path / "checkpoint_epoch0002_step0000"),
+        grad_accum_steps=1,
+        microsteps_per_epoch=8,
+        global_optimizer_step=2,
+        lr_schedule_step=2,
+        monitor="flow_matching_loss",
+        monitor_mode="min",
+        clearml_task_id=None,
+        source_checkpoint_path=None,
+        hash_payload={"model": {}},
+        ema_initialized=True,
+        best_metric_value=0.5,
+        best_epoch=1,
+    )
+    metadata[field_name] = True
+
+    with pytest.raises(ValueError, match=field_name):
+        validate_checkpoint_metadata(
+            metadata,
+            stable_hash="abc123",
+            monitor="flow_matching_loss",
+            monitor_mode="min",
+            microsteps_per_epoch=8,
         )
 
 

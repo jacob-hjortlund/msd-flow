@@ -30,6 +30,7 @@ dependencies = [
     "seaborn",
     "timm",
     "flax",
+    "orbax-checkpoint",
     "cmasher",
     "scikit-learn"
 ]
