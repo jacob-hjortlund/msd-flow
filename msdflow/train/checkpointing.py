@@ -665,7 +665,6 @@ class OrbaxAsyncCheckpointIO:
                 item,
                 custom_metadata=_equinox_static_custom_metadata(item),
             ),
-            force=True,
         )
 
     def save_raw_model_item(self, path: str | Path, item: Any) -> None:
@@ -1101,7 +1100,6 @@ def save_training_checkpoint(
 
     try:
         run_path.mkdir(parents=True, exist_ok=True)
-        checkpoint_path.mkdir(parents=True, exist_ok=True)
         io.save_training_item(checkpoint_path, checkpoint)
         if wait:
             io.wait_training()

@@ -161,6 +161,24 @@ def test_log_checkpoint_noop_when_task_is_none():
     )
 
 
+def test_log_checkpoint_warns_when_upload_fails(caplog):
+    """ClearML upload failures should not invalidate local checkpoints."""
+    from msdflow.tracking import log_checkpoint
+
+    mock_task = MagicMock()
+    mock_task.upload_artifact.side_effect = RuntimeError("upload failed")
+
+    log_checkpoint(
+        mock_task,
+        "/tmp/checkpoint_epoch0005_step0000",
+        epoch=5,
+        checkpoint_kind="periodic",
+        completed_microsteps=0,
+    )
+
+    assert "Failed to upload checkpoint artifact" in caplog.text
+
+
 # ---------------------------------------------------------------------------
 # log_samples
 # ---------------------------------------------------------------------------

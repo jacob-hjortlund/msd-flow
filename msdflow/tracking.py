@@ -345,13 +345,18 @@ def log_checkpoint(
     """
     if task is None:
         return
-    task.upload_artifact(
-        name=(
-            f"checkpoint_{checkpoint_kind}_epoch_{epoch}"
-            f"_step_{completed_microsteps}"
-        ),
-        artifact_object=path,
+    artifact_name = (
+        f"checkpoint_{checkpoint_kind}_epoch_{epoch}_step_{completed_microsteps}"
     )
+    try:
+        task.upload_artifact(name=artifact_name, artifact_object=path)
+    except Exception as exc:
+        logger.warning(
+            "Failed to upload checkpoint artifact %s from %s: %s",
+            artifact_name,
+            path,
+            exc,
+        )
 
 
 def prepare_images_for_plotting(
@@ -403,7 +408,6 @@ def prepare_images_for_plotting(
         images[~mask] = np.nan  # set non-positive values to NaN for better plotting
 
     elif plot_method == "arcsinh":
-
         scale = np.percentile(images, arcsinh_percentile, axis=(1, 2))
         scale = np.maximum(scale, eps)
 

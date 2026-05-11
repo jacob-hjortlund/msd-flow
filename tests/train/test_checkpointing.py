@@ -608,6 +608,83 @@ def test_raw_model_checkpoint_skips_unpickleable_static_metadata(tmp_path):
     assert Path(path).is_dir()
 
 
+def test_orbax_io_does_not_force_resumable_training_saves(monkeypatch, tmp_path):
+    """Resumable saves must not overwrite an existing latest target in place."""
+    import msdflow.train.checkpointing as checkpointing
+
+    save_calls = []
+
+    class FakeAsyncCheckpointer:
+        """Record async save force flags without touching the filesystem."""
+
+        def __init__(self, handler):
+            """Accept the Orbax handler argument."""
+
+        def save(self, path, *, args, force=False):
+            """Record the destination path and overwrite flag."""
+            save_calls.append((Path(path), force))
+
+        def wait_until_finished(self):
+            """Pretend saves finished immediately."""
+
+        def close(self):
+            """Pretend the checkpointer closed cleanly."""
+
+    monkeypatch.setattr(checkpointing.ocp, "AsyncCheckpointer", FakeAsyncCheckpointer)
+
+    checkpoint_io = OrbaxAsyncCheckpointIO()
+    checkpoint_io.save_training_item(
+        tmp_path / "checkpoint_epoch0001_step0000",
+        _linear_checkpoint_payload(),
+    )
+    checkpoint_io.save_raw_model_item(
+        tmp_path / "raw_models" / "update_000000001",
+        _linear_checkpoint_payload().state.model,
+    )
+    checkpoint_io.close()
+
+    assert save_calls[0][1] is False
+    assert save_calls[1][1] is True
+
+
+def test_save_training_checkpoint_does_not_precreate_resumable_directory(tmp_path):
+    """Orbax should own creating resumable checkpoint directories."""
+    run_dir = tmp_path / "checkpoints"
+    checkpoint_path_existed = None
+
+    class ObservingCheckpointIO:
+        """Fake checkpoint I/O that records destination state before save."""
+
+        def save_training_item(self, path, item):
+            """Record whether the checkpoint directory already exists."""
+            nonlocal checkpoint_path_existed
+            checkpoint_path_existed = Path(path).exists()
+
+        def wait_training(self):
+            """Pretend training checkpoint finalization succeeded."""
+
+        def wait_all(self):
+            """Pretend all checkpoint writes finished."""
+
+    save_training_checkpoint(
+        run_dir=str(run_dir),
+        checkpoint=_linear_checkpoint_payload(),
+        stable_hash="abc123",
+        checkpoint_kind="periodic",
+        grad_accum_steps=1,
+        microsteps_per_epoch=8,
+        monitor="flow_matching_loss",
+        monitor_mode="min",
+        clearml_task_id="task-1",
+        latest_filename="latest.json",
+        source_checkpoint_path=None,
+        hash_payload={"train": {"optimizer": "sgd"}},
+        checkpoint_io=ObservingCheckpointIO(),
+    )
+
+    assert checkpoint_path_existed is False
+
+
 def test_orbax_io_preserves_repeated_static_fields_in_checkpoint(tmp_path):
     """Static metadata should be restored for every repeated checkpoint path."""
     saved_model = StaticLeafModel(weight=jnp.ones((2,)), label="saved")
