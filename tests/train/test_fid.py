@@ -152,6 +152,22 @@ def _make_conditioned_dataloader(
     return DataLoader(dataset, batch_size=batch_size, shuffle=False)
 
 
+class _NoIterationDataloader:
+    """DataLoader stand-in that exposes a dataset but must not be iterated."""
+
+    def __init__(self, dataset):
+        """Initialize with a dataset for ``len(dataloader.dataset)`` users.
+
+        Args:
+            dataset: Dataset object to expose through the ``dataset`` attribute.
+        """
+        self.dataset = dataset
+
+    def __iter__(self):
+        """Raise if FID tries to read batches after caching metadata."""
+        raise AssertionError("validation dataloader should not be iterated")
+
+
 def _guided_generate_fn(model, key, cond, guidance_scale=1.0):
     """Generate an image whose pixels encode the supplied condition."""
     del model, key
@@ -775,3 +791,28 @@ def test_fid_metric_caches_real_stats_across_calls():
 
     assert np.isfinite(result1["fid"])
     assert np.isfinite(result2["fid"])
+
+
+def test_fid_metric_caches_validation_conditions_across_calls():
+    """FIDMetric should reuse cached CFG conditions with cached real stats."""
+    acc = FIDAccumulator(encoder=_identity_encoder)
+    generate_fn = functools.partial(_guided_generate_fn, guidance_scale=2.0)
+    metric = FIDMetric(
+        accumulators={"fid": acc},
+        generate_fn=generate_fn,
+        n_samples=3,
+        gen_batch_size=4,
+        n_real=8,
+    )
+    dataloader = _make_conditioned_dataloader(n_batches=2, batch_size=4)
+
+    result1 = metric(model=None, val_dataloader=dataloader, key=jax.random.PRNGKey(34))
+    result2 = metric(
+        model=None,
+        val_dataloader=_NoIterationDataloader(dataloader.dataset),
+        key=jax.random.PRNGKey(35),
+    )
+
+    assert np.isfinite(result1["fid"])
+    assert np.isfinite(result2["fid"])
+    assert metric.condition_cache.matches(8)

@@ -1254,6 +1254,7 @@ class FIDMetric:
         self.parallel_generation = parallel_generation
         self.batched_generate_wrapper = _make_batched_generate_step()
         self.parallel_batched_generate_wrapper = _make_parallel_batched_generate_step()
+        self.condition_cache = FIDConditionCache()
 
     def __call__(
         self,
@@ -1287,6 +1288,7 @@ class FIDMetric:
             n_real=self.n_real,
             parallel_generation=self.parallel_generation,
             data_parallel=data_parallel,
+            condition_cache=self.condition_cache,
         )
 
 
