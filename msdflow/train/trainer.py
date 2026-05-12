@@ -35,10 +35,12 @@ from msdflow.tracking import (
     log_time_binned_loss,
 )
 from msdflow.train.checkpointing import (
+    OrbaxAsyncCheckpointIO,
     SigtermFlag,
     TrainingCheckpoint,
     load_json,
     load_training_checkpoint,
+    save_raw_model_checkpoint,
     save_training_checkpoint,
     validate_checkpoint_metadata,
 )
@@ -49,10 +51,10 @@ from msdflow.train.metrics import (
 )
 from msdflow.train.parallel import (
     DataParallelConfig,
-    _parse_data_parallel_enabled,
-    _validate_batch_for_data_parallel,
-    _validate_data_parallel_config,
-    make_data_parallel_config,
+    _parse_data_parallel_enabled,  # noqa: F401
+    _validate_batch_for_data_parallel,  # noqa: F401
+    _validate_data_parallel_config,  # noqa: F401
+    make_data_parallel_config,  # noqa: F401
     resolve_data_parallel_config,
     shard_batch,
     shard_model,
@@ -231,8 +233,7 @@ def resolve_time_loss_diagnostic_config(
         )
     if config.num_batches < 0:
         raise ValueError(
-            "time_loss_diagnostic.num_batches must be >= 0, "
-            f"got {config.num_batches}"
+            f"time_loss_diagnostic.num_batches must be >= 0, got {config.num_batches}"
         )
     return config
 
@@ -275,8 +276,25 @@ def make_train_step(
         loss_fn:   Differentiable loss callable with signature
                    ``(model, x_t, u_t, t, cond, cond_mask, key) -> scalar``.
         data_parallel: Optional data-parallel runtime configuration.
+
+    Returns:
+        JIT-compiled callable returning ``(new_state, loss, acc_grads)``. When
+        the optimizer state does not come from ``optax.MultiSteps``,
+        ``acc_grads`` is the current microstep gradient tree.
     """
     data_parallel = resolve_data_parallel_config(data_parallel)
+
+    def accumulated_grads(grads, opt_state):
+        """Return the current averaged accumulated gradients for diagnostics."""
+        if not hasattr(opt_state, "acc_grads") or not hasattr(opt_state, "mini_step"):
+            return grads
+
+        acc_grads = jax.tree.map(
+            lambda grad, acc: acc + (grad - acc) / (opt_state.mini_step + 1),
+            grads,
+            opt_state.acc_grads,
+        )
+        return optax.tree.cast_like(acc_grads, grads)
 
     @eqx.filter_jit(donate="all")
     @eqx.debug.assert_max_traces(max_traces=1)
@@ -288,7 +306,7 @@ def make_train_step(
         cond: jax.Array,
         cond_mask: jax.Array,
         key: jax.Array,
-    ) -> tuple[TrainState, jax.Array]:
+    ) -> tuple[TrainState, jax.Array, Any]:
         if data_parallel.enabled:
             state = eqx.filter_shard(state, data_parallel.model_sharding)
             x_t, u_t, t, cond, cond_mask, key = eqx.filter_shard(
@@ -299,14 +317,6 @@ def make_train_step(
             state.model, x_t, u_t, t, cond, cond_mask, key
         )
 
-        opt_state = state.opt_state
-        acc_grads = jax.tree.map(
-            lambda grad, acc: acc + (grad - acc) / (opt_state.mini_step + 1),
-            grads,
-            opt_state.acc_grads,
-        )
-        acc_grads = optax.tree.cast_like(acc_grads, grads)
-
         updates, new_opt_state = optimizer.update(
             grads, state.opt_state, eqx.filter(state.model, eqx.is_array)
         )
@@ -314,14 +324,13 @@ def make_train_step(
         new_state = TrainState(model=new_model, opt_state=new_opt_state)
         if data_parallel.enabled:
             new_state = eqx.filter_shard(new_state, data_parallel.model_sharding)
-        return new_state, loss, acc_grads
+        return new_state, loss, accumulated_grads(grads, state.opt_state)
 
     return train_step
 
 
-@eqx.filter_jit
-@eqx.debug.assert_max_traces(max_traces=1)
-def grad_clip_diagnostics(grads, global_norm: float | None = None):
+def _grad_clip_diagnostics_impl(grads, global_norm: float | None = None):
+    """Compute gradient clipping diagnostics from a gradient tree."""
     grad_norm_pre_clip = optax.tree.norm(grads)
 
     if global_norm is None:
@@ -344,7 +353,40 @@ def grad_clip_diagnostics(grads, global_norm: float | None = None):
 
 
 @eqx.filter_jit
-@eqx.debug.assert_max_traces(max_traces=1)
+def grad_clip_diagnostics(grads, global_norm: float | None = None):
+    """Return gradient clipping diagnostics for direct helper callers."""
+    return _grad_clip_diagnostics_impl(grads, global_norm)
+
+
+def make_grad_clip_diagnostics_step():
+    """Return a per-training-run JIT guard for gradient diagnostics.
+
+    Returns:
+        JIT-compiled callable guarded against retracing within one training
+        loop.
+    """
+
+    @eqx.filter_jit
+    @eqx.debug.assert_max_traces(max_traces=1)
+    def grad_clip_step(grads, global_norm: float | None = None):
+        return _grad_clip_diagnostics_impl(grads, global_norm)
+
+    return grad_clip_step
+
+
+def _ema_update_impl(ema_model, new_model, decay: float):
+    """Update EMA model arrays and preserve static leaves."""
+    ema_arrays, static = eqx.partition(ema_model, eqx.is_array)
+    new_arrays, _ = eqx.partition(new_model, eqx.is_array)
+    updated = jax.tree_util.tree_map(
+        lambda e, m: decay * e + (1.0 - decay) * m,
+        ema_arrays,
+        new_arrays,
+    )
+    return eqx.combine(updated, static)
+
+
+@eqx.filter_jit
 def ema_update(ema_model, new_model, decay: float):
     """Update EMA model weights using exponential moving average.
 
@@ -359,14 +401,23 @@ def ema_update(ema_model, new_model, decay: float):
     Returns:
         Updated EMA model with blended array leaves.
     """
-    ema_arrays, static = eqx.partition(ema_model, eqx.is_array)
-    new_arrays, _ = eqx.partition(new_model, eqx.is_array)
-    updated = jax.tree_util.tree_map(
-        lambda e, m: decay * e + (1.0 - decay) * m,
-        ema_arrays,
-        new_arrays,
-    )
-    return eqx.combine(updated, static)
+    return _ema_update_impl(ema_model, new_model, decay)
+
+
+def make_ema_update_step():
+    """Return a per-training-run JIT guard for EMA updates.
+
+    Returns:
+        JIT-compiled EMA update callable guarded against retracing within one
+        training loop.
+    """
+
+    @eqx.filter_jit
+    @eqx.debug.assert_max_traces(max_traces=1)
+    def ema_update_step(ema_model, new_model, decay: float):
+        return _ema_update_impl(ema_model, new_model, decay)
+
+    return ema_update_step
 
 
 def _copy_array_tree(tree):
@@ -594,7 +645,7 @@ def batch_metric_loop(
     prepare_jax: callable,
     num_batches: int = 0,
     data_parallel: DataParallelConfig | None = None,
-) -> dict:
+) -> tuple[dict[str, float], int]:
     """Stream a dataloader through a batch metric step and return per-metric means.
 
     Args:
@@ -608,32 +659,40 @@ def batch_metric_loop(
         data_parallel: Optional data-parallel runtime configuration.
 
     Returns:
-        ``dict[str, float]`` mapping metric name to its mean value over all
-        processed batches. Batches are weighted equally regardless of size;
-        use uniform batch sizes for unbiased estimates. Returns an empty dict
-        if the dataloader yields no batches.
+        Tuple of ``(metrics, num_eval_batches)``. ``metrics`` maps metric name
+        to its mean value over all processed batches. Batches are weighted
+        equally regardless of size; use uniform batch sizes for unbiased
+        estimates. ``num_eval_batches`` is the requested loop length after
+        validation.
     """
     data_parallel = resolve_data_parallel_config(data_parallel)
     ema_model = shard_model(ema_model, data_parallel)
 
     totals: dict = {}
     n_batches = 0
-    n_dl = len(dataloader)
+    try:
+        n_dl = len(dataloader)
+    except TypeError:
+        n_dl = None
     num_batches_given = num_batches > 0
-    num_batches_invalid = num_batches > n_dl and num_batches_given
+    num_batches_invalid = n_dl is not None and num_batches > n_dl and num_batches_given
     if num_batches_invalid:
         logger.warning(
             f"Invalid num_batches: {num_batches}. Using full dataloader with {n_dl} batches."
         )
         num_batches = 0
-    total = num_batches if num_batches > 0 else len(dataloader)
     data_iter = iter(dataloader)
+    total = num_batches if num_batches > 0 else n_dl
+    progress = range(total) if total is not None else data_iter
 
-    for _ in tqdm(range(total), desc="Batch metrics", leave=False, dynamic_ncols=True):
-        try:
-            batch = next(data_iter)
-        except StopIteration:
-            break
+    for item in tqdm(progress, desc="Batch metrics", leave=False, dynamic_ncols=True):
+        if total is None:
+            batch = item
+        else:
+            try:
+                batch = next(data_iter)
+            except StopIteration:
+                break
         batch_key, key = jax.random.split(key, 2)
         images_np, cond_np = prepare_batch(batch)
         t, x_t, u_t, cond, cond_mask, dropout_keys = prepare_jax(
@@ -649,8 +708,8 @@ def batch_metric_loop(
         n_batches += 1
 
     if n_batches == 0:
-        return {}
-    return {k: v / n_batches for k, v in totals.items()}, total
+        return {}, 0
+    return {k: v / n_batches for k, v in totals.items()}, n_batches
 
 
 def time_binned_loss_loop(
@@ -887,6 +946,7 @@ def train(
     resume_checkpoint_path: str | None = None,
     resume_metadata: dict | None = None,
     source_checkpoint_path: str | None = None,
+    checkpoint_io: OrbaxAsyncCheckpointIO | None = None,
     sigterm_flag_factory=SigtermFlag,
     *args,
     x0_mode: str = "gaussian",
@@ -912,7 +972,7 @@ def train(
         batch_metrics:          List of callables with signature
                                 ``(model, x_t, u_t, t, cond, cond_mask, key) -> scalar``.
                                 Evaluated every ``val_every`` epochs over the full
-                                val loader and ``num_train_eval_batches`` train batches.
+                                val loader and ``num_eval_batches`` train batches.
         epoch_metrics:          List of callables with signature
                                 ``(model, val_dataloader, key) -> scalar | dict``.
                                 Evaluated every ``val_every`` epochs. Receives
@@ -939,8 +999,9 @@ def train(
         val_every:              Run validation every this many epochs.
         checkpoint_every:       Save checkpoints every this many epochs.
         checkpoint_dir:         Directory for checkpoint files.
-        num_train_eval_batches: Batches from train loader for batch metrics.
-                                ``0`` = all.
+        num_eval_batches: Batches from train and validation loaders for batch
+            metrics. ``0`` = all validation batches, then the same observed
+            validation batch count is reused for train metrics.
         clearml_task:           ClearML Task for experiment tracking, or None
                                 to disable all tracking (default).
         sample_fn:              Callable ``(model, key, num_samples) ->
@@ -981,6 +1042,8 @@ def train(
             example-tree construction. Defaults to None.
         source_checkpoint_path: Optional original checkpoint path recorded in new
             full-state checkpoint metadata. Defaults to None.
+        checkpoint_io: Optional shared Orbax checkpoint I/O object. When omitted,
+            the trainer creates and closes its own I/O object.
         sigterm_flag_factory: Context manager factory used to observe SIGTERM
             requests. Defaults to ``SigtermFlag``.
         time_loss_diagnostic: Keyword-only optional mapping or
@@ -1015,7 +1078,7 @@ def train(
                 break
         ref_images = np.concatenate(ref_images, axis=0)[:num_samples].squeeze()
         if clearml_task is None:
-            ref_samples_dir = os.path.join(samples_dir, f"reference")
+            ref_samples_dir = os.path.join(samples_dir, "reference")
             os.makedirs(ref_samples_dir, exist_ok=True)
             for i, img in enumerate(ref_images):
                 np.save(os.path.join(ref_samples_dir, f"sample_{i:03d}.npy"), img)
@@ -1061,6 +1124,8 @@ def train(
         batch_metrics,
         data_parallel=data_parallel_config,
     )
+    ema_update_step = make_ema_update_step()
+    grad_clip_diagnostics_step = make_grad_clip_diagnostics_step()
     time_binned_loss_step = None
     if time_loss_enabled:
         time_binned_loss_step = make_time_binned_loss_step(
@@ -1116,88 +1181,109 @@ def train(
     start_epoch = 0
     resume_completed_microsteps = 0
     resume_epoch_loss = 0.0
+    global_optimizer_step = 0
     lr_schedule_step = 0
+    owns_checkpoint_io = checkpoint_io is None
+    checkpoint_io = checkpoint_io or OrbaxAsyncCheckpointIO()
 
-    if resume_checkpoint_path is not None and resume_metadata is None:
-        resume_metadata_path = os.path.splitext(os.fspath(resume_checkpoint_path))[0]
-        resume_metadata_path = f"{resume_metadata_path}.json"
-        if not os.path.exists(resume_metadata_path):
-            raise ValueError(
-                "resume_metadata is required when resume_checkpoint_path has no "
-                f"JSON sidecar: {resume_metadata_path}"
+    try:
+        if resume_checkpoint_path is not None and resume_metadata is None:
+            resume_metadata_path = os.path.join(
+                os.fspath(resume_checkpoint_path),
+                "metadata.json",
             )
-        resume_metadata = load_json(resume_metadata_path)
-        resume_metadata.setdefault("metadata_path", resume_metadata_path)
+            if not os.path.exists(resume_metadata_path):
+                raise ValueError(
+                    "resume_metadata is required when resume_checkpoint_path has no "
+                    f"JSON sidecar: {resume_metadata_path}"
+                )
+            resume_metadata = load_json(resume_metadata_path)
+            resume_metadata.setdefault("metadata_path", resume_metadata_path)
 
-    if resume_checkpoint_path is not None:
-        resume_ema_initialized = bool(
-            resume_metadata and resume_metadata.get("ema_initialized")
-        )
-        like_checkpoint = TrainingCheckpoint(
-            state=state,
-            ema_model=model if resume_ema_initialized else None,
-            ema_initialized=resume_ema_initialized,
-            key=key,
-            sampling_key=sampling_key,
-            epoch=0,
-            completed_microsteps=0,
-            epoch_loss=0.0,
-            best_metric_value=best_metric_value,
-            best_epoch=None,
-            patience_counter=0,
-            total_epoch_time=0.0,
-            total_train_time=0.0,
-            total_val_time=0.0,
-            val_runs=0,
-            val_time=float("nan"),
-            val_metrics={},
-            train_metrics={},
-            epoch_metric_results={},
-        )
-        resume_checkpoint = load_training_checkpoint(
-            resume_checkpoint_path,
-            like_checkpoint,
-        )
+        if resume_checkpoint_path is not None:
+            resume_ema_initialized = bool(
+                resume_metadata and resume_metadata.get("ema_initialized")
+            )
+            like_checkpoint = TrainingCheckpoint(
+                state=state,
+                ema_model=model if resume_ema_initialized else None,
+                ema_initialized=resume_ema_initialized,
+                key=key,
+                sampling_key=sampling_key,
+                epoch=0,
+                completed_microsteps=0,
+                epoch_loss=0.0,
+                best_metric_value=best_metric_value,
+                best_epoch=None,
+                patience_counter=0,
+                total_epoch_time=0.0,
+                total_train_time=0.0,
+                total_val_time=0.0,
+                val_runs=0,
+                val_time=float("nan"),
+                val_metrics=dict((resume_metadata or {}).get("val_metrics", {})),
+                train_metrics=dict((resume_metadata or {}).get("train_metrics", {})),
+                epoch_metric_results=dict(
+                    (resume_metadata or {}).get("epoch_metric_results", {})
+                ),
+                global_optimizer_step=0,
+                lr_schedule_step=0,
+            )
+            resume_checkpoint = load_training_checkpoint(
+                resume_checkpoint_path,
+                like_checkpoint,
+                metadata=resume_metadata,
+                checkpoint_io=checkpoint_io,
+            )
 
-    if resume_checkpoint is not None:
-        if resume_metadata is not None and checkpoint_hash is not None:
-            validate_checkpoint_metadata(
-                resume_metadata,
-                stable_hash=checkpoint_hash,
-                monitor=monitor,
-                monitor_mode=monitor_mode,
-                microsteps_per_epoch=microsteps_per_epoch,
-                allow_hash_override=False,
-            )
-        state = shard_train_state(resume_checkpoint.state, data_parallel_config)
-        ema_model = resume_checkpoint.ema_model
-        if ema_model is not None:
-            ema_model = _copy_array_tree(ema_model)
-            ema_model = shard_model(ema_model, data_parallel_config)
-        ema_initialized = bool(resume_checkpoint.ema_initialized)
-        key = resume_checkpoint.key
-        sampling_key = resume_checkpoint.sampling_key
-        start_epoch = int(resume_checkpoint.epoch)
-        resume_completed_microsteps = int(resume_checkpoint.completed_microsteps)
-        resume_epoch_loss = float(resume_checkpoint.epoch_loss)
-        best_metric_value = float(resume_checkpoint.best_metric_value)
-        best_epoch = resume_checkpoint.best_epoch
-        patience_counter = int(resume_checkpoint.patience_counter)
-        total_epoch_time = float(resume_checkpoint.total_epoch_time)
-        total_train_time = float(resume_checkpoint.total_train_time)
-        total_val_time = float(resume_checkpoint.total_val_time)
-        val_runs = int(resume_checkpoint.val_runs)
-        val_time = float(resume_checkpoint.val_time)
-        val_metrics = dict(resume_checkpoint.val_metrics)
-        train_metrics = dict(resume_checkpoint.train_metrics)
-        epoch_metric_results = dict(resume_checkpoint.epoch_metric_results)
-        if resume_completed_microsteps > 0:
-            logger.warning(
-                "Resuming epoch %s from %s completed microsteps; the dataloader "
-                "prefix will be replayed with restored model state.",
-                start_epoch + 1,
-                resume_completed_microsteps,
-            )
+        if resume_checkpoint is not None:
+            if resume_metadata is not None and checkpoint_hash is not None:
+                validate_checkpoint_metadata(
+                    resume_metadata,
+                    stable_hash=checkpoint_hash,
+                    monitor=monitor,
+                    monitor_mode=monitor_mode,
+                    microsteps_per_epoch=microsteps_per_epoch,
+                    allow_hash_override=False,
+                )
+            state = shard_train_state(resume_checkpoint.state, data_parallel_config)
+            ema_model = resume_checkpoint.ema_model
+            if ema_model is not None:
+                ema_model = _copy_array_tree(ema_model)
+                ema_model = shard_model(ema_model, data_parallel_config)
+            ema_initialized = bool(resume_checkpoint.ema_initialized)
+            key = resume_checkpoint.key
+            sampling_key = resume_checkpoint.sampling_key
+            start_epoch = int(resume_checkpoint.epoch)
+            resume_completed_microsteps = int(resume_checkpoint.completed_microsteps)
+            resume_epoch_loss = float(resume_checkpoint.epoch_loss)
+            best_metric_value = float(resume_checkpoint.best_metric_value)
+            best_epoch = resume_checkpoint.best_epoch
+            patience_counter = int(resume_checkpoint.patience_counter)
+            total_epoch_time = float(resume_checkpoint.total_epoch_time)
+            total_train_time = float(resume_checkpoint.total_train_time)
+            total_val_time = float(resume_checkpoint.total_val_time)
+            val_runs = int(resume_checkpoint.val_runs)
+            val_time = float(resume_checkpoint.val_time)
+            val_metrics = dict(resume_checkpoint.val_metrics)
+            train_metrics = dict(resume_checkpoint.train_metrics)
+            epoch_metric_results = dict(resume_checkpoint.epoch_metric_results)
+            global_optimizer_step = int(resume_checkpoint.global_optimizer_step)
+            lr_schedule_step = int(resume_checkpoint.lr_schedule_step)
+            if resume_completed_microsteps > 0:
+                logger.warning(
+                    "Resuming epoch %s from %s completed microsteps; the dataloader "
+                    "prefix will be replayed with restored model state.",
+                    start_epoch + 1,
+                    resume_completed_microsteps,
+                )
+    except Exception:
+        try:
+            checkpoint_io.wait_all()
+        finally:
+            if owns_checkpoint_io:
+                checkpoint_io.close()
+        raise
 
     def _clearml_task_id() -> str | None:
         """Return the active ClearML task id when one is available."""
@@ -1246,6 +1332,8 @@ def train(
             val_metrics=_float_metrics(val_metrics),
             train_metrics=_float_metrics(train_metrics),
             epoch_metric_results=_float_metrics(epoch_metric_results),
+            global_optimizer_step=int(global_optimizer_step),
+            lr_schedule_step=int(lr_schedule_step),
         )
 
     def _save_full_checkpoint(
@@ -1254,6 +1342,7 @@ def train(
         epoch_to_resume: int,
         completed_microsteps: int,
         current_epoch_loss: float,
+        directory_epoch: int | None = None,
     ) -> dict:
         """Save the current full-state checkpoint and latest pointer."""
         if checkpoint_hash is None:
@@ -1276,432 +1365,463 @@ def train(
             latest_filename=latest_filename,
             source_checkpoint_path=source_checkpoint_path or resume_checkpoint_path,
             hash_payload=hash_payload or {},
+            checkpoint_io=checkpoint_io,
+            update_latest=True,
+            wait=True,
+            directory_epoch=directory_epoch,
+        )
+        log_checkpoint(
+            clearml_task,
+            metadata["checkpoint_path"],
+            epoch=metadata["epoch"],
+            checkpoint_kind=kind,
+            completed_microsteps=metadata["completed_microsteps"],
         )
         logger.info(
-            "Saved full-state %s checkpoint: %s", kind, metadata["payload_path"]
+            "Saved full-state %s checkpoint: %s", kind, metadata["checkpoint_path"]
         )
         return metadata
 
-    with sigterm_flag_factory(
-        save_on_sigterm and checkpoint_hash is not None
-    ) as sigterm_flag:
-        for epoch in range(start_epoch, num_epochs):
-            is_resumed_epoch = epoch == start_epoch and resume_completed_microsteps > 0
-            epoch_loss = jnp.float32(resume_epoch_loss if is_resumed_epoch else 0.0)
-            epoch_loss_denominator = (
-                resume_completed_microsteps if is_resumed_epoch else 0
-            )
-            train_time_loss_batches: list[tuple[np.ndarray, np.ndarray]] = []
-            epoch_start_time = time.perf_counter()
+    try:
+        with sigterm_flag_factory(
+            save_on_sigterm and checkpoint_hash is not None
+        ) as sigterm_flag:
+            for epoch in range(start_epoch, num_epochs):
+                is_resumed_epoch = (
+                    epoch == start_epoch and resume_completed_microsteps > 0
+                )
+                epoch_loss = jnp.float32(resume_epoch_loss if is_resumed_epoch else 0.0)
+                epoch_loss_denominator = (
+                    resume_completed_microsteps if is_resumed_epoch else 0
+                )
+                train_time_loss_batches: list[tuple[np.ndarray, np.ndarray]] = []
+                epoch_start_time = time.perf_counter()
 
-            epoch_grad_norm = 0.0
-            epoch_clip_count = 0.0
-            epoch_clip_scale = 0.0
-            epoch_init_lr_step = lr_schedule_step
-            epoch_end_lr_step = lr_schedule_step
+                epoch_grad_norm = 0.0
+                epoch_clip_count = 0.0
+                epoch_clip_scale = 0.0
+                epoch_init_lr_step = lr_schedule_step
+                epoch_end_lr_step = lr_schedule_step
 
-            prefetcher = BatchPrefetcher(
-                dataloader=dataloader,
-                num_items=microsteps_per_epoch,
-                buffer_size=buffer_size,
-            )
+                prefetcher = BatchPrefetcher(
+                    dataloader=dataloader,
+                    num_items=microsteps_per_epoch,
+                    buffer_size=buffer_size,
+                )
 
-            try:
-                with logging_redirect_tqdm():
-                    pbar = tqdm(
-                        range(microsteps_per_epoch),
-                        desc=f"Epoch {epoch + 1}/{num_epochs}",
-                        leave=False,
-                        dynamic_ncols=True,
-                    )
-                    for microstep in pbar:
-                        images_np, cond_np = next(prefetcher)
-                        if cache_train_time_loss_batches and (
-                            time_loss_config.num_batches == 0
-                            or len(train_time_loss_batches)
-                            < time_loss_config.num_batches
-                        ):
-                            train_time_loss_batches.append(
-                                (
-                                    np.array(images_np, copy=True),
-                                    np.array(cond_np, copy=True),
-                                )
-                            )
-                        step_key, key = jax.random.split(key)
-                        t, x_t, u_t, cond, cond_mask, dropout_keys = prepare_jax(
-                            images_np, cond_np, step_key
+                try:
+                    with logging_redirect_tqdm():
+                        pbar = tqdm(
+                            range(microsteps_per_epoch),
+                            desc=f"Epoch {epoch + 1}/{num_epochs}",
+                            leave=False,
+                            dynamic_ncols=True,
                         )
-                        x_t, u_t, t, cond, cond_mask, dropout_keys = shard_batch(
-                            (x_t, u_t, t, cond, cond_mask, dropout_keys),
-                            data_parallel_config,
-                        )
-
-                        state, loss, acc_grads = train_step(
-                            state, x_t, u_t, t, cond, cond_mask, dropout_keys
-                        )
-                        if (microstep + 1) % grad_accum_steps == 0:
-                            if not ema_initialized:
-                                ema_model = _copy_array_tree(state.model)
-                                ema_initialized = True
-                            else:
-                                ema_model = ema_update(
-                                    ema_model,
-                                    state.model,
-                                    ema_decay,
-                                )
-
-                            grad_norm, was_clipped, clip_scale = grad_clip_diagnostics(
-                                grads=acc_grads, global_norm=global_norm
-                            )
-                            epoch_grad_norm += grad_norm
-                            epoch_clip_count += was_clipped
-                            epoch_clip_scale += clip_scale
-                            epoch_end_lr_step += 1
-
-                        epoch_loss = epoch_loss + loss
-                        epoch_loss_denominator += 1
-
-                        if sigterm_flag.requested:
-                            partial_time = time.perf_counter() - epoch_start_time
-                            total_train_time += partial_time
-                            total_epoch_time += partial_time
-                            if microstep + 1 >= microsteps_per_epoch:
-                                checkpoint_epoch = epoch + 1
-                                checkpoint_microsteps = 0
-                                checkpoint_epoch_loss = 0.0
-                            else:
-                                checkpoint_epoch = epoch
-                                max_mid_epoch_microsteps = max(
-                                    microsteps_per_epoch - 1,
-                                    0,
-                                )
-                                checkpoint_microsteps = min(
-                                    epoch_loss_denominator,
-                                    max_mid_epoch_microsteps,
-                                )
-                                checkpoint_epoch_loss = float(epoch_loss)
-                                if (
-                                    checkpoint_microsteps > 0
-                                    and checkpoint_microsteps < epoch_loss_denominator
-                                ):
-                                    checkpoint_epoch_loss *= (
-                                        checkpoint_microsteps / epoch_loss_denominator
+                        for microstep in pbar:
+                            images_np, cond_np = next(prefetcher)
+                            if cache_train_time_loss_batches and (
+                                time_loss_config.num_batches == 0
+                                or len(train_time_loss_batches)
+                                < time_loss_config.num_batches
+                            ):
+                                train_time_loss_batches.append(
+                                    (
+                                        np.array(images_np, copy=True),
+                                        np.array(cond_np, copy=True),
                                     )
-                            _save_full_checkpoint(
-                                kind="sigterm",
-                                epoch_to_resume=checkpoint_epoch,
-                                completed_microsteps=checkpoint_microsteps,
-                                current_epoch_loss=checkpoint_epoch_loss,
-                            )
-                            return _model_to_return()
-            finally:
-                prefetcher.shutdown()
-
-            epoch_loss = float(epoch_loss)
-            train_loss_denominator = max(epoch_loss_denominator, 1)
-            epoch_avg_grad_norm = float(epoch_grad_norm) / steps_per_epoch
-            epoch_clip_fraction = float(epoch_clip_count) / steps_per_epoch
-            epoch_avg_clip_scale = float(epoch_clip_scale) / steps_per_epoch
-            epoch_init_lr = float(lr_schedule(epoch_init_lr_step))
-            epoch_end_lr = float(lr_schedule(epoch_end_lr_step))
-            lr_schedule_step = epoch_end_lr_step
-            train_time = time.perf_counter() - epoch_start_time
-            total_train_time += train_time
-            avg_train_time = total_train_time / (epoch + 1)
-            if sigterm_flag.requested:
-                total_epoch_time += train_time
-                _save_full_checkpoint(
-                    kind="sigterm",
-                    epoch_to_resume=epoch + 1,
-                    completed_microsteps=0,
-                    current_epoch_loss=0.0,
-                )
-                return _model_to_return()
-
-            if ((epoch + 1) % val_every == 0) or (epoch == 0):
-                val_start_time = time.perf_counter()
-
-                key, key_val, key_train, key_epoch = jax.random.split(key, 4)
-                key_time_loss = None
-                if time_loss_enabled:
-                    key_time_loss = jax.random.fold_in(key, epoch + 1)
-
-                if eval_model == "live":
-                    batch_eval_model = _copy_array_tree(state.model)
-                elif eval_model == "ema":
-                    batch_eval_model = ema_model
-
-                batch_eval_model = _inference_model(batch_eval_model)
-                val_metrics, num_eval_batches = batch_metric_loop(
-                    key=key_val,
-                    ema_model=batch_eval_model,
-                    dataloader=val_dataloader,
-                    step_fn=batch_metric_step,
-                    prepare_jax=prepare_jax,
-                    num_batches=num_eval_batches,
-                    data_parallel=data_parallel_config,
-                )
-
-                train_metrics, _ = batch_metric_loop(
-                    key=key_train,
-                    ema_model=batch_eval_model,
-                    dataloader=eval_train_dataloader,
-                    step_fn=batch_metric_step,
-                    prepare_jax=prepare_jax,
-                    num_batches=num_eval_batches,
-                    data_parallel=data_parallel_config,
-                )
-
-                epoch_metric_results = {}
-                if epoch_metrics:
-                    inference_ema_model = _inference_model(ema_model)
-                    for fn in epoch_metrics:
-                        result = _call_epoch_metric(
-                            fn,
-                            inference_ema_model,
-                            val_dataloader,
-                            key_epoch,
-                            data_parallel_config,
-                        )
-                        if isinstance(result, dict):
-                            epoch_metric_results.update(result)
-                        else:
-                            if isinstance(fn, functools.partial):
-                                name = fn.func.__name__
-                            elif hasattr(fn, "__name__"):
-                                name = fn.__name__
-                            else:
-                                name = type(fn).__name__
-                            epoch_metric_results[name] = result
-
-                if time_loss_enabled and time_binned_loss_step is not None:
-                    assert key_time_loss is not None
-                    for split in time_loss_splits:
-                        key_time_loss, split_key = jax.random.split(key_time_loss, 2)
-                        if split == "train":
-                            time_loss_result = _time_binned_loss_cached_batch_loop(
-                                key=split_key,
-                                model=batch_eval_model,
-                                cached_batches=train_time_loss_batches,
-                                step_fn=time_binned_loss_step,
-                                prepare_jax=prepare_jax,
-                                num_bins=time_loss_config.num_bins,
-                                data_parallel=data_parallel_config,
-                            )
-                        else:
-                            time_loss_result = time_binned_loss_loop(
-                                key=split_key,
-                                model=batch_eval_model,
-                                dataloader=val_dataloader,
-                                step_fn=time_binned_loss_step,
-                                prepare_jax=prepare_jax,
-                                num_bins=time_loss_config.num_bins,
-                                num_batches=time_loss_config.num_batches,
-                                data_parallel=data_parallel_config,
-                            )
-                        history = time_loss_histories.get(split)
-                        if history is None:
-                            history = TimeBinnedLossHistory(
-                                bin_edges=time_loss_result.bin_edges,
-                            )
-                            time_loss_histories[split] = history
-                        history.append(epoch + 1, time_loss_result)
-                        log_time_binned_loss(
-                            task=clearml_task,
-                            split=split,
-                            epoch=epoch + 1,
-                            result=time_loss_result,
-                            history=history if time_loss_config.log_heatmap else None,
-                        )
-
-                val_time = time.perf_counter() - val_start_time
-                total_val_time += val_time
-                val_runs += 1
-                avg_val_time = total_val_time / val_runs
-
-                # --- Best-model checkpointing and early stopping ---
-                if monitor:
-                    current_monitor = val_metrics.get(monitor)
-                    if current_monitor is None:
-                        current_monitor = epoch_metric_results.get(monitor)
-                    if current_monitor is None and (
-                        val_metrics or epoch_metric_results
-                    ):
-                        raise ValueError(
-                            f"monitor metric '{monitor}' not found in val_metrics "
-                            f"{list(val_metrics.keys())} or epoch_metric_results "
-                            f"{list(epoch_metric_results.keys())}"
-                        )
-                    if current_monitor is not None:
-                        current_monitor = float(current_monitor)
-                        is_improved = (
-                            current_monitor < best_metric_value
-                            if monitor_mode == "min"
-                            else current_monitor > best_metric_value
-                        )
-                        if is_improved:
-                            all_metrics = {monitor: current_monitor}
-                            all_metrics.update(
-                                {k: v for k, v in val_metrics.items() if k != monitor}
-                            )
-                            all_metrics.update(
-                                {
-                                    k: v
-                                    for k, v in epoch_metric_results.items()
-                                    if k != monitor
-                                }
-                            )
-                            metric_str = " | ".join(
-                                f"{k} = {float(v):.4g}" for k, v in all_metrics.items()
-                            )
-                            logger.info(
-                                f"New best model at epoch {epoch + 1}: {metric_str}"
-                            )
-                            os.makedirs(checkpoint_dir, exist_ok=True)
-                            best_ema_path = os.path.join(
-                                checkpoint_dir, f"model_epoch{epoch + 1}_best_ema.eqx"
-                            )
-                            if ema_model is not None:
-                                eqx.tree_serialise_leaves(
-                                    best_ema_path,
-                                    _inference_model(ema_model),
                                 )
-                                log_checkpoint(clearml_task, best_ema_path, epoch + 1)
-                            best_metric_value = current_monitor
-                            best_epoch = epoch + 1
-                            patience_counter = 0
-                        else:
-                            patience_counter += 1
-
-                        if sigterm_flag.requested:
-                            _save_full_checkpoint(
-                                kind="sigterm",
-                                epoch_to_resume=epoch + 1,
-                                completed_microsteps=0,
-                                current_epoch_loss=0.0,
+                            step_key, key = jax.random.split(key)
+                            t, x_t, u_t, cond, cond_mask, dropout_keys = prepare_jax(
+                                images_np, cond_np, step_key
                             )
-                            return _model_to_return()
-
-                        if (
-                            early_stopping_patience is not None
-                            and patience_counter >= early_stopping_patience
-                        ):
-                            logger.info(
-                                f"Early stopping triggered at epoch {epoch + 1}: "
-                                f"'{monitor}' did not improve for "
-                                f"{early_stopping_patience} consecutive validation cycles."
+                            x_t, u_t, t, cond, cond_mask, dropout_keys = shard_batch(
+                                (x_t, u_t, t, cond, cond_mask, dropout_keys),
+                                data_parallel_config,
                             )
-                            break
 
-            if (epoch + 1) % checkpoint_every == 0:
-                os.makedirs(checkpoint_dir, exist_ok=True)
-                raw_path = os.path.join(
-                    checkpoint_dir,
-                    f"model_epoch{epoch + 1}_raw.eqx",
-                )
-                ema_path = os.path.join(
-                    checkpoint_dir,
-                    f"model_epoch{epoch + 1}_ema.eqx",
-                )
-                eqx.tree_serialise_leaves(raw_path, state.model)
-                if ema_model is not None:
-                    eqx.tree_serialise_leaves(ema_path, _inference_model(ema_model))
-                    logger.info(f"Saved checkpoint: {ema_path}")
-                    log_checkpoint(clearml_task, ema_path, epoch + 1)
-                if checkpoint_hash is not None:
+                            state, loss, acc_grads = train_step(
+                                state, x_t, u_t, t, cond, cond_mask, dropout_keys
+                            )
+                            if (microstep + 1) % grad_accum_steps == 0:
+                                if not ema_initialized:
+                                    ema_model = _copy_array_tree(state.model)
+                                    ema_initialized = True
+                                else:
+                                    ema_model = ema_update_step(
+                                        ema_model,
+                                        state.model,
+                                        ema_decay,
+                                    )
+
+                                grad_norm, was_clipped, clip_scale = (
+                                    grad_clip_diagnostics_step(
+                                        grads=acc_grads, global_norm=global_norm
+                                    )
+                                )
+                                epoch_grad_norm += grad_norm
+                                epoch_clip_count += was_clipped
+                                epoch_clip_scale += clip_scale
+                                global_optimizer_step += 1
+                                lr_schedule_step += 1
+                                save_raw_model_checkpoint(
+                                    run_dir=checkpoint_dir,
+                                    model=state.model,
+                                    global_optimizer_step=global_optimizer_step,
+                                    checkpoint_io=checkpoint_io,
+                                )
+                                epoch_end_lr_step = lr_schedule_step
+
+                            epoch_loss = epoch_loss + loss
+                            epoch_loss_denominator += 1
+
+                            if sigterm_flag.requested:
+                                partial_time = time.perf_counter() - epoch_start_time
+                                total_train_time += partial_time
+                                total_epoch_time += partial_time
+                                if microstep + 1 >= microsteps_per_epoch:
+                                    checkpoint_epoch = epoch + 1
+                                    checkpoint_microsteps = 0
+                                    checkpoint_epoch_loss = 0.0
+                                else:
+                                    checkpoint_epoch = epoch
+                                    max_mid_epoch_microsteps = max(
+                                        microsteps_per_epoch - 1,
+                                        0,
+                                    )
+                                    checkpoint_microsteps = min(
+                                        epoch_loss_denominator,
+                                        max_mid_epoch_microsteps,
+                                    )
+                                    checkpoint_epoch_loss = float(epoch_loss)
+                                    if (
+                                        checkpoint_microsteps > 0
+                                        and checkpoint_microsteps
+                                        < epoch_loss_denominator
+                                    ):
+                                        checkpoint_epoch_loss *= (
+                                            checkpoint_microsteps
+                                            / epoch_loss_denominator
+                                        )
+                                _save_full_checkpoint(
+                                    kind="sigterm",
+                                    epoch_to_resume=checkpoint_epoch,
+                                    completed_microsteps=checkpoint_microsteps,
+                                    current_epoch_loss=checkpoint_epoch_loss,
+                                    directory_epoch=epoch,
+                                )
+                                return _model_to_return()
+                finally:
+                    prefetcher.shutdown()
+
+                epoch_loss = float(epoch_loss)
+                train_loss_denominator = max(epoch_loss_denominator, 1)
+                epoch_avg_grad_norm = float(epoch_grad_norm) / steps_per_epoch
+                epoch_clip_fraction = float(epoch_clip_count) / steps_per_epoch
+                epoch_avg_clip_scale = float(epoch_clip_scale) / steps_per_epoch
+                epoch_init_lr = float(lr_schedule(epoch_init_lr_step))
+                epoch_end_lr = float(lr_schedule(epoch_end_lr_step))
+                lr_schedule_step = epoch_end_lr_step
+                train_time = time.perf_counter() - epoch_start_time
+                total_train_time += train_time
+                avg_train_time = total_train_time / (epoch + 1)
+                if sigterm_flag.requested:
+                    total_epoch_time += train_time
                     _save_full_checkpoint(
-                        kind="periodic",
+                        kind="sigterm",
                         epoch_to_resume=epoch + 1,
                         completed_microsteps=0,
                         current_epoch_loss=0.0,
+                        directory_epoch=epoch,
+                    )
+                    return _model_to_return()
+
+                if ((epoch + 1) % val_every == 0) or (epoch == 0):
+                    val_start_time = time.perf_counter()
+
+                    key, key_val, key_train, key_epoch = jax.random.split(key, 4)
+                    key_time_loss = None
+                    if time_loss_enabled:
+                        key_time_loss = jax.random.fold_in(key, epoch + 1)
+
+                    if eval_model == "live":
+                        batch_eval_model = _copy_array_tree(state.model)
+                    elif eval_model == "ema":
+                        batch_eval_model = ema_model
+
+                    batch_eval_model = _inference_model(batch_eval_model)
+                    val_metrics, num_eval_batches = batch_metric_loop(
+                        key=key_val,
+                        ema_model=batch_eval_model,
+                        dataloader=val_dataloader,
+                        step_fn=batch_metric_step,
+                        prepare_jax=prepare_jax,
+                        num_batches=num_eval_batches,
+                        data_parallel=data_parallel_config,
                     )
 
-            if (
-                sample_fn is not None
-                and sample_every > 0
-                and (((epoch + 1) % sample_every == 0) or (epoch == 0))
-            ):
+                    train_metrics, _ = batch_metric_loop(
+                        key=key_train,
+                        ema_model=batch_eval_model,
+                        dataloader=eval_train_dataloader,
+                        step_fn=batch_metric_step,
+                        prepare_jax=prepare_jax,
+                        num_batches=num_eval_batches,
+                        data_parallel=data_parallel_config,
+                    )
 
-                sample_model = ema_model if ema_model is not None else state.model
-                sample_model = _inference_model(sample_model)
-                sample_keys = jax.random.split(sampling_key, num_samples)
-                images = batched_sample_fn(sample_model, sample_keys)
-                images = np.asarray(images).squeeze()
-                if clearml_task is None:
-                    epoch_samples_dir = os.path.join(samples_dir, f"epoch_{epoch + 1}")
-                    os.makedirs(epoch_samples_dir, exist_ok=True)
-                    for i, img in enumerate(images):
-                        np.save(
-                            os.path.join(epoch_samples_dir, f"sample_{i:03d}.npy"),
-                            img,
+                    epoch_metric_results = {}
+                    if epoch_metrics:
+                        inference_ema_model = _inference_model(ema_model)
+                        for fn in epoch_metrics:
+                            result = _call_epoch_metric(
+                                fn,
+                                inference_ema_model,
+                                val_dataloader,
+                                key_epoch,
+                                data_parallel_config,
+                            )
+                            if isinstance(result, dict):
+                                epoch_metric_results.update(result)
+                            else:
+                                if isinstance(fn, functools.partial):
+                                    name = fn.func.__name__
+                                elif hasattr(fn, "__name__"):
+                                    name = fn.__name__
+                                else:
+                                    name = type(fn).__name__
+                                epoch_metric_results[name] = result
+
+                    if time_loss_enabled and time_binned_loss_step is not None:
+                        assert key_time_loss is not None
+                        for split in time_loss_splits:
+                            key_time_loss, split_key = jax.random.split(
+                                key_time_loss, 2
+                            )
+                            if split == "train":
+                                time_loss_result = _time_binned_loss_cached_batch_loop(
+                                    key=split_key,
+                                    model=batch_eval_model,
+                                    cached_batches=train_time_loss_batches,
+                                    step_fn=time_binned_loss_step,
+                                    prepare_jax=prepare_jax,
+                                    num_bins=time_loss_config.num_bins,
+                                    data_parallel=data_parallel_config,
+                                )
+                            else:
+                                time_loss_result = time_binned_loss_loop(
+                                    key=split_key,
+                                    model=batch_eval_model,
+                                    dataloader=val_dataloader,
+                                    step_fn=time_binned_loss_step,
+                                    prepare_jax=prepare_jax,
+                                    num_bins=time_loss_config.num_bins,
+                                    num_batches=time_loss_config.num_batches,
+                                    data_parallel=data_parallel_config,
+                                )
+                            history = time_loss_histories.get(split)
+                            if history is None:
+                                history = TimeBinnedLossHistory(
+                                    bin_edges=time_loss_result.bin_edges,
+                                )
+                                time_loss_histories[split] = history
+                            history.append(epoch + 1, time_loss_result)
+                            log_time_binned_loss(
+                                task=clearml_task,
+                                split=split,
+                                epoch=epoch + 1,
+                                result=time_loss_result,
+                                history=history
+                                if time_loss_config.log_heatmap
+                                else None,
+                            )
+
+                    val_time = time.perf_counter() - val_start_time
+                    total_val_time += val_time
+                    val_runs += 1
+                    avg_val_time = total_val_time / val_runs
+
+                    # --- Best-model checkpointing and early stopping ---
+                    if monitor:
+                        current_monitor = val_metrics.get(monitor)
+                        if current_monitor is None:
+                            current_monitor = epoch_metric_results.get(monitor)
+                        if current_monitor is None and (
+                            val_metrics or epoch_metric_results
+                        ):
+                            raise ValueError(
+                                f"monitor metric '{monitor}' not found in val_metrics "
+                                f"{list(val_metrics.keys())} or epoch_metric_results "
+                                f"{list(epoch_metric_results.keys())}"
+                            )
+                        if current_monitor is not None:
+                            current_monitor = float(current_monitor)
+                            is_improved = (
+                                current_monitor < best_metric_value
+                                if monitor_mode == "min"
+                                else current_monitor > best_metric_value
+                            )
+                            if is_improved:
+                                all_metrics = {monitor: current_monitor}
+                                all_metrics.update(
+                                    {
+                                        k: v
+                                        for k, v in val_metrics.items()
+                                        if k != monitor
+                                    }
+                                )
+                                all_metrics.update(
+                                    {
+                                        k: v
+                                        for k, v in epoch_metric_results.items()
+                                        if k != monitor
+                                    }
+                                )
+                                metric_str = " | ".join(
+                                    f"{k} = {float(v):.4g}"
+                                    for k, v in all_metrics.items()
+                                )
+                                logger.info(
+                                    f"New best model at epoch {epoch + 1}: {metric_str}"
+                                )
+                                best_metric_value = current_monitor
+                                best_epoch = epoch + 1
+                                patience_counter = 0
+                                if checkpoint_hash is not None:
+                                    _save_full_checkpoint(
+                                        kind="best",
+                                        epoch_to_resume=epoch + 1,
+                                        completed_microsteps=0,
+                                        current_epoch_loss=0.0,
+                                        directory_epoch=epoch,
+                                    )
+                            else:
+                                patience_counter += 1
+
+                            if sigterm_flag.requested:
+                                _save_full_checkpoint(
+                                    kind="sigterm",
+                                    epoch_to_resume=epoch + 1,
+                                    completed_microsteps=0,
+                                    current_epoch_loss=0.0,
+                                    directory_epoch=epoch,
+                                )
+                                return _model_to_return()
+
+                            if (
+                                early_stopping_patience is not None
+                                and patience_counter >= early_stopping_patience
+                            ):
+                                logger.info(
+                                    f"Early stopping triggered at epoch {epoch + 1}: "
+                                    f"'{monitor}' did not improve for "
+                                    f"{early_stopping_patience} consecutive validation cycles."
+                                )
+                                break
+
+                if (epoch + 1) % checkpoint_every == 0:
+                    if checkpoint_hash is not None:
+                        _save_full_checkpoint(
+                            kind="periodic",
+                            epoch_to_resume=epoch + 1,
+                            completed_microsteps=0,
+                            current_epoch_loss=0.0,
+                            directory_epoch=epoch,
                         )
-                else:
-                    log_samples(
-                        task=clearml_task,
-                        images=images,
-                        epoch=epoch + 1,
-                        title="Model Samples",
-                        share_clim=samples_share_clim,
-                        plot_method=samples_plot_method,
-                        arcsinh_percentile=samples_arcsinh_percentile,
+
+                if (
+                    sample_fn is not None
+                    and sample_every > 0
+                    and (((epoch + 1) % sample_every == 0) or (epoch == 0))
+                ):
+                    sample_model = ema_model if ema_model is not None else state.model
+                    sample_model = _inference_model(sample_model)
+                    sample_keys = jax.random.split(sampling_key, num_samples)
+                    images = batched_sample_fn(sample_model, sample_keys)
+                    images = np.asarray(images).squeeze()
+                    if clearml_task is None:
+                        epoch_samples_dir = os.path.join(
+                            samples_dir, f"epoch_{epoch + 1}"
+                        )
+                        os.makedirs(epoch_samples_dir, exist_ok=True)
+                        for i, img in enumerate(images):
+                            np.save(
+                                os.path.join(epoch_samples_dir, f"sample_{i:03d}.npy"),
+                                img,
+                            )
+                    else:
+                        log_samples(
+                            task=clearml_task,
+                            images=images,
+                            epoch=epoch + 1,
+                            title="Model Samples",
+                            share_clim=samples_share_clim,
+                            plot_method=samples_plot_method,
+                            arcsinh_percentile=samples_arcsinh_percentile,
+                        )
+
+                epoch_time = time.perf_counter() - epoch_start_time
+                total_epoch_time += epoch_time
+                avg_epoch_time = total_epoch_time / (epoch + 1)
+
+                if ((epoch + 1) % log_every == 0) or (epoch == 0):
+                    train_loss = epoch_loss / train_loss_denominator
+                    scalars = {
+                        "train/loss": train_loss,
+                        **{f"val/{k}": v for k, v in val_metrics.items()},
+                        **{f"train/{k}": v for k, v in train_metrics.items()},
+                        **{f"epoch/{k}": v for k, v in epoch_metric_results.items()},
+                        "epoch/avg_grad_norm": epoch_avg_grad_norm,
+                        "epoch/clip_fraction": epoch_clip_fraction,
+                        "epoch/avg_clip_scale": epoch_avg_clip_scale,
+                        "epoch/init_lr": epoch_init_lr,
+                        "epoch/end_lr": epoch_end_lr,
+                    }
+                    log_metrics(clearml_task, scalars, epoch + 1)
+                    all_metrics = {
+                        **{f"val/{k}": v for k, v in val_metrics.items()},
+                        **{f"train/{k}": v for k, v in train_metrics.items()},
+                        **{f"epoch/{k}": v for k, v in epoch_metric_results.items()},
+                    }
+                    metric_str = (
+                        " | ".join(f"{k}: {v:.4g}" for k, v in all_metrics.items())
+                        if all_metrics
+                        else "no metrics yet"
                     )
+                    val_time_str = (
+                        f"Val Time: {val_time:.2f}s (avg {avg_val_time:.2f}s)"
+                        if val_runs > 0
+                        else "Val Time: pending"
+                    )
+                    log_string = (
+                        f"Epoch {epoch + 1}/{num_epochs} | "
+                        + f"Train Loss: {train_loss:.4g} | "
+                        + metric_str
+                        + " | "
+                        + f"Epoch Init LR: {epoch_init_lr:.2e} | "
+                        + f"Epoch End LR: {epoch_end_lr:.2e} | "
+                        + f"Avg Grad Norm: {epoch_avg_grad_norm:.4g} | "
+                        + f"Clip Fraction: {epoch_clip_fraction:.4g} | "
+                        + f"Avg Clip Scale: {epoch_avg_clip_scale:.4g} | "
+                        + f"Epoch Time: {epoch_time:.2g}s (avg {avg_epoch_time:.2g}s) | "
+                        + f"Train Time: {train_time:.2g}s (avg {avg_train_time:.2g}s) | "
+                        + val_time_str
+                    )
+                    logger.info(log_string)
 
-            epoch_time = time.perf_counter() - epoch_start_time
-            total_epoch_time += epoch_time
-            avg_epoch_time = total_epoch_time / (epoch + 1)
-
-            if ((epoch + 1) % log_every == 0) or (epoch == 0):
-                train_loss = epoch_loss / train_loss_denominator
-                scalars = {
-                    "train/loss": train_loss,
-                    **{f"val/{k}": v for k, v in val_metrics.items()},
-                    **{f"train/{k}": v for k, v in train_metrics.items()},
-                    **{f"epoch/{k}": v for k, v in epoch_metric_results.items()},
-                    "epoch/avg_grad_norm": epoch_avg_grad_norm,
-                    "epoch/clip_fraction": epoch_clip_fraction,
-                    "epoch/avg_clip_scale": epoch_avg_clip_scale,
-                    "epoch/init_lr": epoch_init_lr,
-                    "epoch/end_lr": epoch_end_lr,
-                }
-                log_metrics(clearml_task, scalars, epoch + 1)
-                all_metrics = {
-                    **{f"val/{k}": v for k, v in val_metrics.items()},
-                    **{f"train/{k}": v for k, v in train_metrics.items()},
-                    **{f"epoch/{k}": v for k, v in epoch_metric_results.items()},
-                }
-                metric_str = (
-                    " | ".join(f"{k}: {v:.4g}" for k, v in all_metrics.items())
-                    if all_metrics
-                    else "no metrics yet"
-                )
-                val_time_str = (
-                    f"Val Time: {val_time:.2f}s (avg {avg_val_time:.2f}s)"
-                    if val_runs > 0
-                    else "Val Time: pending"
-                )
-                log_string = (
-                    f"Epoch {epoch + 1}/{num_epochs} | "
-                    + f"Train Loss: {train_loss:.4g} | "
-                    + metric_str
-                    + " | "
-                    + f"Epoch Init LR: {epoch_init_lr:.2e} | "
-                    + f"Epoch End LR: {epoch_end_lr:.2e} | "
-                    + f"Avg Grad Norm: {epoch_avg_grad_norm:.4g} | "
-                    + f"Clip Fraction: {epoch_clip_fraction:.4g} | "
-                    + f"Avg Clip Scale: {epoch_avg_clip_scale:.4g} | "
-                    + f"Epoch Time: {epoch_time:.2g}s (avg {avg_epoch_time:.2g}s) | "
-                    + f"Train Time: {train_time:.2g}s (avg {avg_train_time:.2g}s) | "
-                    + val_time_str
-                )
-                logger.info(log_string)
-
-            if sigterm_flag.requested:
-                _save_full_checkpoint(
-                    kind="sigterm",
-                    epoch_to_resume=epoch + 1,
-                    completed_microsteps=0,
-                    current_epoch_loss=0.0,
-                )
-                return _model_to_return()
+                if sigterm_flag.requested:
+                    _save_full_checkpoint(
+                        kind="sigterm",
+                        epoch_to_resume=epoch + 1,
+                        completed_microsteps=0,
+                        current_epoch_loss=0.0,
+                        directory_epoch=epoch,
+                    )
+                    return _model_to_return()
+    finally:
+        try:
+            checkpoint_io.wait_all()
+        finally:
+            if owns_checkpoint_io:
+                checkpoint_io.close()
 
     return _model_to_return()

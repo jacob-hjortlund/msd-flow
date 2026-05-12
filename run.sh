@@ -180,37 +180,37 @@ arcsinh_overrides=(
 )
 
 data_overrides=(
-  "train.data_parallel.enabled=true"
-  "train.data_parallel.min_devices=2"
+  "train.trainer.data_parallel.enabled=true"
+  "train.trainer.data_parallel.min_devices=2"
 
   "data.dataset.data_dir=${DATA_ROOT}"
 
   "image_size=256"
   "clip_pad_size=512"
 
-  "train.buffer_size=8"
-  "train.grad_accum_steps=4"
+  "train.trainer.buffer_size=8"
+  "train.trainer.grad_accum_steps=4"
   "data.dataloader.batch_size=128"
-  "train.num_steps_per_epoch=128"
+  "train.trainer.num_steps_per_epoch=128"
   "data.dataloader.num_workers=8"
   "data.dataloader.prefetch_factor=4"
   
   "${arcsinh_overrides[@]}"
 )
 
-#  "train.num_steps_per_epoch=128"
+#  "train.trainer.num_steps_per_epoch=128"
 
 train_overrides=(
-  "train.num_epochs=1500"
-  "train.ema_decay=0.995"
+  "train.trainer.num_epochs=1500"
+  "train.trainer.ema_decay=0.995"
   "train.optimizer.learning_rate=5e-5"
-  "train.checkpoint_dir=${CHECKPOINT_ROOT}"
-  "train.resume.restart=false"
-  "train.resume.save_on_sigterm=true"
-  'train.samples_plot_method="uint8"'
-  "train._epoch_metrics_dict.fid_metric.n_real=0"
-  "train._epoch_metrics_dict.fid_metric.n_samples=2048"
-  "train._epoch_metrics_dict.fid_metric.gen_batch_size=512"  
+  "train.trainer.checkpoint_dir=${CHECKPOINT_ROOT}"
+  "train.trainer.resume.restart=false"
+  "train.trainer.resume.save_on_sigterm=true"
+  'train.trainer.samples_plot_method="uint8"'
+  "train.trainer._epoch_metrics_dict.fid_metric.n_real=0"
+  "train.trainer._epoch_metrics_dict.fid_metric.n_samples=2048"
+  "train.trainer._epoch_metrics_dict.fid_metric.gen_batch_size=512"
 )
 
 model_overrides=(

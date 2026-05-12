@@ -108,7 +108,7 @@ def main(cfg: DictConfig):
     # 6. Train model
     log.info("--- Step 6: Model Training ---")
     train_key, rng_key = jr.split(rng_key)
-    trained_model = call(cfg.train.trainer)(
+    call(cfg.train.trainer)(
         key=train_key,
         model=model,
         dataloader=train_loader,
@@ -117,11 +117,11 @@ def main(cfg: DictConfig):
         clearml_task=task,
         hash_payload=hash_payload,
         resume_checkpoint_path=(
-            resume_metadata["payload_path"] if resume_metadata is not None else None
+            resume_metadata["checkpoint_path"] if resume_metadata is not None else None
         ),
         resume_metadata=resume_metadata if resume_metadata is not None else None,
         source_checkpoint_path=(
-            resume_metadata["payload_path"] if resume_metadata is not None else None
+            resume_metadata["checkpoint_path"] if resume_metadata is not None else None
         ),
     )
 

@@ -34,23 +34,29 @@ def _cfg(tmp_path):
                     "cache_dir": None,
                     "data_dir": None,
                     "train": "train-loader-cfg",
+                    "eval_train": "eval-train-loader-cfg",
                     "val": "val-loader-cfg",
-                    "test": "test-loader-cfg",
                 },
             },
             "model": {"_target_": "unused"},
             "train": {
-                "_target_": "unused",
-                "checkpoint_dir": str(tmp_path / "checkpoints"),
-                "resume": {
-                    "restart": False,
-                    "auto": True,
-                    "hash": None,
-                    "hash_exclude": ["clearml", "train.resume", "train.num_epochs"],
-                    "latest_filename": "latest.json",
-                    "save_on_sigterm": True,
+                "trainer": {
+                    "_target_": "unused",
+                    "checkpoint_dir": str(tmp_path / "checkpoints"),
+                    "resume": {
+                        "restart": False,
+                        "auto": True,
+                        "hash": None,
+                        "hash_exclude": [
+                            "clearml",
+                            "train.trainer.resume",
+                            "train.trainer.num_epochs",
+                        ],
+                        "latest_filename": "latest.json",
+                        "save_on_sigterm": True,
+                    },
+                    "num_epochs": 10,
                 },
-                "num_epochs": 10,
             },
         }
     )
@@ -61,11 +67,13 @@ def test_main_discovers_checkpoint_before_clearml_setup(tmp_path):
     cfg = _cfg(tmp_path)
     calls = []
     checkpoint_metadata = {
-        "metadata_path": str(tmp_path / "checkpoint.json"),
-        "payload_path": str(tmp_path / "checkpoint.eqx"),
+        "metadata_path": str(tmp_path / "checkpoint" / "metadata.json"),
+        "checkpoint_path": str(tmp_path / "checkpoint"),
         "clearml_task_id": "task-1",
         "stable_hash": "hash123",
         "ema_initialized": True,
+        "global_optimizer_step": 4,
+        "lr_schedule_step": 4,
     }
 
     def fake_setup_task(clearml_cfg, resume_task_id=None):
@@ -143,9 +151,9 @@ def test_main_discovers_checkpoint_before_clearml_setup(tmp_path):
     assert calls[-1][0] == "train"
     assert calls[-1][1].endswith("checkpoints/hash123")
     assert calls[-1][2] == "hash123"
-    assert calls[-1][3] == str(tmp_path / "checkpoint.eqx")
+    assert calls[-1][3] == str(tmp_path / "checkpoint")
     assert calls[-1][4] is checkpoint_metadata
-    assert calls[-1][5] == str(tmp_path / "checkpoint.eqx")
+    assert calls[-1][5] == str(tmp_path / "checkpoint")
 
 
 def test_main_starts_fresh_clearml_task_when_resume_metadata_has_no_task_id(tmp_path):
@@ -153,10 +161,12 @@ def test_main_starts_fresh_clearml_task_when_resume_metadata_has_no_task_id(tmp_
     cfg = _cfg(tmp_path)
     calls = []
     checkpoint_metadata = {
-        "metadata_path": str(tmp_path / "checkpoint.json"),
-        "payload_path": str(tmp_path / "checkpoint.eqx"),
+        "metadata_path": str(tmp_path / "checkpoint" / "metadata.json"),
+        "checkpoint_path": str(tmp_path / "checkpoint"),
         "stable_hash": "hash123",
         "ema_initialized": True,
+        "global_optimizer_step": 4,
+        "lr_schedule_step": 4,
     }
 
     def fake_setup_task(clearml_cfg, resume_task_id=None):
