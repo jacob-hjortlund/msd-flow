@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Flow matching framework for galaxy image generation"
 requires-python = ">=3.10"
 dependencies = [
-    "jax",
+    "jax==0.6.2",
     "equinox",
     "optax",
     "diffrax",
@@ -29,15 +29,21 @@ dependencies = [
     "matplotlib",
     "seaborn",
     "timm",
-    "flax",
+    "flax>=0.10.0, <0.12.0",
     "orbax-checkpoint",
     "cmasher",
     "scikit-learn"
 ]
 
 [project.optional-dependencies]
-gpu = ["jax[cuda12]"]
-cpu = ["jax[cpu]"]
+gpu-local = [
+  "jax-cuda12-plugin==0.6.2",
+  "nvidia-cuda-nvcc-cu12",
+]
+
+gpu-bundled = [
+  "jax-cuda12-plugin[with-cuda]==0.6.2",
+]
 docs = ["mkdocs-material", "mkdocs-autorefs"]
 dev = ["pytest", "pytest-cov"]
 
@@ -45,21 +51,11 @@ dev = ["pytest", "pytest-cov"]
 where = ["."]
 include = ["msdflow*"]
 
-[tool.pixi.workspace]
-channels = ["conda-forge"]
-platforms = ["linux-64"]
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
-[tool.pixi.pypi-dependencies]
-msd-flow = { path = ".", editable = true }
-
-[tool.pixi.environments]
-default = { solve-group = "default" }
-cpu = { features = ["cpu"], solve-group = "default" }
-dev = { features = ["dev"], solve-group = "default" }
-docs = { features = ["docs"], solve-group = "default" }
-gpu = { features = ["gpu"], solve-group = "default" }
-
-[tool.pixi.tasks]
-
-[tool.pixi.dependencies]
-python = "3.12.*"
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+torchvision = { index = "pytorch-cpu" }
