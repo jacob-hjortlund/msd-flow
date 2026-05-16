@@ -3,7 +3,10 @@
 import logging
 
 import hydra
+import jax
 import jax.random as jr
+import numpy as np
+import orbax.checkpoint._src.serialization.replica_slices as _orbax_replica_slices
 
 from hydra.utils import instantiate, call
 from omegaconf import DictConfig, OmegaConf, open_dict
@@ -17,6 +20,28 @@ from msdflow.train.checkpointing import (
     discover_latest_checkpoint,
 )
 from msdflow.utils import register_all_resolvers, seed_everything
+
+
+def _patched_replica_slice_data(self):
+    # Workaround for orbax<=0.11.39 + jax>=0.6: orbax calls
+    # `with jax.sharding.set_mesh(mesh):` but in jax 0.6 `set_mesh` returns the
+    # previous mesh (None on first call), not a context manager. The new
+    # context-manager API is `jax.sharding.use_mesh`.
+    if self.slice_args is None:
+        return self.unsliced_data
+    mesh = jax.sharding.Mesh(
+        np.array(list(self.unsliced_data.sharding.device_set)), ("data",)
+    )
+    with jax.sharding.use_mesh(mesh):
+        return jax.lax.slice_in_dim(
+            self.unsliced_data,
+            start_index=self.slice_args.start_index,
+            limit_index=self.slice_args.limit_index,
+            axis=self.slice_args.axis,
+        )
+
+
+_orbax_replica_slices.ReplicaSlice.data = _patched_replica_slice_data
 
 register_all_resolvers()
 log = logging.getLogger(__name__)
