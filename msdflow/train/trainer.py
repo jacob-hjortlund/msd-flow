@@ -947,6 +947,7 @@ def train(
     resume_metadata: dict | None = None,
     source_checkpoint_path: str | None = None,
     checkpoint_io: OrbaxAsyncCheckpointIO | None = None,
+    checkpoint_raw_models: bool = False,
     sigterm_flag_factory=SigtermFlag,
     *args,
     x0_mode: str = "gaussian",
@@ -1463,12 +1464,13 @@ def train(
                                 epoch_clip_scale += clip_scale
                                 global_optimizer_step += 1
                                 lr_schedule_step += 1
-                                save_raw_model_checkpoint(
-                                    run_dir=checkpoint_dir,
-                                    model=state.model,
-                                    global_optimizer_step=global_optimizer_step,
-                                    checkpoint_io=checkpoint_io,
-                                )
+                                if checkpoint_raw_models:
+                                    save_raw_model_checkpoint(
+                                        run_dir=checkpoint_dir,
+                                        model=state.model,
+                                        global_optimizer_step=global_optimizer_step,
+                                        checkpoint_io=checkpoint_io,
+                                    )
                                 epoch_end_lr_step = lr_schedule_step
 
                             epoch_loss = epoch_loss + loss
@@ -1630,9 +1632,9 @@ def train(
                                 split=split,
                                 epoch=epoch + 1,
                                 result=time_loss_result,
-                                history=history
-                                if time_loss_config.log_heatmap
-                                else None,
+                                history=(
+                                    history if time_loss_config.log_heatmap else None
+                                ),
                             )
 
                     val_time = time.perf_counter() - val_start_time

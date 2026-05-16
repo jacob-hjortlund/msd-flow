@@ -76,6 +76,7 @@ trainer:
   x0_mode: gaussian
   project_velocity: false
   checkpoint_dir: ${work_dir}/checkpoints
+  checkpoint_raw_models: false
   resume:
     restart: false
     auto: true
