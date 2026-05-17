@@ -24,7 +24,6 @@ metadata_transform:
   _target_: torchvision.transforms.Compose
   transforms:
     - _target_: msdflow.data.preprocess.GlobalNorm
-      _partial_: true
       global_min: 0.0994
       global_max: 0.4
       norm_min: -1.0
