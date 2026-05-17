@@ -20,7 +20,15 @@ augmentations:
     - _target_: msdflow.data.preprocess.RandomRotation90
 
 metadata_columns: ${metadata_columns}
-metadata_transform: null
+metadata_transform:
+  _target_: torchvision.transforms.Compose
+  transforms:
+    - _target_: msdflow.data.preprocess.GlobalNorm
+      _partial_: true
+      global_min: 0.0994
+      global_max: 0.4
+      norm_min: -1.0
+      norm_max: 1.0
 dataset_class: msdflow.data.dataset.TNG50Dataset
 
 max_size: null
