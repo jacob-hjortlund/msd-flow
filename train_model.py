@@ -2,6 +2,7 @@
 
 import logging
 
+import shutil
 import hydra
 import jax
 import jax.random as jr
@@ -71,6 +72,11 @@ def main(cfg: DictConfig):
         cfg.train.trainer.checkpoint_dir,
         checkpoint_hash,
     )
+
+    if cfg.train.trainer.resume.restart:
+        log.info(f"Force restart, clearing {run_checkpoint_dir}")
+        shutil.rmtree(run_checkpoint_dir, ignore_errors=True)
+
     resume_metadata = None
     if cfg.train.trainer.resume.auto:
         resume_metadata = discover_latest_checkpoint(
