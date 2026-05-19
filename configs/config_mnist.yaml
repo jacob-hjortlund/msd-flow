@@ -17,6 +17,12 @@ train:
 # sample_mnist.py / mcmc_mnist.py parameters
 checkpoint: null
 
+fid_classifier: null
+fid_sample_every: 5
+fid_num_gen: 500
+fid_num_ref: 1000
+fid_num_vis: 8
+
 mcmc:
   sigma_blur: 2.0
   sigma_noise: 0.05
