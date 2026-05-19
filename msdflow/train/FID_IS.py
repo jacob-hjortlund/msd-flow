@@ -113,21 +113,3 @@ def FID(classifier, sample_images, ref_images):
 
     fid = diff @ diff + np.trace(sigma_r + sigma_g - 2 * covmean)
     return fid
-
-if __name__ == "__main__":
-
-    transform = transforms.Compose(
-        [
-            transforms.ToTensor(),
-            transforms.Normalize((0.5,), (0.5,)),  # Scale to [-1, 1]
-        ]
-    )
-    # Quick test to verify loading works
-    my_classifier_model = load_classifier()
-    sample_model = load_model_for_inference("ddpm_mnist_final.pth")
-    dataset = datasets.MNIST(
-        root="../.././data", train=True, download=False, transform=transform
-    )
-
-    fid_baseline = FID(my_classifier_model, ref_images[:500], ref_images[500:])
-    print("FID Score: ", fid_baseline)
