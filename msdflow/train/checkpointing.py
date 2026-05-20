@@ -19,6 +19,7 @@ from types import FrameType
 from typing import Any
 
 import equinox as eqx
+import jax
 from omegaconf import OmegaConf
 import orbax.checkpoint as ocp
 from orbax.checkpoint._src.metadata import tree as tree_metadata
@@ -693,23 +694,43 @@ class OrbaxAsyncCheckpointIO:
         self.wait_training()
         self.raw_model_checkpointer.wait_until_finished()
 
-    def restore_item(self, path: str | Path, target: Any) -> Any:
+    def restore_item(
+        self,
+        path: str | Path,
+        target: Any,
+        *,
+        target_sharding: jax.sharding.Sharding | None = None,
+    ) -> Any:
         """Restore an Orbax item using a target item shape.
 
         Args:
             path: Source Orbax checkpoint directory.
             target: Target PyTree used to define restore structure.
+            target_sharding: Optional sharding to apply to every array leaf on
+                restore. When provided, overrides the saved shardings — pass
+                ``jax.sharding.SingleDeviceSharding(jax.devices()[0])`` to
+                gather all shards onto a single available device.
 
         Returns:
             Restored PyTree item.
         """
         checkpoint_path = Path(path)
         checkpointer = ocp.Checkpointer(_pytree_checkpoint_handler())
+
+        restore_args = None
+        if target_sharding is not None:
+            def _per_leaf_restore_args(leaf: Any) -> ocp.RestoreArgs:
+                if eqx.is_array(leaf):
+                    return ocp.ArrayRestoreArgs(sharding=target_sharding)
+                return ocp.RestoreArgs()
+
+            restore_args = jax.tree_util.tree_map(_per_leaf_restore_args, target)
+
         try:
             try:
                 restored = checkpointer.restore(
                     checkpoint_path,
-                    args=ocp.args.PyTreeRestore(target),
+                    args=ocp.args.PyTreeRestore(target, restore_args=restore_args),
                 )
                 step_metadata = checkpointer.metadata(checkpoint_path)
             except (NotImplementedError, TypeError):
@@ -719,7 +740,7 @@ class OrbaxAsyncCheckpointIO:
                 )
                 restored = checkpointer.restore(
                     checkpoint_path,
-                    args=ocp.args.PyTreeRestore(target),
+                    args=ocp.args.PyTreeRestore(target, restore_args=restore_args),
                 )
                 step_metadata = checkpointer.metadata(checkpoint_path)
             return _apply_equinox_static_custom_metadata(
@@ -1151,6 +1172,7 @@ def load_training_checkpoint(
     *,
     metadata: Mapping[str, Any] | None = None,
     checkpoint_io: OrbaxAsyncCheckpointIO | None = None,
+    target_sharding: jax.sharding.Sharding | None = None,
 ) -> TrainingCheckpoint:
     """Deserialize an Orbax training checkpoint using a matching example tree.
 
@@ -1159,6 +1181,10 @@ def load_training_checkpoint(
         like: Checkpoint tree with the same structure as the serialized payload.
         metadata: Optional metadata associated with the checkpoint.
         checkpoint_io: Optional shared Orbax async checkpoint I/O owner.
+        target_sharding: Optional sharding to apply to every array leaf on
+            restore. When provided, overrides the saved shardings — pass
+            ``jax.sharding.SingleDeviceSharding(jax.devices()[0])`` to gather
+            all shards onto a single available device.
 
     Returns:
         Restored training checkpoint payload.
@@ -1170,7 +1196,11 @@ def load_training_checkpoint(
     io = checkpoint_io or OrbaxAsyncCheckpointIO()
     owns_io = checkpoint_io is None
     try:
-        checkpoint = io.restore_item(checkpoint_path, like)
+        checkpoint = io.restore_item(
+            checkpoint_path,
+            like,
+            target_sharding=target_sharding,
+        )
     finally:
         if owns_io:
             io.close()
